@@ -37,8 +37,6 @@ from domain.entities.candle import Candle
 
 logger = logging.getLogger(__name__)
 
-_SERVER_BATCH_SIZE = 1_000
-
 _INTERVAL_MAP: dict[str, str] = {
     "1min":  "1m",
     "5min":  "5m",
@@ -124,7 +122,7 @@ class MarketDataClient:
                   injected so this class doesn't import the metrics singleton.
     """
 
-    _RETRY_ATTEMPTS = 3
+    _RETRY_ATTEMPTS = 100
     _RETRY_BACKOFF  = [1.0, 2.0, 4.0]   # FIX: length matches _RETRY_ATTEMPTS - 1 gaps
 
     def __init__(
