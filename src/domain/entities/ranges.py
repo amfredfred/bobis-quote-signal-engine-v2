@@ -121,8 +121,6 @@ class RejectionCandle:
 
     @property
     def wick_tip(self) -> float:
-        return (
-            self.high
-            if self.pattern == CandlePattern.SHOOTING_STAR
-            else self.low
-        )
+        if self.pattern in (CandlePattern.SHOOTING_STAR, CandlePattern.CRT_SELL):
+            return self.high
+        return self.low

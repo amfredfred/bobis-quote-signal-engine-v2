@@ -219,6 +219,7 @@ class Settings:
     use_breakeven:                  bool = True
     use_invalidation:               bool = False
     multi_tf_independent_positions: bool = True
+    entry_model:                    str  = "candle_pattern"  # candle_pattern | crt | all
 
     # ── Circuit breaker ───────────────────────────────────────────────────────
     max_consecutive_losses: int   = 10
@@ -238,6 +239,11 @@ class Settings:
                     f"tf_pairs: htf ({htf}={htf_m}min) must be larger than "
                     f"ltf ({ltf}={ltf_m}min)."
                 )
+        valid_models = {"candle_pattern", "crt", "all"}
+        if self.entry_model not in valid_models:
+            raise ValueError(
+                f"entry_model must be one of {valid_models}, got {self.entry_model!r}."
+            )
 
     # ── Factory ───────────────────────────────────────────────────────────────
 
@@ -293,6 +299,7 @@ class Settings:
             use_breakeven         = _bool_env("USE_BREAKEVEN", True),
             use_invalidation      = _bool_env("USE_INVALIDATION", False),
             multi_tf_independent_positions = _bool_env("MULTI_TF_INDEPENDENT_POSITIONS", True),
+            entry_model           = os.getenv("ENTRY_MODEL", "candle_pattern").lower(),
             max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3")),
             pause_after_streak_h   = float(os.getenv("PAUSE_AFTER_STREAK_H", "12")),
             use_session_filter     = _bool_env("USE_SESSION_FILTER", True),

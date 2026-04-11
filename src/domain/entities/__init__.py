@@ -4,6 +4,7 @@ from domain.entities.candle import Candle
 from domain.entities.enums import (
     BosDirection,
     CandlePattern,
+    EntryModel,
     CLOSED_OUTCOMES,
     SignalDirection,
     SignalEvent,
@@ -25,6 +26,7 @@ from domain.entities.trade import TradeSignal
 __all__ = [
     "BosDirection",
     "CandlePattern",
+    "EntryModel",
     "Candle",
     "CLOSED_OUTCOMES",
     "ClosedSignalRecord",

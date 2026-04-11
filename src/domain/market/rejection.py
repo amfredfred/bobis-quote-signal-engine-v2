@@ -20,12 +20,13 @@ logger = logging.getLogger(__name__)
 
 # ── Score ─────────────────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True, slots=True)
 class RejectionScore:
-    wick_penetration: float   # how deep wick entered the zone  (0 → 1+)
-    close_proximity:  float   # signed: + = escaped, − = still inside
-    wick_ratio:       float   # wick / total_range
-    total:            float   # weighted composite
+    wick_penetration: float  # how deep wick entered the zone  (0 → 1+)
+    close_proximity: float  # signed: + = escaped, − = still inside
+    wick_ratio: float  # wick / total_range
+    total: float  # weighted composite
 
     @classmethod
     def compute(
@@ -36,14 +37,15 @@ class RejectionScore:
     ) -> RejectionScore:
         total = wick_penetration * 0.5 + wick_ratio * 0.3 + close_proximity * 0.2
         return cls(
-            wick_penetration = wick_penetration,
-            close_proximity  = close_proximity,
-            wick_ratio       = wick_ratio,
-            total            = total,
+            wick_penetration=wick_penetration,
+            close_proximity=close_proximity,
+            wick_ratio=wick_ratio,
+            total=total,
         )
 
 
 # ── Detector ─────────────────────────────────────────────────────────────────
+
 
 class RejectionDetector:
 
@@ -55,7 +57,9 @@ class RejectionDetector:
         min_score: float = 0.0,
     ) -> Optional[tuple[RejectionCandle, RejectionScore]]:
         if ltf_range.direction == SignalDirection.SHORT:
-            return RejectionDetector._shooting_star(candle, ltf_range, min_wick_ratio, min_score)
+            return RejectionDetector._shooting_star(
+                candle, ltf_range, min_wick_ratio, min_score
+            )
         return RejectionDetector._hammer(candle, ltf_range, min_wick_ratio, min_score)
 
     @staticmethod
@@ -72,7 +76,7 @@ class RejectionDetector:
         if zone_size < 1e-8:
             return None
 
-        wick       = candle.upper_wick
+        wick = candle.upper_wick
         wick_ratio = wick / total_range
 
         if candle.high < ltf_range.range_low:
@@ -81,7 +85,7 @@ class RejectionDetector:
             return None
 
         wick_penetration = (candle.high - ltf_range.range_low) / zone_size
-        close_proximity  = (ltf_range.range_low - candle.close) / zone_size
+        close_proximity = (ltf_range.range_low - candle.close) / zone_size
 
         score = RejectionScore.compute(wick_penetration, close_proximity, wick_ratio)
         if score.total < min_score:
@@ -89,14 +93,21 @@ class RejectionDetector:
 
         logger.debug(
             "SHOOTING STAR @ %s  score=%.3f  pen=%.2f  prox=%.2f  wr=%.2f",
-            candle.timestamp, score.total,
-            score.wick_penetration, score.close_proximity, score.wick_ratio,
+            candle.timestamp,
+            score.total,
+            score.wick_penetration,
+            score.close_proximity,
+            score.wick_ratio,
         )
         return (
             RejectionCandle(
-                open=candle.open, high=candle.high, low=candle.low,
-                close=candle.close, timestamp=candle.timestamp,
-                wick_ratio=wick_ratio, pattern=CandlePattern.SHOOTING_STAR,
+                open=candle.open,
+                high=candle.high,
+                low=candle.low,
+                close=candle.close,
+                timestamp=candle.timestamp,
+                wick_ratio=wick_ratio,
+                pattern=CandlePattern.SHOOTING_STAR,
             ),
             score,
         )
@@ -115,7 +126,7 @@ class RejectionDetector:
         if zone_size < 1e-8:
             return None
 
-        wick       = candle.lower_wick
+        wick = candle.lower_wick
         wick_ratio = wick / total_range
 
         if candle.low > ltf_range.range_high:
@@ -124,7 +135,7 @@ class RejectionDetector:
             return None
 
         wick_penetration = (ltf_range.range_high - candle.low) / zone_size
-        close_proximity  = (candle.close - ltf_range.range_high) / zone_size
+        close_proximity = (candle.close - ltf_range.range_high) / zone_size
 
         score = RejectionScore.compute(wick_penetration, close_proximity, wick_ratio)
         if score.total < min_score:
@@ -132,14 +143,21 @@ class RejectionDetector:
 
         logger.debug(
             "HAMMER @ %s  score=%.3f  pen=%.2f  prox=%.2f  wr=%.2f",
-            candle.timestamp, score.total,
-            score.wick_penetration, score.close_proximity, score.wick_ratio,
+            candle.timestamp,
+            score.total,
+            score.wick_penetration,
+            score.close_proximity,
+            score.wick_ratio,
         )
         return (
             RejectionCandle(
-                open=candle.open, high=candle.high, low=candle.low,
-                close=candle.close, timestamp=candle.timestamp,
-                wick_ratio=wick_ratio, pattern=CandlePattern.HAMMER,
+                open=candle.open,
+                high=candle.high,
+                low=candle.low,
+                close=candle.close,
+                timestamp=candle.timestamp,
+                wick_ratio=wick_ratio,
+                pattern=CandlePattern.HAMMER,
             ),
             score,
         )
@@ -153,7 +171,9 @@ class RejectionDetector:
     ) -> Optional[tuple[RejectionCandle, RejectionScore]]:
         """Scan candles in reverse and return the first qualifying rejection."""
         for candle in reversed(candles):
-            result = RejectionDetector.check(candle, ltf_range, min_wick_ratio, min_score)
+            result = RejectionDetector.check(
+                candle, ltf_range, min_wick_ratio, min_score
+            )
             if result:
                 return result
         return None
@@ -168,7 +188,197 @@ class RejectionDetector:
         """Return all qualifying rejections sorted by score descending."""
         results = []
         for candle in candles:
-            result = RejectionDetector.check(candle, ltf_range, min_wick_ratio, min_score)
+            result = RejectionDetector.check(
+                candle, ltf_range, min_wick_ratio, min_score
+            )
             if result:
                 results.append(result)
+        return sorted(results, key=lambda x: x[1].total, reverse=True)
+
+
+# ── CRT Detector ──────────────────────────────────────────────────────────────
+
+
+class CrtDetector:
+    """
+    CRT (Candle Range Theory) entry detector.
+
+    Trigger condition — current candle vs previous candle's range (passed as ltf_range):
+      SELL  (SHORT): wick sweeps ABOVE ltf_range.range_high,
+                     close comes back BELOW ltf_range.range_high.
+      BUY   (LONG):  wick sweeps BELOW ltf_range.range_low,
+                     close comes back ABOVE ltf_range.range_low.
+
+    Entry is taken immediately on the close of the trigger candle.
+    SL is placed beyond the sweep wick (candle.high for SELL,
+    candle.low for BUY).
+
+    A synthetic RejectionScore is returned for API compatibility:
+      wick_penetration = how far price swept past the level (normalised)
+      close_proximity  = distance from close to level (normalised, signed)
+      wick_ratio       = sweep wick / total_range
+      total            = same weighted composite as RejectionScore
+    """
+
+    @staticmethod
+    def check(
+        candle: Candle,
+        ltf_range: LtfRange,
+    ) -> Optional[tuple[RejectionCandle, RejectionScore]]:
+        if ltf_range.direction == SignalDirection.SHORT:
+            return CrtDetector._sell(candle, ltf_range)
+        return CrtDetector._buy(candle, ltf_range)
+
+    @staticmethod
+    def _sell(
+        candle: Candle,
+        ltf_range: LtfRange,
+    ) -> Optional[tuple[RejectionCandle, RejectionScore]]:
+        level = ltf_range.range_high
+        zone_size = ltf_range.range_high - ltf_range.range_low
+        if zone_size < 1e-8:
+            return None
+
+        # Must sweep above the level (wick) and close back below it
+        if candle.high <= level:
+            return None
+        if candle.close >= level:
+            return None
+
+        total_range = candle.total_range
+        sweep_wick = candle.high - max(candle.open, candle.close)
+        wick_ratio = sweep_wick / total_range if total_range > 1e-8 else 0.0
+
+        wick_penetration = (candle.high - level) / zone_size
+        close_proximity = (level - candle.close) / zone_size
+
+        score = RejectionScore.compute(wick_penetration, close_proximity, wick_ratio)
+
+        logger.debug(
+            "CRT SELL @ %s  score=%.3f  sweep=%.5f→%.5f  close=%.5f",
+            candle.timestamp,
+            score.total,
+            level,
+            candle.high,
+            candle.close,
+        )
+        return (
+            RejectionCandle(
+                open=candle.open,
+                high=candle.high,
+                low=candle.low,
+                close=candle.close,
+                timestamp=candle.timestamp,
+                wick_ratio=wick_ratio,
+                pattern=CandlePattern.CRT_SELL,
+            ),
+            score,
+        )
+
+    @staticmethod
+    def _buy(
+        candle: Candle,
+        ltf_range: LtfRange,
+    ) -> Optional[tuple[RejectionCandle, RejectionScore]]:
+        level = ltf_range.range_low
+        zone_size = ltf_range.range_high - ltf_range.range_low
+        if zone_size < 1e-8:
+            return None
+
+        # Must sweep below the level (wick) and close back above it
+        if candle.low >= level:
+            return None
+        if candle.close <= level:
+            return None
+
+        total_range = candle.total_range
+        sweep_wick = min(candle.open, candle.close) - candle.low
+        wick_ratio = sweep_wick / total_range if total_range > 1e-8 else 0.0
+
+        wick_penetration = (level - candle.low) / zone_size
+        close_proximity = (candle.close - level) / zone_size
+
+        score = RejectionScore.compute(wick_penetration, close_proximity, wick_ratio)
+
+        logger.debug(
+            "CRT BUY @ %s  score=%.3f  sweep=%.5f→%.5f  close=%.5f",
+            candle.timestamp,
+            score.total,
+            level,
+            candle.low,
+            candle.close,
+        )
+        return (
+            RejectionCandle(
+                open=candle.open,
+                high=candle.high,
+                low=candle.low,
+                close=candle.close,
+                timestamp=candle.timestamp,
+                wick_ratio=wick_ratio,
+                pattern=CandlePattern.CRT_BUY,
+            ),
+            score,
+        )
+
+    @staticmethod
+    def find_most_recent(
+        candles: list[Candle],
+        ltf_range: LtfRange,
+    ) -> Optional[tuple[RejectionCandle, RejectionScore]]:
+        """Scan candles in reverse and return the first qualifying CRT trigger.
+
+        For each candle, build ltf_range from its previous candle's high/low.
+        """
+        if len(candles) < 2:
+            return None
+
+        # Scan from most recent backwards
+        for i in range(len(candles) - 1, 0, -1):
+            current = candles[i]
+            prev_candle = candles[i - 1]
+
+            # Build ltf_range from previous candle's range
+            prev_range = LtfRange(
+                range_high=prev_candle.high,
+                range_low=prev_candle.low,
+                direction=ltf_range.direction,
+                timestamp=prev_candle.timestamp,
+            )
+
+            result = CrtDetector.check(current, prev_range)
+            if result:
+                return result
+
+        return None
+
+    @staticmethod
+    def find_all_scored(
+        candles: list[Candle],
+        ltf_range: LtfRange,
+    ) -> list[tuple[RejectionCandle, RejectionScore]]:
+        """Return all CRT triggers sorted by score descending.
+
+        For each candle, build ltf_range from its previous candle's high/low.
+        """
+        if len(candles) < 2:
+            return []
+
+        results = []
+        for i in range(1, len(candles)):
+            current = candles[i]
+            prev_candle = candles[i - 1]
+
+            # Build ltf_range from previous candle's range
+            prev_range = LtfRange(
+                range_high=prev_candle.high,
+                range_low=prev_candle.low,
+                direction=ltf_range.direction,
+                timestamp=prev_candle.timestamp,
+            )
+
+            result = CrtDetector.check(current, prev_range)
+            if result:
+                results.append(result)
+
         return sorted(results, key=lambda x: x[1].total, reverse=True)

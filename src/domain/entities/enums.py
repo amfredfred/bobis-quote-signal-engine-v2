@@ -52,6 +52,15 @@ class BosDirection(str, Enum):
 class CandlePattern(str, Enum):
     SHOOTING_STAR = "SHOOTING_STAR"
     HAMMER        = "HAMMER"
+    CRT_SELL      = "CRT_SELL"   # sweep above range_high, close back inside → sell
+    CRT_BUY       = "CRT_BUY"   # sweep below range_low,  close back inside → buy
+
+
+class EntryModel(str, Enum):
+    """Controls which entry trigger(s) are active inside the rejection class."""
+    CANDLE_PATTERN = "candle_pattern"   # classic HAMMER / SHOOTING_STAR only
+    CRT            = "crt"             # CRT sweep-and-reverse only
+    ALL            = "all"             # either model may trigger
 
 
 class TrendBias(str, Enum):
