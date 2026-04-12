@@ -16,3 +16,4 @@ build/
 .venv/
 venv/
 .zip
+*.zip

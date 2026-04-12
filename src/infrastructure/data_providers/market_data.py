@@ -122,8 +122,8 @@ class MarketDataClient:
                   injected so this class doesn't import the metrics singleton.
     """
 
-    _RETRY_ATTEMPTS = 100
-    _RETRY_BACKOFF  = [1.0, 2.0, 4.0]   # FIX: length matches _RETRY_ATTEMPTS - 1 gaps
+    _RETRY_ATTEMPTS = 8                    # Reasonable maximum (was 100 — too high)
+    _RETRY_BACKOFF  = [1.0, 2.0, 4.0, 8.0, 12.0, 20.0]   # Now matches or exceeds attempts
 
     def __init__(
         self,
@@ -148,7 +148,7 @@ class MarketDataClient:
         for attempt in range(1, self._RETRY_ATTEMPTS + 1):
             t0 = time.perf_counter()
             try:
-                resp = self._session.post(url, json=body, timeout=60)
+                resp = self._session.post(url, json=body, timeout=1200)
                 resp.raise_for_status()
                 duration_ms = (time.perf_counter() - t0) * 1000
                 if self._metrics_fn:
