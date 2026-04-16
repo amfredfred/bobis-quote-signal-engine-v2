@@ -1,24 +1,54 @@
 """
 app/backtesting/backtest.py — backtester using the new domain layer.
-Optimizations applied:
-  - Removed build_chart_data (unused; eliminated import + hot-loop call)
-  - HTF window: O(n) list-comprehension → O(log n) bisect_right
-  - MarketStructure.detect cached per HTF candle close (not per LTF tick)
-  - find_htf_ranges cached per HTF candle close (not per LTF tick)
+
+Optimizations (cumulative, newest batch annotated with ★):
+
+  Original layer
+  ──────────────
+  - Removed build_chart_data (unused)
+  - HTF window: O(n) list-comp → O(log n) bisect_right
+  - MarketStructure.detect / find_htf_ranges cached per HTF candle close
   - interval_to_minutes wrapped with lru_cache; htf_interval_ms pre-computed
   - stale_ms pre-computed per (htf, ltf) pair
   - _bisect_ts (pure-Python) replaced with stdlib bisect.bisect_left (C impl)
-  - _ltf_ts and _htf_ts pre-computed in __init__ (shared list index access)
-  - Removed BacktestResult.chart_path / htf_window / ltf_index (chart artefacts)
-  - "chart" column removed from to_dict() / CSV / JSON output
-  - __slots__ on BacktestResult to reduce per-object memory overhead
-  - Hot-loop method references hoisted to locals before the loop
-  - open_dir expiry: list(items()) → dedicated expired list (avoids re-scan)
-  - _simulate: field accesses hoisted to locals; branch flattened per direction
-  - MAJOR: _simulate fully vectorized with NumPy (50-200× faster simulation)
+  - _ltf_ts / _htf_ts pre-computed in __init__
+  - Removed BacktestResult chart artefacts; __slots__ for memory savings
+  - Hot-loop method references hoisted to locals
+  - open_dir expiry: dedicated expired list (avoids re-scan)
+  - _simulate fully vectorized with NumPy (50-200× vs pure Python)
+
+  ★ New layer (this revision)
+  ────────────────────────────
+  ★ TIER 1 — Zone-level _find_ltf / _find_entry cache
+      Combined per-zone cache keyed by (zone_key, ltf_hi_idx).
+      Both domain calls are skipped on cache hit (identical ltf_zone).
+      Win rate ≈ 1 − (1 / ticks_per_ltf_bar); e.g. 98 % for 1 m master / 1 h LTF.
+      Even for master == ltf: inactive zones (None ltf_range) cost O(1) lookup
+      instead of O(zone_len) list-copy + domain call.
+
+  ★ TIER 2 — Zone lo-index precomputed once per zone lifetime
+      bisect_left(ltf_ts_idx, zone_start) result is immutable; stored in
+      _zone_lo on first visit, never recomputed.
+
+  ★ TIER 3 — Optional Numba JIT _simulate_core
+      If numba is installed: single O(n) pass in native machine code.
+      Eliminates all intermediate array allocations (cumsum, shift,
+      3× nonzero index arrays, expiry bool mask).
+      tp1 "strictly prior" semantics preserved by updating the flag AFTER
+      SL/INV checks within each iteration.
+
+  ★ TIER 4 — NumPy _simulate fallback hardened
+      • Expiry trim: O(n) bool mask → O(log n) searchsorted (timestamps sorted)
+      • cumsum + shift replaced by: tp1_first = argmax(tp1_tgt); index compare
+      • tp1_before = (tp1_first < stop_idx)  — no shifted array allocation
+      • np.nonzero → np.argmax + .any() guard (avoids allocating index arrays)
+      • inv_hit array skipped entirely when use_inv is False
+      • Profile scalars (use_be, use_inv, expiry_ms, tp1_mult) hoisted to
+        __init__; eliminated per-call attribute dereference
 """
 
 from __future__ import annotations
+
 import argparse
 import bisect
 import csv
@@ -48,7 +78,6 @@ logger = logging.getLogger(__name__)
 
 _CSV_TZ = ZoneInfo("UTC")
 
-# Wrap so repeated calls with the same string are free (C hash lookup).
 interval_to_minutes: callable = lru_cache(maxsize=64)(_interval_to_minutes)
 
 # ── ANSI colours ──────────────────────────────────────────────────────────────
@@ -61,6 +90,98 @@ DIM = "\033[2m"
 RESET = "\033[0m"
 UP = f"{GREEN}▲{RESET}"
 DOWN = f"{RED}▼{RESET}"
+
+
+# ── ★ TIER 3: Optional Numba JIT ─────────────────────────────────────────────
+# If numba is not installed the NumPy fallback is used automatically.
+try:
+    import numba as _numba
+
+    @_numba.njit(cache=True, fastmath=True)
+    def _njit_simulate(
+        ts: np.ndarray,
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray,
+        is_short: bool,
+        use_be: bool,
+        use_inv: bool,
+        entry: float,
+        sl: float,
+        tp1: float,
+        tp2: float,
+        rng_hi: float,
+        rng_lo: float,
+        expiry_cutoff: np.int64,
+        rr: float,
+        risk_pips: float,
+        tp1_mult: float,
+    ):
+        """Single O(n) pass — zero intermediate array allocations.
+
+        Return tuple: (outcome_code, bar_index, close_px, realized_rr)
+          0 → EXPIRED
+          1 → LOSS
+          2 → BREAKEVEN
+          3 → WIN_FULL
+
+        Semantics preserved vs. original NumPy version:
+          • TP2  requires tp1 at-or-on this bar (tp1_prev OR tp1_now).
+          • BE   requires tp1 strictly-before stop bar (tp1_prev only).
+          • Same-bar priority: TP2 > INV > SL.
+          • tp1_prev flag updated AFTER SL/INV checks to keep "strictly prior"
+            semantics (matching the original tp1_hit_prev shifted array).
+        """
+        n = len(ts)
+        tp1_prev = False  # TP1 confirmed on a strictly-prior bar
+
+        for i in range(n):
+            if ts[i] > expiry_cutoff:
+                break
+
+            h = high[i]
+            l = low[i]
+            c = close[i]
+
+            if is_short:
+                tp1_now = l <= tp1
+                tp2_now = l <= tp2
+                sl_now = h >= sl
+                inv_now = use_inv and (c > rng_hi)
+            else:
+                tp1_now = h >= tp1
+                tp2_now = h >= tp2
+                sl_now = l <= sl
+                inv_now = use_inv and (c < rng_lo)
+
+            # TP2: tp1 at-or-before this bar wins (highest priority)
+            if (tp1_prev or tp1_now) and tp2_now:
+                return 3, i, tp2, rr  # WIN_FULL
+
+            # INV: higher priority than SL on same-bar conflict
+            if inv_now:
+                if tp1_prev and use_be:
+                    return 2, i, entry, rr * tp1_mult  # BREAKEVEN
+                return 1, i, c, -(abs(entry - c) / risk_pips)  # LOSS
+
+            # SL
+            if sl_now:
+                if tp1_prev and use_be:
+                    return 2, i, entry, rr * tp1_mult  # BREAKEVEN
+                return 1, i, sl, -1.0  # LOSS
+
+            # Update AFTER checks — preserves "strictly prior" semantics
+            if tp1_now:
+                tp1_prev = True
+
+        return 0, n, 0.0, 0.0  # EXPIRED
+
+    _NUMBA_AVAILABLE = True
+    logger.debug("Numba JIT simulation enabled (single-pass O(n))")
+
+except ImportError:
+    _NUMBA_AVAILABLE = False
+    logger.debug("Numba not installed — NumPy vectorised simulation active")
 
 
 # ── BacktestResult ────────────────────────────────────────────────────────────
@@ -280,15 +401,35 @@ class MultiPairBacktester:
             htf: [c.timestamp for c in candles] for htf, candles in htf_candles.items()
         }
 
-        # Pre-convert LTF candles to NumPy for vectorized simulation only.
-        # Original list[Candle] objects remain unchanged for domain compatibility.
+        # NumPy structured arrays for vectorised simulation
         self.ltf_candles_np: dict[str, np.ndarray] = {
             ltf: self._candles_to_np(candles) for ltf, candles in ltf_candles.items()
         }
 
-        # Per-HTF-interval result caches
+        # Per-HTF-interval result caches (keyed by last HTF close timestamp)
         self._ms_cache: dict[str, tuple[int, object]] = {}
         self._range_cache: dict[str, tuple[int, list]] = {}
+
+        # ★ TIER 1: Zone-level combined cache
+        #   key  → zone_key (htf_range.timestamp, bos_direction.value)
+        #   value → (ltf_hi_idx, ltf_range_or_None, rej_result_or_None)
+        #
+        #   A cache hit (same ltf_hi_idx) means ltf_zone is byte-identical to
+        #   the previous call, so _find_ltf and _find_entry results are reused.
+        #   Hit rate ≈ 1 − (1 / ticks_per_ltf_bar); e.g. 98 % for 1 m / 1 h.
+        self._zone_cache: dict[tuple, tuple] = {}
+
+        # ★ TIER 2: Zone lo-index cache
+        #   bisect_left(ltf_ts_idx, zone_start) is immutable for a zone's
+        #   lifetime — compute once and store.
+        self._zone_lo: dict[tuple, int] = {}
+
+        # ★ TIER 4: Profile scalars hoisted to instance (no per-call dereference)
+        profile = self.profile
+        self._use_be: bool = profile.use_breakeven
+        self._use_inv: bool = profile.use_invalidation
+        self._expiry_ms: int = int(profile.signal_expiry_hours * 3_600_000)
+        self._tp1_mult: float = profile.tp1_multiplier
 
         # Pre-computed constants per pair
         self._stale_ms: dict[tuple[str, str], int] = {
@@ -306,19 +447,6 @@ class MultiPairBacktester:
         logger.info("[%s] Entry model: %s", symbol, cfg.entry_model)
 
     def _candles_to_np(self, candles: list[Candle]) -> np.ndarray:
-        """Convert list[Candle] to structured NumPy array once.
-        Enables vectorized simulation while preserving original Candle objects."""
-        if not candles:
-            dtype = [
-                ("timestamp", "i8"),
-                ("open", "f8"),
-                ("high", "f8"),
-                ("low", "f8"),
-                ("close", "f8"),
-                ("volume", "f8"),
-            ]
-            return np.empty(0, dtype=dtype)
-
         dtype = [
             ("timestamp", "i8"),
             ("open", "f8"),
@@ -327,18 +455,15 @@ class MultiPairBacktester:
             ("close", "f8"),
             ("volume", "f8"),
         ]
+        if not candles:
+            return np.empty(0, dtype=dtype)
         return np.array(
             [(c.timestamp, c.open, c.high, c.low, c.close, c.volume) for c in candles],
             dtype=dtype,
         )
 
     # ── entry routing ─────────────────────────────────────────────────────────
-    def _find_entry(
-        self,
-        ltf_zone: list[Candle],
-        ltf_range,
-        htf_range,
-    ) -> Optional[tuple]:
+    def _find_entry(self, ltf_zone, ltf_range, htf_range) -> Optional[tuple]:
         model = self.cfg.entry_model
         candidates: list[tuple] = []
 
@@ -370,6 +495,7 @@ class MultiPairBacktester:
         use_tf = profile.use_trend_filter
         use_mtp = profile.multi_tf_independent_positions
         symbol = self.symbol
+
         ltf_intervals = list(dict.fromkeys(ltf for _, ltf in self.pairs))
         master_ltf = min(ltf_intervals, key=interval_to_minutes)
         master_candles = self.ltf_candles[master_ltf]
@@ -392,10 +518,15 @@ class MultiPairBacktester:
         pivot_bars = cfg.pivot_bars
         max_zones = cfg.max_htf_zones_per_dir
 
+        # Precomputed lookups
         _stale_ms = self._stale_ms
         _htf_int_ms = self._htf_interval_ms
         _ms_cache = self._ms_cache
         _rng_cache = self._range_cache
+
+        # ★ Zone caches hoisted to locals (hot-path dict lookups are faster on locals)
+        _zone_cache = self._zone_cache
+        _zone_lo = self._zone_lo
 
         # Hoist hot-path callables
         _bisect_right = bisect.bisect_right
@@ -477,13 +608,36 @@ class MultiPairBacktester:
                     if zone_key in dead_zones:
                         continue
 
-                    zone_start = htf_range.broken_at or htf_range.timestamp
-                    lo = _bisect_left(ltf_ts_idx, zone_start)
-                    hi = _bisect_right(ltf_ts_idx, current_ts)
-                    ltf_zone = ltf_all[lo:hi]
-                    ltf_range = _find_ltf(ltf_zone, htf_range, ltf_all)
-                    if not ltf_range:
-                        continue
+                    # ★ TIER 2: lo-index computed once per zone (zone_start is immutable)
+                    if zone_key not in _zone_lo:
+                        zone_start = htf_range.broken_at or htf_range.timestamp
+                        _zone_lo[zone_key] = _bisect_left(ltf_ts_idx, zone_start)
+                    ltf_lo_idx = _zone_lo[zone_key]
+
+                    ltf_hi_idx = _bisect_right(ltf_ts_idx, current_ts)
+
+                    # ★ TIER 1: Zone-level _find_ltf + _find_entry cache
+                    #   Key: ltf_hi_idx — changes only when a new LTF bar arrives.
+                    #   On a cache hit the ltf_zone list is NEVER constructed.
+                    cached = _zone_cache.get(zone_key)
+                    if cached is not None and cached[0] == ltf_hi_idx:
+                        # Fast path — reuse previously computed results
+                        ltf_range = cached[1]
+                        if not ltf_range:
+                            continue
+                        rej_result = cached[2]
+                    else:
+                        # Slow path — compute and store
+                        ltf_zone = ltf_all[ltf_lo_idx:ltf_hi_idx]
+                        ltf_range = _find_ltf(ltf_zone, htf_range, ltf_all)
+                        rej_result = (
+                            _find_entry(ltf_zone, ltf_range, htf_range)
+                            if ltf_range
+                            else None
+                        )
+                        _zone_cache[zone_key] = (ltf_hi_idx, ltf_range, rej_result)
+                        if not ltf_range:
+                            continue
 
                     direction = ltf_range.direction.value
                     if structure is not None and not structure.allows(direction):
@@ -493,7 +647,6 @@ class MultiPairBacktester:
                     if ltf_key in seen_ltf:
                         continue
 
-                    rej_result = _find_entry(ltf_zone, ltf_range, htf_range)
                     if not rej_result:
                         continue
 
@@ -544,18 +697,22 @@ class MultiPairBacktester:
         report.print()
         return report
 
-    # ── vectorized simulation (major performance upgrade) ─────────────────────
+    # ── simulation ────────────────────────────────────────────────────────────
     def _simulate(self, signal: TradeSignal, future_np: np.ndarray) -> BacktestResult:
-        """Fully vectorized simulation — 50–200× faster than the original Python loop.
-        Exact semantic and numerical parity with the previous implementation."""
+        """Dispatch to Numba JIT (single pass) or NumPy fallback (vectorised).
+
+        Both paths are semantically identical:
+          • TP2 requires TP1 at-or-before the same bar (inclusive).
+          • BE  requires TP1 strictly before the stop bar (exclusive).
+          • Same-bar priority: TP2 > INV > SL.
+        """
         if len(future_np) == 0:
             return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
 
-        profile = self.profile
+        # ★ TIER 4: Hoisted scalars — no attribute dereference in hot path
         is_short = signal.direction == SignalDirection.SHORT
-        use_be = profile.use_breakeven
-        use_inv = profile.use_invalidation
-        expiry_ms = int(profile.signal_expiry_hours * 3_600_000)
+        use_be = self._use_be
+        use_inv = self._use_inv
         entry = signal.entry_price
         sl = signal.stop_loss
         tp1 = signal.tp1
@@ -563,93 +720,124 @@ class MultiPairBacktester:
         rng_hi = signal.ltf_range.range_high
         rng_lo = signal.ltf_range.range_low
         birth = signal.created_at
+        expiry_cutoff = np.int64(birth + self._expiry_ms)
+        rr = signal.risk_reward_ratio
+        risk_pips = signal.risk_pips
+        tp1_mult = self._tp1_mult
 
         ts = future_np["timestamp"]
-        # Early expiry trim
-        expiry_mask = (ts - birth) > expiry_ms
-        if np.any(expiry_mask):
-            first_exp = np.argmax(expiry_mask)
-            future_np = future_np[:first_exp]
-            if len(future_np) == 0:
-                return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
-            ts = future_np["timestamp"]
 
+        # ★ TIER 4: O(log n) expiry trim — timestamps are monotonically increasing
+        first_exp = int(np.searchsorted(ts, expiry_cutoff, side="right"))
+        if first_exp == 0:
+            return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
+        if first_exp < len(ts):
+            future_np = future_np[:first_exp]
+            ts = ts[:first_exp]
+
+        # ── ★ TIER 3: Numba single-pass path ─────────────────────────────────
+        if _NUMBA_AVAILABLE:
+            code, idx, close_px, realized = _njit_simulate(
+                ts,
+                future_np["high"],
+                future_np["low"],
+                future_np["close"],
+                is_short,
+                use_be,
+                use_inv,
+                entry,
+                sl,
+                tp1,
+                tp2,
+                rng_hi,
+                rng_lo,
+                expiry_cutoff,
+                rr,
+                risk_pips,
+                tp1_mult,
+            )
+            if code == 0:
+                return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
+            close_ts = int(ts[idx])
+            if code == 3:
+                outcome = SignalOutcome.WIN_FULL
+            elif code == 2:
+                outcome = SignalOutcome.BREAKEVEN
+            else:
+                outcome = SignalOutcome.LOSS
+            return BacktestResult(signal, outcome, realized, close_ts, float(close_px))
+
+        # ── ★ TIER 4: Improved NumPy fallback ────────────────────────────────
         high = future_np["high"]
         low = future_np["low"]
         close = future_np["close"]
         n = len(ts)
 
-        # Hit masks (identical logic to original)
         if is_short:
-            inv_hit = close > rng_hi
-            sl_hit = high >= sl
             tp1_tgt = low <= tp1
             tp2_tgt = low <= tp2
+            sl_hit = high >= sl
+            inv_hit = (close > rng_hi) if use_inv else None
         else:
-            inv_hit = close < rng_lo
-            sl_hit = low <= sl
             tp1_tgt = high >= tp1
             tp2_tgt = high >= tp2
+            sl_hit = low <= sl
+            inv_hit = (close < rng_lo) if use_inv else None
 
-        # TP1 cumulative state
-        tp1_hit_cum = np.cumsum(tp1_tgt.astype(np.int8)) > 0
-        tp1_hit_prev = np.zeros(n, dtype=bool)
-        if n > 0:
-            tp1_hit_prev[1:] = tp1_hit_cum[:-1]
+        # ★ First TP1 hit: argmax + .any() guard avoids allocating an index array
+        #   (np.nonzero returns a full index array; argmax returns a scalar)
+        tp1_any = bool(tp1_tgt.any())
+        tp1_first = int(tp1_tgt.argmax()) if tp1_any else n
 
-        tp2_hit = tp1_hit_cum & tp2_tgt
+        # ★ TP2: only search at/after tp1_first (tightest possible slice)
+        if tp1_any:
+            tp2_sub = tp2_tgt[tp1_first:]
+            tp2_idx = tp1_first + int(tp2_sub.argmax()) if tp2_sub.any() else n
+        else:
+            tp2_idx = n
 
-        # First terminating index (respecting original check order)
-        inv_mask = inv_hit & use_inv
-        inv_idx = np.nonzero(inv_mask)[0]
-        inv_idx = inv_idx[0] if len(inv_idx) else n
+        # First SL hit
+        sl_idx = int(sl_hit.argmax()) if sl_hit.any() else n
 
-        sl_idx_arr = np.nonzero(sl_hit)[0]
-        sl_idx = sl_idx_arr[0] if len(sl_idx_arr) else n
+        # First INV hit (array not allocated at all when use_inv is False)
+        if use_inv and inv_hit is not None:
+            inv_idx = int(inv_hit.argmax()) if inv_hit.any() else n
+        else:
+            inv_idx = n
 
-        tp2_idx_arr = np.nonzero(tp2_hit)[0]
-        tp2_idx = tp2_idx_arr[0] if len(tp2_idx_arr) else n
-
-        stop_idx = min(inv_idx, sl_idx, tp2_idx)
+        stop_idx = min(tp2_idx, inv_idx, sl_idx)
 
         if stop_idx == n:
             return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
 
         close_ts = int(ts[stop_idx])
 
-        if stop_idx == tp2_idx:
-            outcome = SignalOutcome.WIN_FULL
-            close_px = tp2
-            realized = signal.risk_reward_ratio
-        else:
-            # Invalidation or Stop-Loss
-            tp1_before = tp1_hit_prev[stop_idx]
-            if stop_idx == inv_idx:  # invalidation hit first
-                outcome = (
-                    SignalOutcome.BREAKEVEN
-                    if (tp1_before and use_be)
-                    else SignalOutcome.LOSS
-                )
-                close_px = entry if (tp1_before and use_be) else float(close[stop_idx])
-                realized = (
-                    signal.risk_reward_ratio * profile.tp1_multiplier
-                    if outcome == SignalOutcome.BREAKEVEN
-                    else -(abs(entry - close_px) / signal.risk_pips)
-                )
-            else:  # stop-loss hit first
-                outcome = (
-                    SignalOutcome.BREAKEVEN
-                    if (tp1_before and use_be)
-                    else SignalOutcome.LOSS
-                )
-                close_px = entry if (tp1_before and use_be) else sl
-                realized = (
-                    signal.risk_reward_ratio * profile.tp1_multiplier
-                    if outcome == SignalOutcome.BREAKEVEN
-                    else -1.0
-                )
+        # ★ tp1_before: simple index comparison — no shifted array needed
+        tp1_before = tp1_first < stop_idx
 
-        return BacktestResult(signal, outcome, realized, close_ts, close_px)
+        if stop_idx == tp2_idx:
+            return BacktestResult(signal, SignalOutcome.WIN_FULL, rr, close_ts, tp2)
+
+        if stop_idx == inv_idx:
+            if tp1_before and use_be:
+                return BacktestResult(
+                    signal, SignalOutcome.BREAKEVEN, rr * tp1_mult, close_ts, entry
+                )
+            inv_px = float(close[stop_idx])
+            return BacktestResult(
+                signal,
+                SignalOutcome.LOSS,
+                -(abs(entry - inv_px) / risk_pips),
+                close_ts,
+                inv_px,
+            )
+
+        # Stop-loss
+        if tp1_before and use_be:
+            return BacktestResult(
+                signal, SignalOutcome.BREAKEVEN, rr * tp1_mult, close_ts, entry
+            )
+        return BacktestResult(signal, SignalOutcome.LOSS, -1.0, close_ts, sl)
 
     # ── console output ────────────────────────────────────────────────────────
     def _print_result(self, r: BacktestResult) -> None:
@@ -677,7 +865,7 @@ class MultiPairBacktester:
 Backtester = MultiPairBacktester  # backwards-compat alias
 
 
-# ── CSV / API loaders (unchanged) ─────────────────────────────────────────────
+# ── CSV / API loaders ─────────────────────────────────────────────────────────
 def load_csv(path: str) -> list[Candle]:
     candles: list[Candle] = []
     with open(path, newline="") as f:

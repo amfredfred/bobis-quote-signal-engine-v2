@@ -47,6 +47,7 @@ from domain.market.rejection import CrtDetector, RejectionDetector
 from domain.market.structure import MarketStructure
 from domain.market.swings import SwingDetector
 from domain.signals.builder import build_signal
+from domain.signals.correlation import correlation_conflict
 from domain.entities.candle import Candle
 
 logger = logging.getLogger(__name__)
@@ -346,6 +347,22 @@ class SignalService:
             if not rej_result:
                 continue
             rejection, _ = rej_result
+
+            # ── Correlation gate ──────────────────────────────────────────────
+            # Block signals whose currency-leg exposure directly opposes any
+            # currently active position.  Example: EURUSD LONG + EURJPY SHORT
+            # both hold EUR but on opposite sides — net zero EUR exposure while
+            # paying full risk on both legs.
+            #
+            # get_active_signals() already excludes closed/expired positions.
+            # We do NOT filter by symbol so same-pair opposite-direction hedges
+            # (possible when multi_tf_independent_positions=True) are also caught.
+            corr_conflict, corr_reason = correlation_conflict(
+                symbol, ltf_range.direction, self.get_active_signals()
+            )
+            if corr_conflict:
+                logger.info("[%s] ✗ Correlation block: %s", pair_label, corr_reason)
+                continue
 
             # ── Dedup ─────────────────────────────────────────────────────────
             allowed, reason = self._session.should_emit(
