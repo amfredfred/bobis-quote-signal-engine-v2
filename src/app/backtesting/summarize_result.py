@@ -2636,8 +2636,7 @@ function drawGroupBars(id,labels,groups,H=170){
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// TF PAIRS
-// ════════════════════════════════════════════════════════════════════════
+// ── TF PAIRS (with streak visualization) ───────────────────────────────────
 (function(){
   const el=document.getElementById('v-tfpairs');
   const tfs=Object.values(TFS);
@@ -2649,37 +2648,155 @@ function drawGroupBars(id,labels,groups,H=170){
   const byTf={};
   D.forEach(d=>{
     const tf=d.tf_pair||'unknown';
-    if(!byTf[tf]) byTf[tf]={tf, symbols:[], trades:0, w:0, l:0, b:0, r:0};
+    if(!byTf[tf]) byTf[tf]={tf, symbols:[], trades:0, w:0, l:0, b:0, r:0, 
+                              maxWinStreak:0, maxLossStreak:0, 
+                              streakLog:[],
+                              rrBuckets:{ '1.5R':0, '2R':0, '2.5R':0, '3R+':0 }};
     byTf[tf].symbols.push(d.symbol||d.pair);
-    byTf[tf].trades+=d.trades; byTf[tf].w+=d.wins;
-    byTf[tf].l+=d.losses; byTf[tf].b+=d.bes;
+    byTf[tf].trades+=d.trades;
+    byTf[tf].w+=d.wins;
+    byTf[tf].l+=d.losses;
+    byTf[tf].b+=d.bes;
     byTf[tf].r+=d.total_r;
+    byTf[tf].maxWinStreak = Math.max(byTf[tf].maxWinStreak, d.max_win_streak||0);
+    byTf[tf].maxLossStreak = Math.max(byTf[tf].maxLossStreak, d.max_loss_streak||0);
+    
+// Calculate RR distribution from raw trades (1.5R minimum)
+(d.raw_trades||[]).forEach(t=>{
+  if(t.outcome!=='WIN_FULL') return;
+  const rr = Math.abs(t.realized_rr);
+  if(rr < 1.5) return;  // Skip anything below 1.5R
+  else if(rr < 2.0) byTf[tf].rrBuckets['1.5R']++;
+  else if(rr < 2.5) byTf[tf].rrBuckets['2R']++;
+  else if(rr < 3.0) byTf[tf].rrBuckets['2.5R']++;
+  else byTf[tf].rrBuckets['3R+']++;
+});
+    
+    // Record significant streaks (3+)
+    let curW=0, curL=0, lastRecorded='';
+    (d.raw_trades||[]).forEach(t=>{
+      if(t.outcome==='WIN_FULL'){
+        curW++; curL=0;
+        if(curW>=3 && curW>parseInt(lastRecorded.replace(/[^0-9]/g,'')||0)){
+          lastRecorded=`W${curW}`;
+          byTf[tf].streakLog.push({symbol:d.symbol, streak:`🔥${curW}W`, date:t.entry_dt?.slice(0,10)});
+        }
+      } else if(t.outcome==='LOSS'){
+        curL++; curW=0;
+        if(curL>=3 && curL>parseInt(lastRecorded.replace(/[^0-9]/g,'')||0)){
+          lastRecorded=`L${curL}`;
+          byTf[tf].streakLog.push({symbol:d.symbol, streak:`💀${curL}L`, date:t.entry_dt?.slice(0,10)});
+        }
+      } else {
+        curW=0; curL=0; lastRecorded='';
+      }
+    });
   });
+  
   const tfList=Object.values(byTf).sort((a,b)=>b.r-a.r);
-
   const cols=['#4f6ef7','#0d9e5c','#d63b3b','#b07d00','#7c5cbf','#0e8fca'];
   const tfColor=tf=>cols[tfList.findIndex(t=>t.tf===tf)%cols.length];
+
+  function streakBar(maxStreak, type){
+    const limit=Math.min(maxStreak,10);
+    const color=type==='win'?WIN:LOSS;
+    let bars='';
+    for(let i=1;i<=limit;i++){
+      const opacity=40 + Math.floor((i/maxStreak)*40);
+      bars+=`<div style="flex:1;height:6px;background:${color}${opacity.toString(16)};border-radius:2px" title="${i} ${type} streak"></div>`;
+    }
+    return `<div style="display:flex;gap:2px;margin-top:6px">${bars}</div>`;
+  }
+
+  function renderRRBuckets(buckets, totalWins) {
+  if(totalWins === 0) return '<div style="font-size:11px;color:var(--sub);text-align:center">No wins</div>';
+  
+  const entries = [
+    { label: '1.5R', key: '1.5R', color: '#0d9e5c', min: 1.5, max: 1.99 },
+    { label: '2R', key: '2R', color: '#0e8fca', min: 2.0, max: 2.49 },
+    { label: '2.5R', key: '2.5R', color: '#7c5cbf', min: 2.5, max: 2.99 },
+    { label: '3R+', key: '3R+', color: '#4f6ef7', min: 3.0, max: 999 }
+  ];
+  
+  let html = '<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--brd)">';
+  html += '<div style="font-size:9px;color:var(--sub);font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;text-align:center">RR DISTRIBUTION</div>';
+  html += '<div style="display:flex;gap:4px;justify-content:space-around">';
+  
+  entries.forEach(e => {
+    const cnt = buckets[e.key] || 0;
+    const pct = totalWins ? ((cnt / totalWins) * 100).toFixed(0) : 0;
+    html += `<div style="text-align:center;flex:1">
+      <div style="font-size:11px;font-weight:800;color:${e.color}">${e.label}</div>
+      <div style="font-size:16px;font-weight:800;color:${e.color}">${cnt}</div>
+      <div style="height:3px;background:${e.color}33;border-radius:2px;margin-top:2px">
+        <div style="width:${pct}%;height:3px;background:${e.color};border-radius:2px"></div>
+      </div>
+      <div style="font-size:9px;color:var(--sub)">${pct}%</div>
+    </div>`;
+  });
+  
+  // Calculate average win (using midpoints)
+  let totalRR = 0;
+  Object.entries(buckets).forEach(([k,v]) => {
+    if(k === '1.5R') totalRR += v * 1.75;
+    else if(k === '2R') totalRR += v * 2.25;
+    else if(k === '2.5R') totalRR += v * 2.75;
+    else if(k === '3R+') totalRR += v * 4.0;
+  });
+  const avgWin = totalWins ? (totalRR / totalWins).toFixed(2) : '0';
+  
+  html += `</div><div style="font-size:9px;color:var(--sub);text-align:center;margin-top:4px">⚡ Avg Win: ${avgWin}R</div></div>`;
+  return html;
+}
 
   const cards=tfList.map(tf=>{
     const r2=ratesFromCounts(tf.w,tf.b,tf.l);
     const exp=(tf.r/tf.trades).toFixed(3);
     const col=tfColor(tf.tf);
     const rc=tf.r>=0?WIN:LOSS;
-    const symbols=[...new Set(tf.symbols)].join(', ');
+    const symbols=[...new Set(tf.symbols)].slice(0,6).join(', ');
+    const moreSymbols = [...new Set(tf.symbols)].length > 6 ? ` +${[...new Set(tf.symbols)].length-6} more` : '';
+    const totalWins = tf.w;
+    
+    const recentStreaks = tf.streakLog.slice(-3).map(s=> 
+      `<span style="font-size:10px;background:${s.streak.includes('W')?WIN+'22':LOSS+'22'};padding:2px 5px;border-radius:4px;margin-right:4px" title="${s.symbol} · ${s.date}">${s.streak}</span>`
+    ).join('');
+    
     return `<div class="sess-card" style="border-color:${col}44">
       <div class="sc-bg" style="background:${col}"></div>
       <div class="sess-name" style="color:${col};font-size:15px">${tf.tf||'—'}</div>
-      <div class="sess-time" style="margin-bottom:10px">${[...new Set(tf.symbols)].length} symbols · ${symbols}</div>
+      <div class="sess-time" style="margin-bottom:10px">${[...new Set(tf.symbols)].length} symbols · ${symbols}${moreSymbols}</div>
       <div class="sess-r" style="color:${rc}">${tf.r>=0?'+':''}${tf.r.toFixed(2)}R</div>
       <div class="sess-meta">${tf.trades} trades · ${exp>=0?'+':''}${exp}R/T</div>
       <div style="margin:10px 0">${rateTrio(r2.wr,r2.ber,r2.lr)}</div>
-      <div class="sess-bar-track" style="margin:10px 0">
+      
+      <!-- RR DISTRIBUTION -->
+      ${renderRRBuckets(tf.rrBuckets, totalWins)}
+      
+      <div style="display:flex;gap:12px;margin:10px 0;padding:8px 0;border-top:1px solid ${col}33;border-bottom:1px solid ${col}33">
+        <div style="flex:1;text-align:center">
+          <div style="font-size:10px;color:${WIN};font-weight:700">MAX WIN STREAK</div>
+          <div style="font-size:20px;font-weight:800;color:${WIN}">${tf.maxWinStreak}</div>
+          ${streakBar(tf.maxWinStreak, 'win')}
+        </div>
+        <div style="flex:1;text-align:center">
+          <div style="font-size:10px;color:${LOSS};font-weight:700">MAX LOSS STREAK</div>
+          <div style="font-size:20px;font-weight:800;color:${LOSS}">${tf.maxLossStreak}</div>
+          ${streakBar(tf.maxLossStreak, 'loss')}
+        </div>
+      </div>
+      
+      ${recentStreaks ? `<div style="margin:6px 0;font-size:10px;color:${SUB}">📊 Recent: ${recentStreaks}</div>` : ''}
+      
+      ${tf.maxLossStreak >= 5 ? `<div style="margin-top:8px;padding:6px;background:${LOSS}22;border-radius:6px;font-size:11px;color:${LOSS};text-align:center">⚠️ ${tf.maxLossStreak} consecutive losses — review this TF pair</div>` : ''}
+      
+      <div class="sess-bar-track" style="margin:10px 0 6px 0">
         <div class="sess-bar-fill" style="width:${Math.min(100,Math.abs(tf.r)/Math.max(...tfList.map(t=>Math.abs(t.r)),1)*100)}%;background:${rc}"></div>
       </div>
       <div class="sess-counts">
-        <span style="color:${WIN}">W ${tf.w}</span>
-        <span style="color:${BE}">BE ${tf.b}</span>
-        <span style="color:${LOSS}">L ${tf.l}</span>
+        <span style="color:${WIN}">✓ ${tf.w}</span>
+        <span style="color:${BE}">≈ ${tf.b}</span>
+        <span style="color:${LOSS}">✗ ${tf.l}</span>
       </div>
     </div>`;
   }).join('');
@@ -2696,15 +2813,21 @@ function drawGroupBars(id,labels,groups,H=170){
   });
 
   const colHead=allTfPairs.map(tf=>`<th style="color:${tfColor(tf)};font-family:monospace">${tf}</th>`).join('');
+  
   const symRows=allSymbols.map(sym=>{
     const cells=allTfPairs.map(tf=>{
       const d=symTfMap[sym]?.[tf];
       if(!d) return `<td style="color:${DIM}">—</td>`;
       const col=d.total_r>=0?WIN:LOSS;
-      return `<td style="cursor:pointer" onclick="showDetail(${D.indexOf(d)})" title="${d.pair}">
-        <div style="color:${col};font-weight:700">${d.total_r>=0?'+':''}${d.total_r.toFixed(2)}R</div>
+      let streakBadge='';
+      if(d.max_loss_streak >= 5) streakBadge=`<span style="display:inline-block;margin-left:4px;background:${LOSS}22;color:${LOSS};font-size:9px;padding:1px 4px;border-radius:4px">💀${d.max_loss_streak}</span>`;
+      else if(d.max_win_streak >= 5) streakBadge=`<span style="display:inline-block;margin-left:4px;background:${WIN}22;color:${WIN};font-size:9px;padding:1px 4px;border-radius:4px">🔥${d.max_win_streak}</span>`;
+      else if(d.max_loss_streak >= 3) streakBadge=`<span style="display:inline-block;margin-left:4px;color:${LOSS};font-size:9px">⚠${d.max_loss_streak}</span>`;
+      
+      return `<td style="cursor:pointer" onclick="showDetail(${D.indexOf(d)})" title="${d.pair} · Max loss streak: ${d.max_loss_streak} · Max win streak: ${d.max_win_streak}">
+        <div style="color:${col};font-weight:700">${d.total_r>=0?'+':''}${d.total_r.toFixed(2)}R${streakBadge}</div>
         <div style="margin:4px 0">${rateTrio(d.wr, d.be_rate||0, d.loss_rate||0)}</div>
-        <div style="font-size:11px;color:${SUB}">${d.trades}t</div>
+        <div style="font-size:11px;color:${SUB}">${d.trades}t | L${d.max_loss_streak}/W${d.max_win_streak}</div>
       </td>`;
     }).join('');
     return `<tr><td style="font-weight:700">${sym}</td>${cells}</tr>`;
@@ -2715,7 +2838,7 @@ function drawGroupBars(id,labels,groups,H=170){
   const barCols=tfList.map(t=>tfColor(t.tf));
 
   el.innerHTML=`
-  <div class="sh">TF Pair Summary</div>
+  <div class="sh">TF Pair Summary — with Win/Loss Streaks & RR Distribution</div>
   <div class="sess-grid">${cards}</div>
 
   <div class="sh">Net R by TF Pair (all symbols combined)</div>
@@ -2736,6 +2859,7 @@ function drawGroupBars(id,labels,groups,H=170){
         <th>TF Pair</th><th>Symbols</th><th>Trades</th>
         <th>W</th><th>BE</th><th>L</th>
         <th>W% / BE% / L%</th><th>Total R</th><th>Expect/T</th>
+        <th>Max Streaks</th>
       </tr></thead>
       <tbody>
         ${tfList.map(tf=>{
@@ -2752,6 +2876,7 @@ function drawGroupBars(id,labels,groups,H=170){
             <td>${rateTrio(r2.wr,r2.ber,r2.lr)}</td>
             <td style="color:${tf.r>=0?WIN:LOSS};font-weight:700">${tf.r>=0?'+':''}${tf.r.toFixed(2)}R</td>
             <td style="color:${exp>=0?WIN:LOSS};font-weight:600">${exp>=0?'+':''}${exp.toFixed(3)}R</td>
+            <td style="font-size:11px"><span style="color:${WIN}">W${tf.maxWinStreak}</span> / <span style="color:${LOSS}">L${tf.maxLossStreak}</span></td>
           </tr>`;
         }).join('')}
       </tbody>
