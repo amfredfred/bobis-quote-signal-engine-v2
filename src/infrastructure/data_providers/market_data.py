@@ -19,7 +19,7 @@ API contract (POST /time-series)
   Response: { "EUR/USD": { "1h": [ { "timestamp": ms, "open":..., ... } ] } }
 
 Interval map (config format → MT5 format):
-  "1min"→"1m"  "5min"→"5m"  "15min"→"15m"  "30min"→"30m"
+  "1min"→"1m"  "5min"→"5m" "10min"→"10m"  "15min"→"15m"  "30min"→"30m"
   "1h"→"1h"    "4h"→"4h"    "1day"→"d1"     "1week"→"w1"
 """
 
@@ -40,6 +40,8 @@ logger = logging.getLogger(__name__)
 _INTERVAL_MAP: dict[str, str] = {
     "1min":  "1m",
     "5min":  "5m",
+    "6min":  "6m",
+    "10min":  "10m",
     "15min": "15m",
     "30min": "30m",
     "1h":    "1h",
