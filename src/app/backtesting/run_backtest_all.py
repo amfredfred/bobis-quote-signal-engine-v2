@@ -30,25 +30,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-# ── Confirmed symbols ──────────────────────────────────────────────────────────
-#
-# Selected from full 30M/5M + 1H/5M backtest (579 trades total).
-# Ranked by combined expectancy (R per trade) across both timeframes.
-# All pass WR > 30% and positive expectancy in both 30M and 1H settings.
-#
-#   #1  XAU/USD  — combined exp 1.363R   WR 43.4%   trades 31
-#   #2  EUR/USD  — combined exp 1.249R   WR 48.6%   trades 37
-#   #3  USD/JPY  — combined exp 1.203R   WR 47.1%   trades 33
-#   #4  NZD/CAD  — combined exp 1.107R   WR 53.2%   trades 40
-#   #5  EUR/JPY  — combined exp 1.086R   WR 42.8%   trades 42
-#   #6  ETH/USD  — combined exp 0.979R   WR 48.6%   trades 38
-#   #7  NZD/CHF  — combined exp 0.957R   WR 55.4%   trades 41
-#   #8  GBP/NZD  — combined exp 0.947R   WR 51.0%   trades 49
-#   #9  JP225    — combined exp 0.815R   WR 51.0%   trades 24
-#   #10 USD/CAD  — combined exp 0.656R   WR 42.7%   trades 39
-#   #11 AUD/CAD  — combined exp 0.656R   WR 36.4%   trades 55
-
-
 ALL_SYMBOLS = [
     "XAUUSD",  # Gold
     "EURUSD",  # Major
@@ -58,8 +39,10 @@ ALL_SYMBOLS = [
     "AUDUSD",  # Major
     "USDCAD",  # Major
     "NZDUSD",  # Major
-    "EURJPY",  # Liquid cross
-    "US500",  # US Tech 500 Index (Nasdaq)
+    "US500",  # Nasdaq
+    "US30",  # Dow
+    "US100",  # NASDAQ-100
+    "BTCUSD",  # Only if you can handle crypto risk
 ]
 
 # ── Terminal colours ───────────────────────────────────────────────────────────

@@ -49,6 +49,16 @@ Optimizations (cumulative, newest batch annotated with ★):
 
 from __future__ import annotations
 
+import sys
+import os
+
+# Force UTF-8 encoding on Windows
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+
 import argparse
 import bisect
 import csv
@@ -844,6 +854,7 @@ class MultiPairBacktester:
         s = r.signal
         arrow = DOWN if s.direction == SignalDirection.SHORT else UP
         tf_tag = f"{DIM}[{s.htf_interval}/{s.ltf_interval}]{RESET}"
+        et_pattern = f"{DIM}[{s.rejection_candle.pattern.value}]{RESET}"
         outcome_str = {
             SignalOutcome.WIN_FULL: f"{GREEN}WIN +{r.realized_rr:.2f}R{RESET}",
             SignalOutcome.BREAKEVEN: f"{YELLOW}BE +{r.realized_rr:.2f}R{RESET}",
@@ -854,7 +865,7 @@ class MultiPairBacktester:
 
         print(f"\r{' '*80}\r", end="")
         print(
-            f" {arrow} {BOLD}{s.direction.value:5s}{RESET} {tf_tag} "
+            f" {arrow} {BOLD}{s.direction.value:5s}{RESET} {tf_tag} {et_pattern} "
             f"{CYAN}{self.cfg.dt_ms(s.triggered_at)}{RESET} "
             f"E={s.entry_price:.5f} SL={s.stop_loss:.5f} TP2={s.tp2:.5f} "
             f"RR={s.risk_reward_ratio:.2f} → {outcome_str} "
