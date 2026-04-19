@@ -50,6 +50,7 @@ class _ConfigProtocol(Protocol):
     htf_lookback: int
     multi_tf_independent_positions: bool
     session_timezone: str
+    tf_max_rr: dict
 
 
 # ── Asset profile ─────────────────────────────────────────────────────────────
@@ -263,7 +264,12 @@ class AssetRegistry:
     def __init__(self, cfg: _ConfigProtocol) -> None:
         self._cfg = cfg
 
-    def get(self, symbol: str) -> AssetProfile:
+    def get(
+        self,
+        symbol: str,
+        htf_interval: Optional[str] = None,
+        ltf_interval: Optional[str] = None,
+    ) -> AssetProfile:
         symbol = normalize_symbol(symbol)
         cfg = self._cfg
 
@@ -293,4 +299,18 @@ class AssetRegistry:
         # 4. Replace generic sessions with asset-class specific sessions
         base["sessions"] = _CLASS_SESSIONS.get(class_key, cfg.sessions)
 
+        # 5. Timeframe-aware max_rr (overrides class/symbol max_rr when tf known)
+        if htf_interval and ltf_interval:
+            base["max_rr"] = self._resolve_tf_max_rr(
+                htf_interval, ltf_interval, base["max_rr"]
+            )
+
         return AssetProfile(**base)
+
+    def _resolve_tf_max_rr(
+        self, htf_interval: str, ltf_interval: str, fallback: float
+    ) -> float:
+        from config.settings import interval_to_minutes
+
+        key = f"{interval_to_minutes(htf_interval)}/{interval_to_minutes(ltf_interval)}"
+        return float(self._cfg.tf_max_rr.get(key, fallback))

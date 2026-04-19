@@ -181,7 +181,7 @@ class SignalService:
         pair_key = (symbol, htf_interval, ltf_interval)
         pair_label = f"{symbol} {htf_interval}/{ltf_interval}"
         loop = asyncio.get_running_loop()
-        profile = self._registry.get(symbol)
+        profile = self._registry.get(symbol, htf_interval, ltf_interval)
 
         # ── Fetch HTF candles ─────────────────────────────────────────────────
         htf_full = await loop.run_in_executor(
@@ -553,7 +553,9 @@ class SignalService:
         candle_close: float,
         now: int,
     ) -> None:
-        profile = self._registry.get(signal.symbol)
+        profile = self._registry.get(
+            signal.symbol, signal.htf_interval, signal.ltf_interval
+        )
         prev_status = signal.status
         is_short = signal.direction == SignalDirection.SHORT
         expiry_ms = profile.signal_expiry_hours * 3_600_000
@@ -735,7 +737,9 @@ class SignalService:
         signal.closed_at = now
         signal.close_price = price
 
-        profile = self._registry.get(signal.symbol)
+        profile = self._registry.get(
+            signal.symbol, signal.htf_interval, signal.ltf_interval
+        )
         realized = (
             signal.realized_rr
             if signal.realized_rr is not None

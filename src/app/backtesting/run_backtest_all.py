@@ -197,7 +197,12 @@ def main() -> None:
     p.add_argument("--no-breakeven", action="store_true")
     p.add_argument("--no-invalidation", action="store_true")
     p.add_argument("--min-rr", type=float, default=None)
-    p.add_argument("--max-rr", type=float, default=None)
+    p.add_argument(
+        "--max-rr",
+        type=float,
+        default=None,
+        help="Hard cap for all pairs — overrides TF_MAX_RR entries",
+    )
     p.add_argument("--max-wick", type=float, default=None)
     p.add_argument("--htf-lookback", type=int, default=None)
     p.add_argument(

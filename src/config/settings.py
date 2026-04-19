@@ -31,11 +31,38 @@ from dotenv import load_dotenv, find_dotenv
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _bool_env(key: str, default: bool) -> bool:
     val = os.getenv(key)
     if val is None:
         return default
     return val.strip().lower() not in ("false", "0", "no")
+
+
+def _parse_tf_max_rr(raw: str) -> dict:
+    """Parse TF_MAX_RR env var.
+
+    Accepts JSON  : '{"5/1": 3.0, "60/5": 10.0}'
+    or shorthand  : '5/1:3,60/5:10'
+    Returns {}    on empty / invalid input (falls through to tier table).
+    """
+    import json
+
+    raw = raw.strip()
+    if not raw:
+        return {}
+    try:
+        return {k: float(v) for k, v in json.loads(raw).items()}
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    result: dict = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        pair, cap = part.rsplit(":", 1)
+        result[pair.strip()] = float(cap.strip())
+    return result
 
 
 def _set_env(key: str, default: set[int]) -> set[int]:
@@ -75,19 +102,19 @@ def _default_sessions() -> dict[str, dict]:
     return {
         "TOKYO": {
             "start": datetime.time(0, 0),
-            "end":   datetime.time(8, 0),
+            "end": datetime.time(8, 0),
             "enabled": _bool_env("SESSION_TOKYO_ENABLED", False),
             "blocked_hours": _set_env("BLOCKED_HOURS_TOKYO", set()),
         },
         "LONDON": {
             "start": datetime.time(8, 0),
-            "end":   datetime.time(16, 0),
+            "end": datetime.time(16, 0),
             "enabled": _bool_env("SESSION_LONDON_ENABLED", True),
             "blocked_hours": _set_env("BLOCKED_HOURS_LONDON", {9}),
         },
         "NEW_YORK": {
             "start": datetime.time(16, 0),
-            "end":   datetime.time(0, 0),
+            "end": datetime.time(0, 0),
             "enabled": _bool_env("SESSION_NY_ENABLED", True),
             "blocked_hours": _set_env("BLOCKED_HOURS_NY", {17, 19}),
         },
@@ -96,22 +123,23 @@ def _default_sessions() -> dict[str, dict]:
 
 # ── Fixed constants (never in env) ────────────────────────────────────────────
 
-_STOP_BUFFER_PCT:    float = 0.00001   # 1 pip buffer — never needs tuning
-_TP1_MULTIPLIER:     float = 0.5       # partial close at 50% to TP2
-_STOP_PLACEMENT:     str   = "swing"   # wick placement underperforms
-_WS_CANDLE_BUFFER_MS: int  = 1_500     # ms after candle close for MT5 to settle
-_PIVOT_BARS:         int   = 1         # structural pivot strength
+_STOP_BUFFER_PCT: float = 0.00001  # 1 pip buffer — never needs tuning
+_TP1_MULTIPLIER: float = 0.5  # partial close at 50% to TP2
+_STOP_PLACEMENT: str = "swing"  # wick placement underperforms
+_WS_CANDLE_BUFFER_MS: int = 1_500  # ms after candle close for MT5 to settle
+_PIVOT_BARS: int = 1  # structural pivot strength
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class Settings:
 
     # ── Paths ─────────────────────────────────────────────────────────────────
     base_dir: Path = field(default_factory=lambda: Path.cwd())
-    log_level: str  = "DEBUG"
-    log_dir:   str  = "logs"
+    log_level: str = "DEBUG"
+    log_dir: str = "logs"
 
     @property
     def charts_dir(self) -> Path:
@@ -128,9 +156,9 @@ class Settings:
         return self.base_dir / "metrics"
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
-    ws_host:        str = "0.0.0.0"
-    ws_port:        int = 8765
-    ws_secret:      str = ""
+    ws_host: str = "0.0.0.0"
+    ws_port: int = 8765
+    ws_secret: str = ""
     max_ws_clients: int = 10
 
     # ── MT5 data server ───────────────────────────────────────────────────────
@@ -144,9 +172,9 @@ class Settings:
         return ZoneInfo(self.session_timezone)
 
     # ── Timeframes ────────────────────────────────────────────────────────────
-    tf_pairs:       tuple = (("1h", "5min"),)
-    htf_lookback:   int   = 120
-    htf_outputsize: int   = 1000
+    tf_pairs: tuple = (("1h", "5min"),)
+    htf_lookback: int = 120
+    htf_outputsize: int = 1000
 
     @property
     def htf_interval(self) -> str:
@@ -197,16 +225,18 @@ class Settings:
 
     def rejection_stale_hours(self, ltf_interval: str) -> float:
         """3 LTF candles back from fired_at."""
-        max_ltf_min = max(
-            interval_to_minutes(ltf_interval) for _, ltf in self.tf_pairs
-        )
+        max_ltf_min = max(interval_to_minutes(ltf_interval) for _, ltf in self.tf_pairs)
         return round(max_ltf_min * 3 / 60, 4)
 
     # ── Signal quality ────────────────────────────────────────────────────────
-    min_wick_ratio:   float = 0.65
+    min_wick_ratio: float = 0.65
     max_sl_zone_mult: float = 2.0
-    min_rr:           float = 1.5
-    max_rr:           float = 9.0    # 0 = disabled
+    min_rr: float = 1.5
+    max_rr: float = 9.0  # 0 = disabled
+
+    # Per-pair RR cap: "HTF_min/LTF_min" → max_rr, e.g. {"5/1": 2.5, "60/5": 8.0}
+    # Falls back to max_rr when a pair has no explicit entry.
+    tf_max_rr: dict = field(default_factory=dict)
 
     # ── Signal lifetime ───────────────────────────────────────────────────────
     signal_expiry_hours: float = 120.0
@@ -215,15 +245,15 @@ class Settings:
     max_htf_zones_per_dir: int = 1
 
     # ── Feature flags ─────────────────────────────────────────────────────────
-    use_trend_filter:               bool = True
-    use_breakeven:                  bool = True
-    use_invalidation:               bool = False
+    use_trend_filter: bool = True
+    use_breakeven: bool = True
+    use_invalidation: bool = False
     multi_tf_independent_positions: bool = True
-    entry_model:                    str  = "candle_pattern"  # candle_pattern | crt | all
+    entry_model: str = "candle_pattern"  # candle_pattern | crt | all
 
     # ── Circuit breaker ───────────────────────────────────────────────────────
-    max_consecutive_losses: int   = 10
-    pause_after_streak_h:   float = 10.0
+    max_consecutive_losses: int = 10
+    pause_after_streak_h: float = 10.0
 
     # ── Session filter ────────────────────────────────────────────────────────
     use_session_filter: bool = True
@@ -277,33 +307,36 @@ class Settings:
         ) or (("1h", "5min"),)
 
         return cls(
-            base_dir = Path.cwd(),
-            log_level         = os.getenv("LOG_LEVEL", "INFO").upper(),
-            log_dir           = os.getenv("LOG_DIR", "logs"),
-            ws_host           = os.getenv("WS_HOST", "0.0.0.0"),
-            ws_port           = int(os.getenv("WS_PORT", "8765")),
-            ws_secret         = os.getenv("WS_SECRET", ""),
-            max_ws_clients    = int(os.getenv("MAX_WS_CLIENTS", "10")),
-            local_base_url    = os.getenv("LOCAL_BASE_URL", "http://localhost:8000"),
-            session_timezone  = os.getenv("SESSION_TIMEZONE", "UTC"),
-            tf_pairs          = tf_pairs,
-            htf_lookback      = int(os.getenv("HTF_LOOKBACK", "120")),
-            htf_outputsize    = int(os.getenv("HTF_OUTPUTSIZE", "1000")),
-            min_wick_ratio    = float(os.getenv("MIN_WICK_RATIO", "0.65")),
-            max_sl_zone_mult  = float(os.getenv("MAX_SL_ZONE_MULT", "2.0")),
-            min_rr            = float(os.getenv("MIN_RR", "1.5")),
-            max_rr            = float(os.getenv("MAX_RR", "9.0")),
-            signal_expiry_hours   = float(os.getenv("SIGNAL_EXPIRY_HOURS", "120")),
-            max_htf_zones_per_dir = int(os.getenv("MAX_HTF_ZONES_PER_DIR", "3")),
-            use_trend_filter      = _bool_env("USE_TREND_FILTER", True),
-            use_breakeven         = _bool_env("USE_BREAKEVEN", True),
-            use_invalidation      = _bool_env("USE_INVALIDATION", False),
-            multi_tf_independent_positions = _bool_env("MULTI_TF_INDEPENDENT_POSITIONS", True),
-            entry_model           = os.getenv("ENTRY_MODEL", "candle_pattern").lower(),
-            max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3")),
-            pause_after_streak_h   = float(os.getenv("PAUSE_AFTER_STREAK_H", "12")),
-            use_session_filter     = _bool_env("USE_SESSION_FILTER", True),
-            sessions               = _default_sessions(),
+            base_dir=Path.cwd(),
+            log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            log_dir=os.getenv("LOG_DIR", "logs"),
+            ws_host=os.getenv("WS_HOST", "0.0.0.0"),
+            ws_port=int(os.getenv("WS_PORT", "8765")),
+            ws_secret=os.getenv("WS_SECRET", ""),
+            max_ws_clients=int(os.getenv("MAX_WS_CLIENTS", "10")),
+            local_base_url=os.getenv("LOCAL_BASE_URL", "http://localhost:8000"),
+            session_timezone=os.getenv("SESSION_TIMEZONE", "UTC"),
+            tf_pairs=tf_pairs,
+            htf_lookback=int(os.getenv("HTF_LOOKBACK", "120")),
+            htf_outputsize=int(os.getenv("HTF_OUTPUTSIZE", "1000")),
+            min_wick_ratio=float(os.getenv("MIN_WICK_RATIO", "0.65")),
+            max_sl_zone_mult=float(os.getenv("MAX_SL_ZONE_MULT", "2.0")),
+            min_rr=float(os.getenv("MIN_RR", "1.5")),
+            max_rr=float(os.getenv("MAX_RR", "9.0")),
+            tf_max_rr=_parse_tf_max_rr(os.getenv("TF_MAX_RR", "")),
+            signal_expiry_hours=float(os.getenv("SIGNAL_EXPIRY_HOURS", "120")),
+            max_htf_zones_per_dir=int(os.getenv("MAX_HTF_ZONES_PER_DIR", "3")),
+            use_trend_filter=_bool_env("USE_TREND_FILTER", True),
+            use_breakeven=_bool_env("USE_BREAKEVEN", True),
+            use_invalidation=_bool_env("USE_INVALIDATION", False),
+            multi_tf_independent_positions=_bool_env(
+                "MULTI_TF_INDEPENDENT_POSITIONS", True
+            ),
+            entry_model=os.getenv("ENTRY_MODEL", "candle_pattern").lower(),
+            max_consecutive_losses=int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3")),
+            pause_after_streak_h=float(os.getenv("PAUSE_AFTER_STREAK_H", "12")),
+            use_session_filter=_bool_env("USE_SESSION_FILTER", True),
+            sessions=_default_sessions(),
         )
 
     # ── Utilities ─────────────────────────────────────────────────────────────
@@ -313,9 +346,9 @@ class Settings:
         return int(datetime.datetime.now(tz=self.session_tz).timestamp() * 1000)
 
     def ms_to_str(self, ms: int) -> str:
-        return datetime.datetime.fromtimestamp(
-            ms / 1000, tz=self.session_tz
-        ).strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.datetime.fromtimestamp(ms / 1000, tz=self.session_tz).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
 
     def dt_ms(self, ts_ms: int) -> str:
         return self.ms_to_str(ts_ms)

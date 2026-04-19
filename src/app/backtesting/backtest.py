@@ -53,11 +53,12 @@ import sys
 import os
 
 # Force UTF-8 encoding on Windows
-if sys.platform == 'win32':
+if sys.platform == "win32":
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-    os.environ['PYTHONIOENCODING'] = 'utf-8'
+
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    os.environ["PYTHONIOENCODING"] = "utf-8"
 
 import argparse
 import bisect
@@ -252,7 +253,8 @@ class BacktestReport:
         self.symbol = symbol
         self.results = results
         self.cfg = cfg
-        self.profile = AssetRegistry(cfg).get(symbol)
+        self._registry = AssetRegistry(cfg)
+        self.profile = self._registry.get(symbol)  # base (combined summary)
 
     def print(self) -> None:
         if not self.results:
@@ -269,7 +271,8 @@ class BacktestReport:
                     for x in self.results
                     if x.signal.htf_interval == htf and x.signal.ltf_interval == ltf
                 ]
-                self._print_summary(f"{htf}/{ltf}", subset, self.profile, compact=True)
+                pair_profile = self._registry.get(self.symbol, htf, ltf)
+                self._print_summary(f"{htf}/{ltf}", subset, pair_profile, compact=True)
 
     def _print_summary(
         self,
@@ -400,7 +403,14 @@ class MultiPairBacktester:
         self.ltf_candles = ltf_candles
         self.htf_lookback = htf_lookback or cfg.htf_lookback
         self._registry = AssetRegistry(cfg)
-        self.profile = self._registry.get(symbol)
+
+        # Per tf-pair profiles — only max_rr differs; all other attrs are symbol-level.
+        self._pair_profiles: dict[tuple[str, str], AssetProfile] = {
+            (htf, ltf): self._registry.get(symbol, htf, ltf) for htf, ltf in pairs
+        }
+        # Convenience: base profile (non-rr attrs identical across pairs)
+        self.profile = self._pair_profiles[pairs[0]]
+
         self.results: list[BacktestResult] = []
 
         # Pre-computed sorted timestamp lists
@@ -500,7 +510,8 @@ class MultiPairBacktester:
     # ── main loop ─────────────────────────────────────────────────────────────
     def run(self) -> BacktestReport:
         cfg = self.cfg
-        profile = self.profile
+        profile = self.profile  # base profile — non-rr attrs only
+        _pair_profiles = self._pair_profiles
         htf_lookback = self.htf_lookback
         use_tf = profile.use_trend_filter
         use_mtp = profile.multi_tf_independent_positions
@@ -682,7 +693,7 @@ class MultiPairBacktester:
                             f"{symbol}_{htf_interval}_{ltf_interval}"
                             f"_{rejection.timestamp}"
                         ),
-                        profile=profile,
+                        profile=_pair_profiles[(htf_interval, ltf_interval)],
                         session_tz=cfg.session_tz,
                     )
                     if signal is None:
@@ -958,7 +969,12 @@ def main() -> None:
     p.add_argument("--tf-pair", dest="tf_pair", default=None)
     p.add_argument("--htf-lookback", dest="htf_lookback", type=int, default=None)
     p.add_argument("--min-rr", type=float, default=None)
-    p.add_argument("--max-rr", type=float, default=None)
+    p.add_argument(
+        "--max-rr",
+        type=float,
+        default=None,
+        help="Hard cap for all pairs — overrides TF_MAX_RR entries",
+    )
     p.add_argument("--max-wick", type=float, default=None)
     p.add_argument("--stale-hours", type=float, default=None)
     p.add_argument("--max-sl-mult", type=float, default=None)
@@ -984,7 +1000,9 @@ def main() -> None:
     if args.min_rr is not None:
         overrides["min_rr"] = args.min_rr
     if args.max_rr is not None:
+        # Hard cap — clears per-pair overrides so it applies universally
         overrides["max_rr"] = args.max_rr
+        overrides["tf_max_rr"] = {}
     if overrides:
         cfg = dc_replace(cfg, **overrides)
 
