@@ -93,16 +93,18 @@ class AssetProfile:
 # ── Symbol → asset class ──────────────────────────────────────────────────────
 
 ASSET_CLASS_MAP: dict[str, str] = {
-    "XAU/USD": "COMMODITY",
-    "EUR/USD": "FOREX",
-    "GBP/USD": "FOREX",
-    "USD/JPY": "FOREX",
-    "USD/CHF": "FOREX",
-    "AUD/USD": "FOREX",
-    "USD/CAD": "FOREX",
-    "NZD/USD": "FOREX",
-    "EUR/JPY": "FOREX",
+    "XAUUSD": "COMMODITY",
+    "EURUSD": "FOREX",
+    "GBPUSD": "FOREX",
+    "USDJPY": "FOREX",
+    "USDCHF": "FOREX",
+    "AUDUSD": "FOREX",
+    "USDCAD": "FOREX",
+    "NZDUSD": "FOREX",
     "US500": "INDICES",
+    "US30": "INDICES",
+    "US100": "INDICES",
+    "BTCUSD": "CRYPTO",
 }
 
 # Built once at import — maps stripped form back to canonical:
