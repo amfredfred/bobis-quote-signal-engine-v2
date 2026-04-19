@@ -106,7 +106,7 @@ def main():
     p.add_argument("--resume-max-age", type=float, default=24.0)
     p.add_argument("--only-failed", action="store_true")
     p.add_argument("--retry", type=int, default=1)
-    p.add_argument("--timeout", type=int, default=1800)  # FIXED (30 min)
+    p.add_argument("--timeout", type=int, default=84600)  # FIXED (30 min)
     p.add_argument("--cache-dir")
 
     # passthrough
