@@ -25,7 +25,7 @@
 
 ## 1. Overview
 
-Signal Engine is a real-time trading signal generator that sits between a MetaTrader 5 (MT5) local data bridge and one or more WebSocket clients (dashboards, bots, alerting systems). It detects high-timeframe (HTF) supply/demand zones, waits for low-timeframe (LTF) price rejection inside those zones, and fires structured trade signals with precise entry, stop-loss, TP1, and TP2 levels.
+Signal Engine is a real-time trading signal generator that sits between a [MetaTrader 5 (MT5)](#https://github.com/amfredfred/MT5-BRIDGE) local data bridge and one or more WebSocket clients (dashboards, bots, alerting systems). It detects high-timeframe (HTF) supply/demand zones, waits for low-timeframe (LTF) price rejection inside those zones, and fires structured trade signals with precise entry, stop-loss, TP1, and TP2 levels.
 
 **What it does:**
 
