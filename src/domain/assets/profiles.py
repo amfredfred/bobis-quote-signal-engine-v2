@@ -192,15 +192,15 @@ _CLASS_OVERRIDES: dict[str, dict] = {
     },
     "COMMODITY": {
         "min_rr": 1.8,
-        "max_rr": 15.0,
+        "max_rr": 8.0,
     },
     "INDICES": {
         "min_rr": 1.5,
-        "max_rr": 15.0,
+        "max_rr": 8.0,
     },
     "CRYPTO": {
         "min_rr": 2.0,
-        "max_rr": 10.0,
+        "max_rr": 8.0,
         "stop_buffer_pct": 0.02,
     },
 }
