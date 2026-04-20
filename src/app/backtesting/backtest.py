@@ -109,7 +109,7 @@ try:
     import numba as _numba
 
     @_numba.njit(cache=True, fastmath=True)
-    def _njit_simulate(
+    def _njit_simulate_with_retrace(
         ts: np.ndarray,
         high: np.ndarray,
         low: np.ndarray,
@@ -128,23 +128,14 @@ try:
         risk_pips: float,
         tp1_mult: float,
     ):
-        """Single O(n) pass — zero intermediate array allocations.
+        """Single O(n) pass — tracks if price revisits entry after TP1.
 
-        Return tuple: (outcome_code, bar_index, close_px, realized_rr)
-          0 → EXPIRED
-          1 → LOSS
-          2 → BREAKEVEN
-          3 → WIN_FULL
-
-        Semantics preserved vs. original NumPy version:
-          • TP2  requires tp1 at-or-on this bar (tp1_prev OR tp1_now).
-          • BE   requires tp1 strictly-before stop bar (tp1_prev only).
-          • Same-bar priority: TP2 > INV > SL.
-          • tp1_prev flag updated AFTER SL/INV checks to keep "strictly prior"
-            semantics (matching the original tp1_hit_prev shifted array).
+        Return tuple: (outcome_code, bar_index, close_px, realized_rr, hit_entry_after_tp1)
         """
         n = len(ts)
-        tp1_prev = False  # TP1 confirmed on a strictly-prior bar
+        tp1_prev = False
+        tp1_hit_index = -1
+        hit_entry_after_tp1 = False
 
         for i in range(n):
             if ts[i] > expiry_cutoff:
@@ -159,33 +150,40 @@ try:
                 tp2_now = l <= tp2
                 sl_now = h >= sl
                 inv_now = use_inv and (c > rng_hi)
+                entry_now = l <= entry
             else:
                 tp1_now = h >= tp1
                 tp2_now = h >= tp2
                 sl_now = l <= sl
                 inv_now = use_inv and (c < rng_lo)
+                entry_now = h >= entry
+
+            # Track entry revisit after TP1
+            if tp1_prev and entry_now and not hit_entry_after_tp1:
+                hit_entry_after_tp1 = True
 
             # TP2: tp1 at-or-before this bar wins (highest priority)
             if (tp1_prev or tp1_now) and tp2_now:
-                return 3, i, tp2, rr  # WIN_FULL
+                return 3, i, tp2, rr, hit_entry_after_tp1
 
             # INV: higher priority than SL on same-bar conflict
             if inv_now:
                 if tp1_prev and use_be:
-                    return 2, i, entry, rr * tp1_mult  # BREAKEVEN
-                return 1, i, c, -(abs(entry - c) / risk_pips)  # LOSS
+                    return 2, i, entry, rr * tp1_mult, hit_entry_after_tp1
+                return 1, i, c, -(abs(entry - c) / risk_pips), hit_entry_after_tp1
 
             # SL
             if sl_now:
                 if tp1_prev and use_be:
-                    return 2, i, entry, rr * tp1_mult  # BREAKEVEN
-                return 1, i, sl, -1.0  # LOSS
+                    return 2, i, entry, rr * tp1_mult, hit_entry_after_tp1
+                return 1, i, sl, -1.0, hit_entry_after_tp1
 
             # Update AFTER checks — preserves "strictly prior" semantics
-            if tp1_now:
+            if tp1_now and not tp1_prev:
                 tp1_prev = True
+                tp1_hit_index = i
 
-        return 0, n, 0.0, 0.0  # EXPIRED
+        return 0, n, 0.0, 0.0, False
 
     _NUMBA_AVAILABLE = True
     logger.debug("Numba JIT simulation enabled (single-pass O(n))")
@@ -199,7 +197,14 @@ except ImportError:
 class BacktestResult:
     """Lean result container — __slots__ cuts per-instance overhead ~40 %."""
 
-    __slots__ = ("signal", "outcome", "realized_rr", "close_ts", "close_price")
+    __slots__ = (
+        "signal",
+        "outcome",
+        "realized_rr",
+        "close_ts",
+        "close_price",
+        "hit_entry_after_tp1",
+    )
 
     def __init__(
         self,
@@ -214,6 +219,7 @@ class BacktestResult:
         self.realized_rr = realized_rr
         self.close_ts = close_ts
         self.close_price = close_px
+        self.hit_entry_after_tp1 = False  # Default, will be set by _simulate
 
     def to_dict(self) -> dict:
         s = self.signal
@@ -233,6 +239,7 @@ class BacktestResult:
             "rr": round(s.risk_reward_ratio, 3),
             "outcome": self.outcome.value,
             "realized_rr": round(self.realized_rr, 3),
+            "hit_entry_after_tp1": self.hit_entry_after_tp1,  # NEW FIELD
             "htf_interval": s.htf_interval,
             "ltf_interval": s.ltf_interval,
             "pattern": s.rejection_candle.pattern.value,
@@ -722,10 +729,7 @@ class MultiPairBacktester:
     def _simulate(self, signal: TradeSignal, future_np: np.ndarray) -> BacktestResult:
         """Dispatch to Numba JIT (single pass) or NumPy fallback (vectorised).
 
-        Both paths are semantically identical:
-          • TP2 requires TP1 at-or-before the same bar (inclusive).
-          • BE  requires TP1 strictly before the stop bar (exclusive).
-          • Same-bar priority: TP2 > INV > SL.
+        Extended to track: did price revisit entry after TP1 before TP2?
         """
         if len(future_np) == 0:
             return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
@@ -756,26 +760,28 @@ class MultiPairBacktester:
             future_np = future_np[:first_exp]
             ts = ts[:first_exp]
 
-        # ── ★ TIER 3: Numba single-pass path ─────────────────────────────────
+        # ── ★ TIER 3: Numba single-pass path (with entry retrace tracking) ──────
         if _NUMBA_AVAILABLE:
-            code, idx, close_px, realized = _njit_simulate(
-                ts,
-                future_np["high"],
-                future_np["low"],
-                future_np["close"],
-                is_short,
-                use_be,
-                use_inv,
-                entry,
-                sl,
-                tp1,
-                tp2,
-                rng_hi,
-                rng_lo,
-                expiry_cutoff,
-                rr,
-                risk_pips,
-                tp1_mult,
+            code, idx, close_px, realized, hit_entry_after_tp1 = (
+                _njit_simulate_with_retrace(
+                    ts,
+                    future_np["high"],
+                    future_np["low"],
+                    future_np["close"],
+                    is_short,
+                    use_be,
+                    use_inv,
+                    entry,
+                    sl,
+                    tp1,
+                    tp2,
+                    rng_hi,
+                    rng_lo,
+                    expiry_cutoff,
+                    rr,
+                    risk_pips,
+                    tp1_mult,
+                )
             )
             if code == 0:
                 return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
@@ -786,9 +792,15 @@ class MultiPairBacktester:
                 outcome = SignalOutcome.BREAKEVEN
             else:
                 outcome = SignalOutcome.LOSS
-            return BacktestResult(signal, outcome, realized, close_ts, float(close_px))
 
-        # ── ★ TIER 4: Improved NumPy fallback ────────────────────────────────
+            # Store the retrace info in the result (add to BacktestResult)
+            result = BacktestResult(
+                signal, outcome, realized, close_ts, float(close_px)
+            )
+            result.hit_entry_after_tp1 = hit_entry_after_tp1  # Add this attribute
+            return result
+
+        # ── ★ TIER 4: Improved NumPy fallback (with entry retrace tracking) ─────
         high = future_np["high"]
         low = future_np["low"]
         close = future_np["close"]
@@ -799,18 +811,38 @@ class MultiPairBacktester:
             tp2_tgt = low <= tp2
             sl_hit = high >= sl
             inv_hit = (close > rng_hi) if use_inv else None
+            entry_hit = low <= entry  # For SHORT: price went back UP to entry
         else:
             tp1_tgt = high >= tp1
             tp2_tgt = high >= tp2
             sl_hit = low <= sl
             inv_hit = (close < rng_lo) if use_inv else None
+            entry_hit = high >= entry  # For LONG: price went back DOWN to entry
 
-        # ★ First TP1 hit: argmax + .any() guard avoids allocating an index array
-        #   (np.nonzero returns a full index array; argmax returns a scalar)
+        # First TP1 hit
         tp1_any = bool(tp1_tgt.any())
         tp1_first = int(tp1_tgt.argmax()) if tp1_any else n
 
-        # ★ TP2: only search at/after tp1_first (tightest possible slice)
+        # Track: Did we hit entry AFTER TP1 but BEFORE TP2?
+        hit_entry_after_tp1 = False
+        if tp1_any and tp1_first < n:
+            # Look for entry hit between TP1 and end (or until TP2)
+            entry_hit_after_tp1 = entry_hit[tp1_first + 1 :]
+            if entry_hit_after_tp1.any():
+                # Find when entry was hit
+                entry_hit_idx = tp1_first + 1 + int(entry_hit_after_tp1.argmax())
+
+                # Check if entry was hit before TP2
+                tp2_sub = tp2_tgt[tp1_first + 1 :]
+                if tp2_sub.any():
+                    tp2_idx_relative = int(tp2_sub.argmax())
+                    tp2_absolute = tp1_first + 1 + tp2_idx_relative
+                    hit_entry_after_tp1 = entry_hit_idx < tp2_absolute
+                else:
+                    # No TP2 hit, but entry was hit
+                    hit_entry_after_tp1 = True
+
+        # TP2: only search at/after tp1_first
         if tp1_any:
             tp2_sub = tp2_tgt[tp1_first:]
             tp2_idx = tp1_first + int(tp2_sub.argmax()) if tp2_sub.any() else n
@@ -820,7 +852,7 @@ class MultiPairBacktester:
         # First SL hit
         sl_idx = int(sl_hit.argmax()) if sl_hit.any() else n
 
-        # First INV hit (array not allocated at all when use_inv is False)
+        # First INV hit
         if use_inv and inv_hit is not None:
             inv_idx = int(inv_hit.argmax()) if inv_hit.any() else n
         else:
@@ -832,33 +864,42 @@ class MultiPairBacktester:
             return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
 
         close_ts = int(ts[stop_idx])
-
-        # ★ tp1_before: simple index comparison — no shifted array needed
         tp1_before = tp1_first < stop_idx
 
         if stop_idx == tp2_idx:
-            return BacktestResult(signal, SignalOutcome.WIN_FULL, rr, close_ts, tp2)
+            result = BacktestResult(signal, SignalOutcome.WIN_FULL, rr, close_ts, tp2)
+            result.hit_entry_after_tp1 = hit_entry_after_tp1
+            return result
 
         if stop_idx == inv_idx:
             if tp1_before and use_be:
-                return BacktestResult(
+                result = BacktestResult(
                     signal, SignalOutcome.BREAKEVEN, rr * tp1_mult, close_ts, entry
                 )
+                result.hit_entry_after_tp1 = hit_entry_after_tp1
+                return result
             inv_px = float(close[stop_idx])
-            return BacktestResult(
+            result = BacktestResult(
                 signal,
                 SignalOutcome.LOSS,
                 -(abs(entry - inv_px) / risk_pips),
                 close_ts,
                 inv_px,
             )
+            result.hit_entry_after_tp1 = hit_entry_after_tp1
+            return result
 
         # Stop-loss
         if tp1_before and use_be:
-            return BacktestResult(
+            result = BacktestResult(
                 signal, SignalOutcome.BREAKEVEN, rr * tp1_mult, close_ts, entry
             )
-        return BacktestResult(signal, SignalOutcome.LOSS, -1.0, close_ts, sl)
+            result.hit_entry_after_tp1 = hit_entry_after_tp1
+            return result
+
+        result = BacktestResult(signal, SignalOutcome.LOSS, -1.0, close_ts, sl)
+        result.hit_entry_after_tp1 = hit_entry_after_tp1
+        return result
 
     # ── console output ────────────────────────────────────────────────────────
     def _print_result(self, r: BacktestResult) -> None:
@@ -866,6 +907,12 @@ class MultiPairBacktester:
         arrow = DOWN if s.direction == SignalDirection.SHORT else UP
         tf_tag = f"{DIM}[{s.htf_interval}/{s.ltf_interval}]{RESET}"
         et_pattern = f"{DIM}[{s.rejection_candle.pattern.value}]{RESET}"
+
+        # Add retrace indicator
+        retrace_marker = (
+            f" {YELLOW}↺{RESET}" if getattr(r, "hit_entry_after_tp1", False) else ""
+        )
+
         outcome_str = {
             SignalOutcome.WIN_FULL: f"{GREEN}WIN +{r.realized_rr:.2f}R{RESET}",
             SignalOutcome.BREAKEVEN: f"{YELLOW}BE +{r.realized_rr:.2f}R{RESET}",
@@ -879,7 +926,7 @@ class MultiPairBacktester:
             f" {arrow} {BOLD}{s.direction.value:5s}{RESET} {tf_tag} {et_pattern} "
             f"{CYAN}{self.cfg.dt_ms(s.triggered_at)}{RESET} "
             f"E={s.entry_price:.5f} SL={s.stop_loss:.5f} TP2={s.tp2:.5f} "
-            f"RR={s.risk_reward_ratio:.2f} → {outcome_str} "
+            f"RR={s.risk_reward_ratio:.2f} → {outcome_str}{retrace_marker} "
             f"closed {self.cfg.dt_ms(r.close_ts) if r.close_ts else 'OPEN'}"
         )
 
