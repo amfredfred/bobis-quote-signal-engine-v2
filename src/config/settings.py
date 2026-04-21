@@ -221,12 +221,12 @@ class Settings:
     def stale_rejection_hours(self) -> float:
         """6 LTF candles back from fired_at — adaptive to the TF pair."""
         min_ltf_min = min(interval_to_minutes(ltf) for _, ltf in self.tf_pairs)
-        return round(min_ltf_min * 3 / 60, 4)
+        return round(min_ltf_min * 2 / 60, 4)
 
     def rejection_stale_hours(self, ltf_interval: str) -> float:
         """3 LTF candles back from fired_at."""
         max_ltf_min = max(interval_to_minutes(ltf_interval) for _, ltf in self.tf_pairs)
-        return round(max_ltf_min * 3 / 60, 4)
+        return round(max_ltf_min * 2 / 60, 4)
 
     # ── Signal quality ────────────────────────────────────────────────────────
     min_wick_ratio: float = 0.65
