@@ -189,19 +189,15 @@ _CLASS_SESSIONS: dict[str, dict] = {
 # Per-class and per-symbol overrides (only keys that differ from Config defaults)
 _CLASS_OVERRIDES: dict[str, dict] = {
     "FOREX": {
-        "min_rr": 1.5,
         "max_rr": 2.5,
     },
     "COMMODITY": {
-        "min_rr": 1.8,
         "max_rr": 8.0,
     },
     "INDICES": {
-        "min_rr": 1.5,
         "max_rr": 8.0,
     },
     "CRYPTO": {
-        "min_rr": 2.0,
         "max_rr": 8.0,
         "stop_buffer_pct": 0.02,
     },
