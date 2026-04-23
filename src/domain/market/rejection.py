@@ -14,6 +14,7 @@ from typing import Optional
 from domain.entities.candle import Candle
 from domain.entities.enums import CandlePattern, SignalDirection
 from domain.entities.ranges import LtfRange, RejectionCandle
+from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
 
 logger = logging.getLogger(__name__)
 
@@ -203,22 +204,20 @@ class CrtDetector:
     """
     CRT (Candle Range Theory) entry detector.
 
-    Trigger condition — current candle vs previous candle's range (passed as ltf_range):
-      SELL  (SHORT): wick sweeps ABOVE ltf_range.range_high,
-                     close comes back BELOW ltf_range.range_high.
-      BUY   (LONG):  wick sweeps BELOW ltf_range.range_low,
-                     close comes back ABOVE ltf_range.range_low.
+    Trigger condition — current candle vs previous candle's range:
+      SELL  (SHORT): wick sweeps ABOVE prev_candle.high, close comes back BELOW it.
+      BUY   (LONG):  wick sweeps BELOW prev_candle.low,  close comes back ABOVE it.
 
-    Entry is taken immediately on the close of the trigger candle.
-    SL is placed beyond the sweep wick (candle.high for SELL,
-    candle.low for BUY).
-
-    A synthetic RejectionScore is returned for API compatibility:
-      wick_penetration = how far price swept past the level (normalised)
-      close_proximity  = distance from close to level (normalised, signed)
-      wick_ratio       = sweep wick / total_range
-      total            = same weighted composite as RejectionScore
+    HTF containment rule (when htf_range is supplied):
+      The trigger candle must have touched the HTF range price box.
+      i.e. candle.low <= htf_range.range_high AND candle.high >= htf_range.range_low
+      This ensures the sweep is happening AT the zone, giving momentum to push back.
     """
+
+    @staticmethod
+    def _inside_htf(candle: Candle, htf_range: HtfRange) -> bool:
+        """True when the trigger candle has at least touched the HTF range box."""
+        return candle.low <= htf_range.range_high and candle.high >= htf_range.range_low
 
     @staticmethod
     def check(
@@ -320,32 +319,29 @@ class CrtDetector:
             ),
             score,
         )
-
     @staticmethod
     def find_most_recent(
         candles: list[Candle],
         ltf_range: LtfRange,
+        htf_range: Optional[HtfRange] = None,   # ← NEW
     ) -> Optional[tuple[RejectionCandle, RejectionScore]]:
-        """Scan candles in reverse and return the first qualifying CRT trigger.
-
-        For each candle, build ltf_range from its previous candle's high/low.
-        """
         if len(candles) < 2:
             return None
 
-        # Scan from most recent backwards
         for i in range(len(candles) - 1, 0, -1):
-            current = candles[i]
+            current     = candles[i]
             prev_candle = candles[i - 1]
 
-            # Build ltf_range from previous candle's range
+            # ── HTF containment gate ──────────────────────────────────────────
+            if htf_range is not None and not CrtDetector._inside_htf(current, htf_range):
+                continue
+
             prev_range = LtfRange(
                 range_high=prev_candle.high,
                 range_low=prev_candle.low,
                 direction=ltf_range.direction,
                 timestamp=prev_candle.timestamp,
             )
-
             result = CrtDetector.check(current, prev_range)
             if result:
                 return result
@@ -356,27 +352,26 @@ class CrtDetector:
     def find_all_scored(
         candles: list[Candle],
         ltf_range: LtfRange,
+        htf_range: Optional[HtfRange] = None,   # ← NEW
     ) -> list[tuple[RejectionCandle, RejectionScore]]:
-        """Return all CRT triggers sorted by score descending.
-
-        For each candle, build ltf_range from its previous candle's high/low.
-        """
         if len(candles) < 2:
             return []
 
         results = []
         for i in range(1, len(candles)):
-            current = candles[i]
+            current     = candles[i]
             prev_candle = candles[i - 1]
 
-            # Build ltf_range from previous candle's range
+            # ── HTF containment gate ──────────────────────────────────────────
+            if htf_range is not None and not CrtDetector._inside_htf(current, htf_range):
+                continue
+
             prev_range = LtfRange(
                 range_high=prev_candle.high,
                 range_low=prev_candle.low,
                 direction=ltf_range.direction,
                 timestamp=prev_candle.timestamp,
             )
-
             result = CrtDetector.check(current, prev_range)
             if result:
                 results.append(result)

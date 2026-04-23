@@ -2,8 +2,10 @@
 
 $null = New-Item -ItemType Directory -Force "results\2022-2026-FREQUENCY"
 
-$symbols = @("XAUUSD","EURUSD","GBPUSD","USDJPY","USDCHF" 
-# ,"AUDUSD", "AUDUSD","USDCAD","NZDUSD","US500","US30","US100","BTCUSD"
+$symbols = @(
+    # "XAUUSD","EURUSD","GBPUSD","USDJPY","USDCHF" 
+    "AUDUSD", "AUDUSD","USDCAD","NZDUSD","US500"
+    # ,"US30","US100","BTCUSD"
 )
 $cwd = (Get-Location).Path
 

@@ -487,7 +487,7 @@ class SignalService:
 
         if model in ("crt", "all"):
             # Scans the raw zone slice — no re-test pre-filter.
-            result = CrtDetector.find_most_recent(ltf_zone, ltf_range)
+            result = CrtDetector.find_most_recent(ltf_zone, ltf_range, htf_range)
             if result:
                 candidates.append(result)
 
