@@ -11,8 +11,7 @@ dependencies without risk of accidental mutation.
 
 Derived properties (never exposed as env vars):
   stale_rejection_hours — min_ltf_minutes / 30 × 6 (adaptive to TF pair)
-  pivot_bars            — always 1
-  stop_placement_method — always "swing"
+  pivot_bars            — always 1 
   tp1_multiplier        — always 0.5
   stop_buffer_pct       — always 0.00001
   ws_candle_buffer_ms   — always 1 500 ms
@@ -125,7 +124,9 @@ def _default_sessions() -> dict[str, dict]:
 
 _STOP_BUFFER_PCT: float = 0.00001  # 1 pip buffer — never needs tuning
 _TP1_MULTIPLIER: float = 0.5  # partial close at 50% to TP2
-_STOP_PLACEMENT: str = "swing"  # wick placement underperforms
+_STOP_PLACEMENT: str = (
+    "swing"  # wick placement underperforms // swing is more consistent and easier to explain to users
+)
 _WS_CANDLE_BUFFER_MS: int = 1_500  # ms after candle close for MT5 to settle
 _PIVOT_BARS: int = 1  # structural pivot strength
 
@@ -314,6 +315,7 @@ class Settings:
             ws_port=int(os.getenv("WS_PORT", "8765")),
             ws_secret=os.getenv("WS_SECRET", ""),
             max_ws_clients=int(os.getenv("MAX_WS_CLIENTS", "10")),
+            stop_placement_method=int(os.getenv("STOP_PLACEMENT_METHOD", "wick")),
             local_base_url=os.getenv("LOCAL_BASE_URL", "http://localhost:8000"),
             session_timezone=os.getenv("SESSION_TIMEZONE", "UTC"),
             tf_pairs=tf_pairs,
