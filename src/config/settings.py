@@ -315,7 +315,6 @@ class Settings:
             ws_port=int(os.getenv("WS_PORT", "8765")),
             ws_secret=os.getenv("WS_SECRET", ""),
             max_ws_clients=int(os.getenv("MAX_WS_CLIENTS", "10")),
-            stop_placement_method=int(os.getenv("STOP_PLACEMENT_METHOD", "wick")),
             local_base_url=os.getenv("LOCAL_BASE_URL", "http://localhost:8000"),
             session_timezone=os.getenv("SESSION_TIMEZONE", "UTC"),
             tf_pairs=tf_pairs,
