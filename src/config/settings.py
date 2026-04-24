@@ -124,9 +124,7 @@ def _default_sessions() -> dict[str, dict]:
 
 _STOP_BUFFER_PCT: float = 0.00001  # 1 pip buffer — never needs tuning
 _TP1_MULTIPLIER: float = 0.5  # partial close at 50% to TP2
-_STOP_PLACEMENT: str = (
-    "swing"  # wick placement underperforms // swing is more consistent and easier to explain to users
-)
+_STOP_PLACEMENT: str = "wick"  # wick placement underperforms // swing is more consistent and easier to explain to users
 _WS_CANDLE_BUFFER_MS: int = 1_500  # ms after candle close for MT5 to settle
 _PIVOT_BARS: int = 1  # structural pivot strength
 
