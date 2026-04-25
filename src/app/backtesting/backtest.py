@@ -19,7 +19,7 @@ Optimizations (cumulative, newest batch annotated with ★):
 
   ★ New layer (this revision)
   ────────────────────────────
-  ★ TIER 1 — Zone-level _find_ltf / _find_entry cache
+  ★ TIER 1 — Zone-level _find_ltf / find_entry cache
       Combined per-zone cache keyed by (zone_key, ltf_hi_idx).
       Both domain calls are skipped on cache hit (identical ltf_zone).
       Win rate ≈ 1 − (1 / ticks_per_ltf_bar); e.g. 98 % for 1 m master / 1 h LTF.
@@ -79,10 +79,10 @@ from domain.assets.profiles import AssetRegistry, AssetProfile
 from domain.entities.candle import Candle
 from domain.entities.enums import SignalDirection, SignalOutcome
 from domain.entities.trade import TradeSignal
-from domain.market.rejection import RejectionDetector, CrtDetector
 from domain.market.structure import MarketStructure
 from domain.market.swings import SwingDetector
 from domain.signals.builder import build_signal
+from domain.signals.entry import find_entry  # shared entry dispatcher
 from infrastructure.data_providers.market_data import MarketDataClient
 
 logger = logging.getLogger(__name__)
@@ -130,6 +130,11 @@ try:
     ):
         """Single O(n) pass — tracks if price revisits entry after TP1.
 
+        tp1 "strictly prior" semantics: tp1_prev is updated AFTER the SL/INV
+        checks for the current bar, so SL and TP1 on the same bar resolve in
+        favour of SL.  The hit_entry_after_tp1 flag is evaluated on bars where
+        tp1_prev is already True, i.e. starting from the bar AFTER TP1 fired.
+
         Return tuple: (outcome_code, bar_index, close_px, realized_rr, hit_entry_after_tp1)
         """
         n = len(ts)
@@ -150,15 +155,17 @@ try:
                 tp2_now = l <= tp2
                 sl_now = h >= sl
                 inv_now = use_inv and (c > rng_hi)
-                entry_now = l <= entry
+                entry_now = h >= entry  # retrace UP to entry after TP1
             else:
                 tp1_now = h >= tp1
                 tp2_now = h >= tp2
                 sl_now = l <= sl
                 inv_now = use_inv and (c < rng_lo)
-                entry_now = h >= entry
+                entry_now = l <= entry  # retrace DOWN to entry after TP1
 
-            # Track entry revisit after TP1
+            # Track entry revisit after TP1.
+            # Checked BEFORE updating tp1_prev — a same-bar retrace on the TP1
+            # bar is intentionally excluded to match "strictly prior" semantics.
             if tp1_prev and entry_now and not hit_entry_after_tp1:
                 hit_entry_after_tp1 = True
 
@@ -213,19 +220,22 @@ class BacktestResult:
         realized_rr: float,
         close_ts: Optional[int],
         close_px: Optional[float],
+        hit_entry_after_tp1: bool = False,
     ) -> None:
         self.signal = signal
         self.outcome = outcome
         self.realized_rr = realized_rr
         self.close_ts = close_ts
         self.close_price = close_px
-        self.hit_entry_after_tp1 = False  # Default, will be set by _simulate
+        # FIX: first-class constructor param — never set post-construction.
+        self.hit_entry_after_tp1 = hit_entry_after_tp1
 
     def to_dict(self) -> dict:
         s = self.signal
-        _fmt = lambda ms: datetime.datetime.utcfromtimestamp(ms / 1000).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        # FIX: datetime.utcfromtimestamp deprecated since Python 3.12.
+        _fmt = lambda ms: datetime.datetime.fromtimestamp(
+            ms / 1000, tz=datetime.timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
         return {
             "id": s.id,
             "symbol": s.symbol,
@@ -239,7 +249,7 @@ class BacktestResult:
             "rr": round(s.risk_reward_ratio, 3),
             "outcome": self.outcome.value,
             "realized_rr": round(self.realized_rr, 3),
-            "hit_entry_after_tp1": self.hit_entry_after_tp1,  # NEW FIELD
+            "hit_entry_after_tp1": self.hit_entry_after_tp1,
             "htf_interval": s.htf_interval,
             "ltf_interval": s.ltf_interval,
             "pattern": s.rejection_candle.pattern.value,
@@ -442,7 +452,7 @@ class MultiPairBacktester:
         #   value → (ltf_hi_idx, ltf_range_or_None, rej_result_or_None)
         #
         #   A cache hit (same ltf_hi_idx) means ltf_zone is byte-identical to
-        #   the previous call, so _find_ltf and _find_entry results are reused.
+        #   the previous call, so find_ltf and find_entry results are reused.
         #   Hit rate ≈ 1 − (1 / ticks_per_ltf_bar); e.g. 98 % for 1 m / 1 h.
         self._zone_cache: dict[tuple, tuple] = {}
 
@@ -488,31 +498,6 @@ class MultiPairBacktester:
             [(c.timestamp, c.open, c.high, c.low, c.close, c.volume) for c in candles],
             dtype=dtype,
         )
-
-    # ── entry routing ─────────────────────────────────────────────────────────
-    def _find_entry(self, ltf_zone, ltf_range, htf_range) -> Optional[tuple]:
-        model = self.cfg.entry_model
-        candidates: list[tuple] = []
-
-        if model in ("candle_pattern", "all"):
-            entries = SwingDetector.candles_entering_ltf(ltf_zone, ltf_range, htf_range)
-            if entries:
-                result = RejectionDetector.find_most_recent(
-                    entries,
-                    ltf_range,
-                    min_wick_ratio=self.cfg.min_wick_ratio,
-                )
-                if result:
-                    candidates.append(result)
-
-        if model in ("crt", "all"):
-            result = CrtDetector.find_most_recent(ltf_zone, ltf_range, htf_range)
-            if result:
-                candidates.append(result)
-
-        if not candidates:
-            return None
-        return max(candidates, key=lambda r: r[0].timestamp)
 
     # ── main loop ─────────────────────────────────────────────────────────────
     def run(self) -> BacktestReport:
@@ -564,8 +549,11 @@ class MultiPairBacktester:
         _detect_struct = MarketStructure.detect
         _build_signal = build_signal
         _simulate = self._simulate
-        _find_entry = self._find_entry
         _print_result = self._print_result
+
+        # Entry model args (captured once, passed to shared dispatcher each call)
+        _entry_model = cfg.entry_model
+        _min_wick_ratio = cfg.min_wick_ratio
 
         for ltf_i in range(ltf_lb, n):
             step = ltf_i - ltf_lb
@@ -644,7 +632,7 @@ class MultiPairBacktester:
 
                     ltf_hi_idx = _bisect_right(ltf_ts_idx, current_ts)
 
-                    # ★ TIER 1: Zone-level _find_ltf + _find_entry cache
+                    # ★ TIER 1: Zone-level find_ltf + find_entry cache
                     #   Key: ltf_hi_idx — changes only when a new LTF bar arrives.
                     #   On a cache hit the ltf_zone list is NEVER constructed.
                     cached = _zone_cache.get(zone_key)
@@ -659,7 +647,13 @@ class MultiPairBacktester:
                         ltf_zone = ltf_all[ltf_lo_idx:ltf_hi_idx]
                         ltf_range = _find_ltf(ltf_zone, htf_range, ltf_all)
                         rej_result = (
-                            _find_entry(ltf_zone, ltf_range, htf_range)
+                            find_entry(
+                                ltf_zone,
+                                ltf_range,
+                                htf_range,
+                                _entry_model,
+                                _min_wick_ratio,
+                            )
                             if ltf_range
                             else None
                         )
@@ -689,6 +683,8 @@ class MultiPairBacktester:
                     if current_ts - rejection.timestamp > stale_ms:
                         continue
 
+                    # FIX: include direction in signal_id to match signal_service
+                    # and prevent collisions when LONG/SHORT share a rejection timestamp.
                     signal = _build_signal(
                         symbol=symbol,
                         htf_interval=htf_interval,
@@ -698,7 +694,7 @@ class MultiPairBacktester:
                         rejection=rejection,
                         signal_id=(
                             f"{symbol}_{htf_interval}_{ltf_interval}"
-                            f"_{rejection.timestamp}"
+                            f"_{rejection.timestamp}_{direction}"
                         ),
                         profile=_pair_profiles[(htf_interval, ltf_interval)],
                         session_tz=cfg.session_tz,
@@ -711,7 +707,14 @@ class MultiPairBacktester:
                     result = _simulate(signal, future_np)
 
                     seen_ltf.add(ltf_key)
+
+                    # Mark zone dead and evict from both caches — the zone will
+                    # never generate a second signal, so holding cached state for
+                    # it wastes memory for the remainder of the backtest.
                     dead_zones.add(zone_key)
+                    _zone_cache.pop(zone_key, None)
+                    _zone_lo.pop(zone_key, None)
+
                     open_dir[pair_dir_key] = result.close_ts or (
                         signal.created_at + expiry_ms
                     )
@@ -730,6 +733,14 @@ class MultiPairBacktester:
         """Dispatch to Numba JIT (single pass) or NumPy fallback (vectorised).
 
         Extended to track: did price revisit entry after TP1 before TP2?
+
+        Same-bar conflict policy (both paths)
+        ──────────────────────────────────────
+        SL vs TP1 on the same bar → SL wins (conservative).
+        TP1 vs TP2 on the same bar → TP2 wins (tp1_prev set, then TP2 checked
+        in the same iteration/bar).
+        These semantics match the Numba kernel's "strictly prior" design where
+        tp1_prev is updated AFTER the SL/INV checks.
         """
         if len(future_np) == 0:
             return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
@@ -760,7 +771,7 @@ class MultiPairBacktester:
             future_np = future_np[:first_exp]
             ts = ts[:first_exp]
 
-        # ── ★ TIER 3: Numba single-pass path (with entry retrace tracking) ──────
+        # ── ★ TIER 3: Numba single-pass path ────────────────────────────────────
         if _NUMBA_AVAILABLE:
             code, idx, close_px, realized, hit_entry_after_tp1 = (
                 _njit_simulate_with_retrace(
@@ -793,14 +804,16 @@ class MultiPairBacktester:
             else:
                 outcome = SignalOutcome.LOSS
 
-            # Store the retrace info in the result (add to BacktestResult)
-            result = BacktestResult(
-                signal, outcome, realized, close_ts, float(close_px)
+            return BacktestResult(
+                signal,
+                outcome,
+                realized,
+                close_ts,
+                float(close_px),
+                hit_entry_after_tp1=hit_entry_after_tp1,
             )
-            result.hit_entry_after_tp1 = hit_entry_after_tp1  # Add this attribute
-            return result
 
-        # ── ★ TIER 4: Improved NumPy fallback (with entry retrace tracking) ─────
+        # ── ★ TIER 4: NumPy fallback ─────────────────────────────────────────────
         high = future_np["high"]
         low = future_np["low"]
         close = future_np["close"]
@@ -811,35 +824,34 @@ class MultiPairBacktester:
             tp2_tgt = low <= tp2
             sl_hit = high >= sl
             inv_hit = (close > rng_hi) if use_inv else None
-            entry_hit = low <= entry  # For SHORT: price went back UP to entry
+            entry_hit = high >= entry  # SHORT retrace: price goes back UP to entry
         else:
             tp1_tgt = high >= tp1
             tp2_tgt = high >= tp2
             sl_hit = low <= sl
             inv_hit = (close < rng_lo) if use_inv else None
-            entry_hit = high >= entry  # For LONG: price went back DOWN to entry
+            entry_hit = low <= entry  # LONG retrace: price comes back DOWN to entry
 
         # First TP1 hit
         tp1_any = bool(tp1_tgt.any())
         tp1_first = int(tp1_tgt.argmax()) if tp1_any else n
 
-        # Track: Did we hit entry AFTER TP1 but BEFORE TP2?
+        # Track whether price revisited entry after TP1.
+        # Slice starts at tp1_first + 1 to match the Numba kernel's "strictly
+        # prior" semantics: tp1_prev is False on the TP1 bar itself (updated
+        # AFTER per-bar checks), so a same-bar retrace on the TP1 bar is not
+        # detected in either path.
         hit_entry_after_tp1 = False
         if tp1_any and tp1_first < n:
-            # Look for entry hit between TP1 and end (or until TP2)
             entry_hit_after_tp1 = entry_hit[tp1_first + 1 :]
             if entry_hit_after_tp1.any():
-                # Find when entry was hit
                 entry_hit_idx = tp1_first + 1 + int(entry_hit_after_tp1.argmax())
-
-                # Check if entry was hit before TP2
                 tp2_sub = tp2_tgt[tp1_first + 1 :]
                 if tp2_sub.any():
                     tp2_idx_relative = int(tp2_sub.argmax())
                     tp2_absolute = tp1_first + 1 + tp2_idx_relative
                     hit_entry_after_tp1 = entry_hit_idx < tp2_absolute
                 else:
-                    # No TP2 hit, but entry was hit
                     hit_entry_after_tp1 = True
 
         # TP2: only search at/after tp1_first
@@ -867,39 +879,58 @@ class MultiPairBacktester:
         tp1_before = tp1_first < stop_idx
 
         if stop_idx == tp2_idx:
-            result = BacktestResult(signal, SignalOutcome.WIN_FULL, rr, close_ts, tp2)
-            result.hit_entry_after_tp1 = hit_entry_after_tp1
-            return result
+            return BacktestResult(
+                signal,
+                SignalOutcome.WIN_FULL,
+                rr,
+                close_ts,
+                tp2,
+                hit_entry_after_tp1=hit_entry_after_tp1,
+            )
 
         if stop_idx == inv_idx:
             if tp1_before and use_be:
-                result = BacktestResult(
-                    signal, SignalOutcome.BREAKEVEN, rr * tp1_mult, close_ts, entry
+                return BacktestResult(
+                    signal,
+                    SignalOutcome.BREAKEVEN,
+                    rr * tp1_mult,
+                    close_ts,
+                    entry,
+                    hit_entry_after_tp1=hit_entry_after_tp1,
                 )
-                result.hit_entry_after_tp1 = hit_entry_after_tp1
-                return result
             inv_px = float(close[stop_idx])
-            result = BacktestResult(
+            return BacktestResult(
                 signal,
                 SignalOutcome.LOSS,
                 -(abs(entry - inv_px) / risk_pips),
                 close_ts,
                 inv_px,
+                hit_entry_after_tp1=hit_entry_after_tp1,
             )
-            result.hit_entry_after_tp1 = hit_entry_after_tp1
-            return result
 
-        # Stop-loss
+        # Stop-loss.
+        # Same-bar SL vs TP1: SL wins (conservative). tp1_before excludes
+        # equality (tp1_first < stop_idx, not <=), so when SL and TP1 hit on
+        # the same bar tp1_before is False and we fall through to a full loss.
+        # This matches the Numba kernel's "strictly prior" behaviour.
         if tp1_before and use_be:
-            result = BacktestResult(
-                signal, SignalOutcome.BREAKEVEN, rr * tp1_mult, close_ts, entry
+            return BacktestResult(
+                signal,
+                SignalOutcome.BREAKEVEN,
+                rr * tp1_mult,
+                close_ts,
+                entry,
+                hit_entry_after_tp1=hit_entry_after_tp1,
             )
-            result.hit_entry_after_tp1 = hit_entry_after_tp1
-            return result
 
-        result = BacktestResult(signal, SignalOutcome.LOSS, -1.0, close_ts, sl)
-        result.hit_entry_after_tp1 = hit_entry_after_tp1
-        return result
+        return BacktestResult(
+            signal,
+            SignalOutcome.LOSS,
+            -1.0,
+            close_ts,
+            sl,
+            hit_entry_after_tp1=hit_entry_after_tp1,
+        )
 
     # ── console output ────────────────────────────────────────────────────────
     def _print_result(self, r: BacktestResult) -> None:
@@ -908,10 +939,8 @@ class MultiPairBacktester:
         tf_tag = f"{DIM}[{s.htf_interval}/{s.ltf_interval}]{RESET}"
         et_pattern = f"{DIM}[{s.rejection_candle.pattern.value}]{RESET}"
 
-        # Add retrace indicator
-        retrace_marker = (
-            f" {YELLOW}↺{RESET}" if getattr(r, "hit_entry_after_tp1", False) else ""
-        )
+        # FIX: hit_entry_after_tp1 is always set via __init__ — direct access.
+        retrace_marker = f" {YELLOW}↺{RESET}" if r.hit_entry_after_tp1 else ""
 
         outcome_str = {
             SignalOutcome.WIN_FULL: f"{GREEN}WIN +{r.realized_rr:.2f}R{RESET}",
@@ -1058,11 +1087,14 @@ def main() -> None:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    tf_pairs_to_run = (
-        [(args.tf_pair.split(":")[0].strip(), args.tf_pair.split(":")[1].strip())]
-        if args.tf_pair
-        else list(cfg.tf_pairs)
-    )
+    if args.tf_pair:
+        # FIX: validate format before indexing to prevent silent mis-configuration.
+        parts = args.tf_pair.split(":")
+        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+            p.error("--tf-pair must be in HTF:LTF format, e.g. '4h:1h'")
+        tf_pairs_to_run = [(parts[0].strip(), parts[1].strip())]
+    else:
+        tf_pairs_to_run = list(cfg.tf_pairs)
 
     _date_fmt = "%Y-%m-%d"
     range_start_ts: Optional[int] = None

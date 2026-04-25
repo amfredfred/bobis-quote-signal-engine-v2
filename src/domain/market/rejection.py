@@ -13,8 +13,7 @@ from typing import Optional
 
 from domain.entities.candle import Candle
 from domain.entities.enums import CandlePattern, SignalDirection
-from domain.entities.ranges import LtfRange, RejectionCandle
-from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
+from domain.entities.ranges import LtfRange, RejectionCandle, HtfRange, RejectionCandle
 
 logger = logging.getLogger(__name__)
 

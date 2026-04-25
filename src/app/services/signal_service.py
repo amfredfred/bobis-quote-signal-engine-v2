@@ -19,6 +19,43 @@ Fixes vs old signal_service.py
   BUG (low): _pending_emitted eviction comment admitted the age check was
              wrong (used ltf_ts as proxy for zone age). Fixed: eviction
              now tracks the zone's broken_at timestamp directly.
+
+Fixes applied in this revision
+────────────────────────────────
+  FIX #3:  _emit monkey-patch in query_signal_status was not thread-safe.
+           Replaced with a _suppress_emit flag guarded by asyncio.Lock.
+
+  FIX #4:  has_armed_zones / get_armed_zones passed [] as the ltf_zone
+           slice to find_ltf_range, making armed-zone queries always
+           return empty. Fixed: compute the correct zone slice from cached
+           LTF data.
+
+  FIX #10: find_ltf_range was called twice per zone in _analyze_pair
+           (once for invalidation detection, once for signal generation).
+           Results from the first pass are now cached and reused.
+
+  FIX #11: query_signal_status used wall-clock now for expiry checks during
+           candle replay, causing any historically old signal to appear
+           expired on the first candle. Fixed: pass candle.timestamp as
+           the time reference so expiry advances with the replay.
+
+  FIX #12: _close_signal called _persist_open_signals() after delete_open,
+           triggering a full O(n) upsert of every remaining signal on every
+           close. Removed: delete_open is sufficient; a full persist is only
+           needed after a TP1 state transition (already handled separately).
+
+  FIX #13: SL vs TP1 same-candle conflict priority was undocumented.
+           Comment added above the SL check explaining the conservative
+           policy and its consistency with the backtest Numba kernel.
+
+  FIX #14: _find_entry duplicated between signal_service and backtest.
+           Replaced with shared domain.signals.entry.find_entry().
+
+  FIX #15: `from datetime import datetime` inside _close_signal moved to
+           module-level.
+
+  FIX #16: error_result lambda in query_signal_status extracted to a
+           proper private method.
 """
 
 from __future__ import annotations
@@ -27,6 +64,7 @@ import asyncio
 import bisect
 import copy
 import logging
+from datetime import datetime as _dt
 from typing import Callable, Optional
 
 from domain.assets.profiles import AssetProfile, AssetRegistry
@@ -43,11 +81,11 @@ from domain.entities.payloads import (
 )
 from domain.entities.session import ClosedSignalRecord
 from domain.entities.trade import TradeSignal
-from domain.market.rejection import CrtDetector, RejectionDetector
 from domain.market.structure import MarketStructure
 from domain.market.swings import SwingDetector
 from domain.signals.builder import build_signal
 from domain.signals.correlation import correlation_conflict
+from domain.signals.entry import find_entry  # FIX #14: shared dispatcher
 from domain.entities.candle import Candle
 
 logger = logging.getLogger(__name__)
@@ -64,12 +102,12 @@ class SignalService:
 
     def __init__(
         self,
-        market_data,  # MarketDataClient
-        settings,  # Settings
-        asset_registry,  # AssetRegistry
-        session,  # SessionCoordinator
-        signal_store,  # SignalStore
-        metrics=None,  # MetricsCollector | None
+        market_data,    # MarketDataClient
+        settings,       # Settings
+        asset_registry, # AssetRegistry
+        session,        # SessionCoordinator
+        signal_store,   # SignalStore
+        metrics=None,   # MetricsCollector | None
     ) -> None:
         self._md = market_data
         self._cfg = settings
@@ -87,9 +125,13 @@ class SignalService:
         # FIX: store (zone_broken_at, direction) so eviction uses real zone age
         self._pending_emitted: dict[tuple, int] = {}  # key → broken_at ms
 
+        # FIX #3: suppress_emit flag + lock replace unsafe method monkey-patch.
+        self._suppress_emit: bool = False
+        self._emit_lock: asyncio.Lock = asyncio.Lock()
+
         self._restore_open_signals()
 
-    # ── Event system ─────────────────────────────────────────────────────────
+    # ── Event system ──────────────────────────────────────────────────────────
 
     def add_listener(self, fn: EventListener) -> None:
         self._listeners.append(fn)
@@ -98,6 +140,9 @@ class SignalService:
         self._listeners.remove(fn)
 
     def _emit(self, event: SignalEvent, payload: dict) -> None:
+        # FIX #3: honour suppression flag instead of replacing the method.
+        if self._suppress_emit:
+            return
         if self._metrics:
             try:
                 self._metrics.on_signal_event(event, payload)
@@ -151,7 +196,7 @@ class SignalService:
         if restored:
             logger.info("Restored %d open signal(s)", restored)
 
-    # ── Main analysis pipeline ────────────────────────────────────────────────
+    # ── Main analysis pipeline ─────────────────────────────────────────────────
 
     async def analyze(self, symbol: str, fired_at: int = 0) -> list[TradeSignal]:
         if not fired_at:
@@ -183,7 +228,7 @@ class SignalService:
         loop = asyncio.get_running_loop()
         profile = self._registry.get(symbol, htf_interval, ltf_interval)
 
-        # ── Fetch HTF candles ─────────────────────────────────────────────────
+        # ── Fetch HTF candles ──────────────────────────────────────────────────
         htf_full = await loop.run_in_executor(
             None,
             lambda: self._md.fetch_candles(
@@ -193,10 +238,10 @@ class SignalService:
         if len(htf_full) < 10:
             logger.warning("[%s] Insufficient HTF data", pair_label)
             return []
-        htf = htf_full[-profile.htf_lookback :]
+        htf = htf_full[-profile.htf_lookback:]
         self._last_htf[pair_key] = htf
 
-        # ── Fetch LTF candles ─────────────────────────────────────────────────
+        # ── Fetch LTF candles ──────────────────────────────────────────────────
         ltf_all = await loop.run_in_executor(
             None,
             lambda: self._md.fetch_candles_range(
@@ -208,7 +253,7 @@ class SignalService:
             logger.warning("[%s] Insufficient LTF data", pair_label)
             return []
 
-        # ── Trend bias ────────────────────────────────────────────────────────
+        # ── Trend bias ─────────────────────────────────────────────────────────
         structure = None
         if profile.use_trend_filter:
             structure = MarketStructure.detect(htf, pivot_bars=self._cfg.pivot_bars)
@@ -222,7 +267,7 @@ class SignalService:
                 structure.reason,
             )
 
-        # ── HTF ranges ────────────────────────────────────────────────────────
+        # ── HTF ranges ─────────────────────────────────────────────────────────
         htf_interval_ms = interval_to_minutes(htf_interval) * 60 * 1000
         htf_ranges = SwingDetector.find_htf_ranges(
             htf,
@@ -242,8 +287,7 @@ class SignalService:
         now = self._cfg.now_ms()
         expiry_ms = self._cfg.signal_expiry_hours * 3_600_000
 
-        # ── Evict stale pending keys ──────────────────────────────────────────
-        # FIX: evict based on zone's broken_at, not ltf timestamp
+        # ── Evict stale pending keys ───────────────────────────────────────────
         stale_cutoff = fired_at - int(expiry_ms)
         self._pending_emitted = {
             k: broken_at
@@ -251,16 +295,23 @@ class SignalService:
             if broken_at > stale_cutoff
         }
 
-        # ── Find live LTF timestamps to detect invalidated zones ──────────────
+        # ── FIX #10: Build ltf_range_cache from a single pass ─────────────────
+        # find_ltf_range is the most expensive domain call per zone.
+        # Cache results here and reuse them in the signal-generation loop below,
+        # halving the number of calls from 2× per zone to 1×.
+        hi = bisect.bisect_right(ltf_timestamps, fired_at)
+        ltf_range_cache: dict[int, object] = {}   # htf_range.timestamp → LtfRange | None
         live_ltf_ts: set[int] = set()
+
         for htf_range in htf_ranges:
             zone_start = htf_range.broken_at or htf_range.timestamp
             lo = bisect.bisect_left(ltf_timestamps, zone_start)
-            hi = bisect.bisect_right(ltf_timestamps, fired_at)
             lr = SwingDetector.find_ltf_range(ltf_all[lo:hi], htf_range, ltf_all)
+            ltf_range_cache[htf_range.timestamp] = lr
             if lr:
                 live_ltf_ts.add(lr.timestamp)
 
+        # ── Detect invalidated zones ───────────────────────────────────────────
         invalidated = {
             k
             for k in self._pending_emitted
@@ -289,10 +340,10 @@ class SignalService:
         for htf_range in htf_ranges:
             zone_start = htf_range.broken_at or htf_range.timestamp
             lo = bisect.bisect_left(ltf_timestamps, zone_start)
-            hi = bisect.bisect_right(ltf_timestamps, fired_at)
             ltf_zone = ltf_all[lo:hi]
 
-            ltf_range = SwingDetector.find_ltf_range(ltf_zone, htf_range, ltf_all)
+            # FIX #10: reuse cached result — no second call to find_ltf_range.
+            ltf_range = ltf_range_cache.get(htf_range.timestamp)
             if not ltf_range:
                 continue
 
@@ -301,7 +352,7 @@ class SignalService:
             ):
                 continue
 
-            # ── Emit PENDING if zone is new ───────────────────────────────────
+            # ── Emit PENDING if zone is new ────────────────────────────────────
             pending_key = (
                 symbol,
                 htf_interval,
@@ -342,21 +393,19 @@ class SignalService:
                     ),
                 )
 
-            # ── Find entry candle (model-driven) ──────────────────────────────
-            rej_result = self._find_entry(ltf_zone, ltf_range, htf_range)
+            # ── Find entry candle via shared dispatcher (FIX #14) ─────────────
+            rej_result = find_entry(
+                ltf_zone,
+                ltf_range,
+                htf_range,
+                self._cfg.entry_model,
+                self._cfg.min_wick_ratio,
+            )
             if not rej_result:
                 continue
             rejection, _ = rej_result
 
-            # ── Correlation gate ──────────────────────────────────────────────
-            # Block signals whose currency-leg exposure directly opposes any
-            # currently active position.  Example: EURUSD LONG + EURJPY SHORT
-            # both hold EUR but on opposite sides — net zero EUR exposure while
-            # paying full risk on both legs.
-            #
-            # get_active_signals() already excludes closed/expired positions.
-            # We do NOT filter by symbol so same-pair opposite-direction hedges
-            # (possible when multi_tf_independent_positions=True) are also caught.
+            # ── Correlation gate ───────────────────────────────────────────────
             corr_conflict, corr_reason = correlation_conflict(
                 symbol, ltf_range.direction, self.get_active_signals()
             )
@@ -364,7 +413,7 @@ class SignalService:
                 logger.info("[%s] ✗ Correlation block: %s", pair_label, corr_reason)
                 continue
 
-            # ── Dedup ─────────────────────────────────────────────────────────
+            # ── Dedup ──────────────────────────────────────────────────────────
             allowed, reason = self._session.should_emit(
                 htf_range=htf_range,
                 ltf_range=ltf_range,
@@ -386,7 +435,7 @@ class SignalService:
             if signal_id in self._watchlist:
                 continue
 
-            # ── Build signal ──────────────────────────────────────────────────
+            # ── Build signal ───────────────────────────────────────────────────
             signal = build_signal(
                 symbol=symbol,
                 htf_interval=htf_interval,
@@ -443,59 +492,7 @@ class SignalService:
 
         return new_signals
 
-    # ── Entry model dispatcher ────────────────────────────────────────────────
-
-    def _find_entry(
-        self,
-        ltf_zone: list,
-        ltf_range,
-        htf_range,
-    ) -> Optional[tuple]:
-        """
-        Route to the correct entry detector(s) based on settings.entry_model.
-
-        The two models operate on DIFFERENT candle sets:
-
-        CANDLE_PATTERN
-          Input:  candles_entering_ltf() — price must have left the zone
-                  first, then wicked back in and closed back out. Fires later.
-
-        CRT
-          Input:  ltf_zone directly — all LTF candles since zone formation.
-                  Fires the first time a candle sweeps the LTF range boundary
-                  and closes back inside, before price ever leaves. Earlier
-                  entry, tighter SL.
-
-        ALL
-          Both run on their respective inputs. Most-recent timestamp wins.
-
-        Returns (RejectionCandle, RejectionScore) or None.
-        """
-        model = self._cfg.entry_model  # validated at startup
-        candidates: list[tuple] = []
-
-        if model in ("candle_pattern", "all"):
-            entries = SwingDetector.candles_entering_ltf(ltf_zone, ltf_range, htf_range)
-            if entries:
-                result = RejectionDetector.find_most_recent(
-                    entries,
-                    ltf_range,
-                    min_wick_ratio=self._cfg.min_wick_ratio,
-                )
-                if result:
-                    candidates.append(result)
-
-        if model in ("crt", "all"):
-            # Scans the raw zone slice — no re-test pre-filter.
-            result = CrtDetector.find_most_recent(ltf_zone, ltf_range, htf_range)
-            if result:
-                candidates.append(result)
-
-        if not candidates:
-            return None
-        return max(candidates, key=lambda r: r[0].timestamp)
-
-    # ── Watchlist update (candle-by-candle) ───────────────────────────────────
+    # ── Watchlist update (candle-by-candle) ────────────────────────────────────
 
     async def update_watchlist(self, symbol: str) -> None:
         open_signals = [s for s in self._watchlist.values() if s.symbol == symbol]
@@ -542,7 +539,7 @@ class SignalService:
                     ):
                         break
 
-    # ── Signal evaluation ─────────────────────────────────────────────────────
+    # ── Signal evaluation ──────────────────────────────────────────────────────
 
     def _evaluate_signal(
         self,
@@ -560,7 +557,7 @@ class SignalService:
         is_short = signal.direction == SignalDirection.SHORT
         expiry_ms = profile.signal_expiry_hours * 3_600_000
 
-        # ── Expiry ────────────────────────────────────────────────────────────
+        # ── Expiry ─────────────────────────────────────────────────────────────
         if now - signal.created_at > expiry_ms:
             if signal.status == SignalStatus.TRIGGERED:
                 signal.expired_at = now
@@ -603,7 +600,7 @@ class SignalService:
                     )
                 return
 
-        # ── Invalidation ──────────────────────────────────────────────────────
+        # ── Invalidation ───────────────────────────────────────────────────────
         short_inv = is_short and candle_close > signal.ltf_range.range_high
         long_inv = not is_short and candle_close < signal.ltf_range.range_low
         tp1_hit = signal.status == SignalStatus.TP1_HIT
@@ -648,7 +645,10 @@ class SignalService:
                     )
                 return
 
-        # ── SL / TP checks ────────────────────────────────────────────────────
+        # ── SL / TP checks ─────────────────────────────────────────────────────
+        # FIX #13: Same-bar conflict policy (conservative, matches backtest Numba kernel):
+        #   SL vs TP1 on the same bar → SL wins (checked first).
+        #   TP1 is only confirmed on a PRIOR bar before SL at breakeven applies.
         sl_hit = (high >= signal.stop_loss) if is_short else (low <= signal.stop_loss)
         tp1_chk = (low <= signal.tp1) if is_short else (high >= signal.tp1)
         tp2_hit = (low <= signal.tp2) if is_short else (high >= signal.tp2)
@@ -756,10 +756,14 @@ class SignalService:
             self._store.delete_open(signal.id)
         except Exception as exc:
             logger.warning("Failed to delete open signal %s: %s", signal.id, exc)
-        self._persist_open_signals()
 
-        from datetime import datetime as _dt
+        # FIX #12: Removed blanket _persist_open_signals() call.
+        # delete_open() handles the closed signal; a full re-persist of all
+        # remaining signals is unnecessary here and was O(n) on every close.
+        # The TP1 state transition path in _evaluate_signal calls
+        # _persist_open_signals() explicitly when needed.
 
+        # FIX #15: _dt imported at module level — no per-call import.
         session_day = (
             _dt.fromtimestamp(now / 1000, tz=self._cfg.session_tz).date().isoformat()
         )
@@ -856,9 +860,18 @@ class SignalService:
             cached_ranges = self._last_ranges.get(pair_key)
             if cached_ranges is None:
                 return True  # cold start — default to LTF_WATCH
+
+            # FIX #4: compute the correct ltf_zone slice instead of passing [].
             ltf_all = self._last_ltf.get(pair_key, [])
+            ltf_timestamps = [c.timestamp for c in ltf_all]
+            fired_at = self._cfg.now_ms()
+
             for htf_range in cached_ranges:
-                lr = SwingDetector.find_ltf_range([], htf_range, ltf_all)
+                zone_start = htf_range.broken_at or htf_range.timestamp
+                lo = bisect.bisect_left(ltf_timestamps, zone_start)
+                hi = bisect.bisect_right(ltf_timestamps, fired_at)
+                ltf_zone = ltf_all[lo:hi]
+                lr = SwingDetector.find_ltf_range(ltf_zone, htf_range, ltf_all)
                 if lr:
                     return True
         return False
@@ -870,9 +883,17 @@ class SignalService:
             htf_interval,
             ltf_interval,
         ), htf_ranges in self._last_ranges.items():
+            # FIX #4: compute the correct ltf_zone slice instead of passing [].
             ltf_all = self._last_ltf.get((symbol, htf_interval, ltf_interval), [])
+            ltf_timestamps = [c.timestamp for c in ltf_all]
+            fired_at = self._cfg.now_ms()
+
             for htf_range in htf_ranges:
-                lr = SwingDetector.find_ltf_range([], htf_range, ltf_all)
+                zone_start = htf_range.broken_at or htf_range.timestamp
+                lo = bisect.bisect_left(ltf_timestamps, zone_start)
+                hi = bisect.bisect_right(ltf_timestamps, fired_at)
+                ltf_zone = ltf_all[lo:hi]
+                lr = SwingDetector.find_ltf_range(ltf_zone, htf_range, ltf_all)
                 if not lr:
                     continue
                 armed.append(
@@ -882,7 +903,7 @@ class SignalService:
                         "htfInterval": htf_interval,
                         "ltfInterval": ltf_interval,
                         "ltfTimestamp": lr.timestamp,
-                        "pendingAt": self._cfg.now_ms(),
+                        "pendingAt": fired_at,
                         "htfRange": {
                             "rangeHigh": htf_range.range_high,
                             "rangeLow": htf_range.range_low,
@@ -903,38 +924,29 @@ class SignalService:
                 )
         return armed
 
-    # ── FIX: query_signal_status candle-by-candle replay ─────────────────────
+    # ── query_signal_status ────────────────────────────────────────────────────
 
     async def query_signal_status(self, signal_dict: dict, request_id: str) -> dict:
         """
         Short backtest: replay the signal lifecycle candle-by-candle from
         triggered_at to now.
 
-        FIX: old code collapsed all candles into one _evaluate_signal() call
-        using the aggregate high/low, which misreported SL-before-TP1 as a win.
-        Now uses the same candle loop as update_watchlist().
-        """
-        error_result = lambda msg: {
-            "requestId": request_id,
-            "error": msg,
-            "signalId": signal_dict.get("id", ""),
-            "status": signal_dict.get("status", "TRIGGERED"),
-            "outcome": None,
-            "realizedRR": None,
-            "tp1HitAt": None,
-            "tp2HitAt": None,
-            "slHitAt": None,
-            "closePrice": None,
-            "candlesScanned": 0,
-        }
+        FIX #3: emit suppression now uses a flag + asyncio.Lock rather than
+        replacing self._emit, which was not safe under concurrent coroutines.
 
+        FIX #11: expiry is evaluated against each candle's own timestamp
+        (candle.timestamp) instead of the wall-clock now captured once before
+        the loop. The old approach caused any signal created before the current
+        wall-clock minus expiry_ms to appear expired on the very first candle,
+        regardless of when it actually expired during the replay window.
+        """
         try:
             signal = TradeSignal.from_dict(signal_dict)
         except Exception as exc:
-            return error_result(f"deserialise error: {exc}")
+            return self._make_error_result(request_id, signal_dict, f"deserialise error: {exc}")
 
         if not signal.ltf_interval:
-            return error_result("signal has no ltf_interval")
+            return self._make_error_result(request_id, signal_dict, "signal has no ltf_interval")
 
         fetch_from = signal.triggered_at or signal.created_at
         loop = asyncio.get_running_loop()
@@ -946,10 +958,10 @@ class SignalService:
                 ),
             )
         except Exception as exc:
-            return error_result(f"candle fetch failed: {exc}")
+            return self._make_error_result(request_id, signal_dict, f"candle fetch failed: {exc}")
 
         if not candles:
-            return error_result("no candles returned")
+            return self._make_error_result(request_id, signal_dict, "no candles returned")
 
         probe = copy.deepcopy(signal)
         probe.status = SignalStatus.TRIGGERED
@@ -959,20 +971,27 @@ class SignalService:
         probe.closed_at = None
         probe.close_price = None
 
-        # Suppress broadcasts during replay
-        original_emit = self._emit
-        self._emit = lambda event, payload: None  # type: ignore[assignment]
-        try:
-            now = self._cfg.now_ms()
-            for i, candle in enumerate(candles):
-                prev = candles[i - 1] if i > 0 else candle
-                self._evaluate_signal(
-                    probe, candle.close, candle.high, candle.low, prev.close, now
-                )
-                if probe.status not in (SignalStatus.TRIGGERED, SignalStatus.TP1_HIT):
-                    break
-        finally:
-            self._emit = original_emit
+        # FIX #3: suppress broadcasts using flag + lock — safe under concurrent
+        # analyze() / update_watchlist() coroutines, unlike replacing self._emit.
+        async with self._emit_lock:
+            self._suppress_emit = True
+            try:
+                for i, candle in enumerate(candles):
+                    prev = candles[i - 1] if i > 0 else candle
+                    # FIX #11: pass candle.timestamp as `now` so expiry advances
+                    # with the replay, not against the wall-clock.
+                    self._evaluate_signal(
+                        probe,
+                        candle.close,
+                        candle.high,
+                        candle.low,
+                        prev.close,
+                        candle.timestamp,
+                    )
+                    if probe.status not in (SignalStatus.TRIGGERED, SignalStatus.TP1_HIT):
+                        break
+            finally:
+                self._suppress_emit = False
 
         return {
             "requestId": request_id,
@@ -985,4 +1004,22 @@ class SignalService:
             "slHitAt": probe.sl_hit_at,
             "closePrice": probe.close_price,
             "candlesScanned": len(candles),
+        }
+
+    def _make_error_result(
+        self, request_id: str, signal_dict: dict, msg: str
+    ) -> dict:
+        """FIX #16: extracted from lambda in query_signal_status for readability."""
+        return {
+            "requestId": request_id,
+            "error": msg,
+            "signalId": signal_dict.get("id", ""),
+            "status": signal_dict.get("status", "TRIGGERED"),
+            "outcome": None,
+            "realizedRR": None,
+            "tp1HitAt": None,
+            "tp2HitAt": None,
+            "slHitAt": None,
+            "closePrice": None,
+            "candlesScanned": 0,
         }

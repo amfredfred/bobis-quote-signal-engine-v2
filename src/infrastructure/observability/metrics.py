@@ -513,7 +513,6 @@ class MetricsCollector:
             "max_rr": self._cfg.max_rr,
             "tp1_multiplier": self._cfg.tp1_multiplier,
             "signal_expiry_hours": self._cfg.signal_expiry_hours,
-            "stale_rejection_hours": self._cfg.stale_rejection_hours,
             "max_htf_zones_per_dir": self._cfg.max_htf_zones_per_dir,
             "use_trend_filter": self._cfg.use_trend_filter,
             "use_breakeven": self._cfg.use_breakeven,
