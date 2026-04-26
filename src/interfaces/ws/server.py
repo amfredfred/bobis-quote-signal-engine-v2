@@ -439,7 +439,7 @@ class WebSocketServer:
             request_line = lines[0] if lines else ""
             path         = request_line.split(" ")[1] if " " in request_line else "/"
             qs           = parse_qs(urlparse(path).query)
-            provided     = qs.get("token", [""])[0] or headers.get("sec-websocket-protocol", "")
+            provided     = headers.get("sec-websocket-protocol", "") or  qs.get("token", [""])[0]
             if not hmac.compare_digest(provided, self._cfg.ws_secret):
                 logger.warning("Rejected unauthenticated WS connection")
                 writer.write(b"HTTP/1.1 401 Unauthorized\r\n\r\nInvalid or missing token\n")
