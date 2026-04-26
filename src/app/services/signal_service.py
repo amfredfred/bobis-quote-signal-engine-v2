@@ -77,6 +77,29 @@ Fixes applied in this revision
 
   FIX #20 (low):     expiry_ms was a float in _evaluate_signal; the backtest
            casts to int.  _simulate_lifecycle uses int() to match.
+
+Fixes applied in this revision
+────────────────────────────────
+  FIX #21 (high):    FIX #19 (TP2 before INV for TP1_HIT) was applied only to
+           _simulate_lifecycle, not _evaluate_signal.  _evaluate_signal still
+           checked INV before TP2, so a same-bar TP2+INV while TP1_HIT would
+           produce INV (BREAKEVEN/LOSS) instead of WIN_FULL.  Fixed by hoisting
+           a tp2_hit + tp1_hit pre-check above the INV block.
+
+  FIX #22 (high):    INV detection in _evaluate_signal used candle_close
+           (prev.close) while the backtest Numba/NumPy kernel uses close[i]
+           (current bar).  This lagged invalidation by one bar and also made
+           the exit price (price = candle.close) inconsistent with the
+           detection input.  Fixed: INV detection now uses price (current bar
+           close), matching the backtest and making detection/exit consistent.
+
+  FIX #23 (high):    Same candle-input lag as FIX #22 existed in
+           _simulate_lifecycle: inv_now was computed from prev.close.  Fixed:
+           inv_now now uses candle.close, matching the backtest kernel.
+
+  FIX #24 (low):     FIX #20 (expiry_ms int cast) was applied only to
+           _simulate_lifecycle.  _evaluate_signal still computed expiry_ms as
+           a float.  Fixed: int() cast added to _evaluate_signal.
 """
 
 from __future__ import annotations
@@ -545,7 +568,7 @@ class SignalService:
                 for i, candle in enumerate(signal_candles):
                     prev = signal_candles[i - 1] if i > 0 else candle
                     self._evaluate_signal(
-                        signal, candle.close, candle.high, candle.low, prev.close, now
+                        signal, candle.close, candle.high, candle.low, now
                     )
                     if signal.status not in (
                         SignalStatus.TRIGGERED,
@@ -561,7 +584,6 @@ class SignalService:
         price: float,
         high: float,
         low: float,
-        candle_close: float,
         now: int,
     ) -> None:
         profile = self._registry.get(
@@ -569,7 +591,7 @@ class SignalService:
         )
         prev_status = signal.status
         is_short = signal.direction == SignalDirection.SHORT
-        expiry_ms = profile.signal_expiry_hours * 3_600_000
+        expiry_ms = int(profile.signal_expiry_hours * 3_600_000)  # FIX #24 port: match backtest int cast
 
         # ── Expiry ─────────────────────────────────────────────────────────────
         if now - signal.created_at > expiry_ms:
@@ -614,11 +636,41 @@ class SignalService:
                     )
                 return
 
-        # ── Invalidation ───────────────────────────────────────────────────────
-        short_inv = is_short and candle_close > signal.ltf_range.range_high
-        long_inv = not is_short and candle_close < signal.ltf_range.range_low
+        # ── SL / TP / INV flags ────────────────────────────────────────────────
+        # FIX #22: INV detection now uses price (current bar close) to match the
+        # backtest Numba/NumPy kernel.  Prior code used candle_close (prev.close),
+        # lagging invalidation by one bar and making exit price inconsistent with
+        # the detection input.
+        short_inv = is_short and price > signal.ltf_range.range_high
+        long_inv = not is_short and price < signal.ltf_range.range_low
         tp1_hit = signal.status == SignalStatus.TP1_HIT
 
+        # FIX #13: Same-bar conflict policy (conservative, matches backtest Numba kernel):
+        #   SL vs TP1 on the same bar → SL wins (checked first).
+        #   TP1 is only confirmed on a PRIOR bar before SL at breakeven applies.
+        sl_hit = (high >= signal.stop_loss) if is_short else (low <= signal.stop_loss)
+        tp1_chk = (low <= signal.tp1) if is_short else (high >= signal.tp1)
+        tp2_hit = (low <= signal.tp2) if is_short else (high >= signal.tp2)
+
+        # FIX #21 (port of FIX #19): TP2 before INV when already in TP1_HIT —
+        # matches backtest Numba/NumPy kernel.  Same-bar TP2 + INV → WIN_FULL.
+        # (Same-bar TRIGGERED→TP1→TP2 is handled by the tp2_hit block further
+        # below, after TP1 promotion updates signal.status to TP1_HIT.)
+        if tp2_hit and tp1_hit:
+            signal.realized_rr = signal.risk_reward_ratio
+            signal.tp2_hit_at = now
+            self._close_signal(
+                signal,
+                SignalOutcome.WIN_FULL,
+                price,
+                now,
+                SignalStatus.TP2_HIT,
+                SignalEvent.SIGNAL_TP2_HIT,
+                prev_status,
+            )
+            return
+
+        # ── Invalidation ───────────────────────────────────────────────────────
         if short_inv or long_inv:
             if not profile.use_invalidation:
                 if signal.invalidation_logged_at is None:
@@ -658,14 +710,6 @@ class SignalService:
                         prev_status,
                     )
                 return
-
-        # ── SL / TP checks ─────────────────────────────────────────────────────
-        # FIX #13: Same-bar conflict policy (conservative, matches backtest Numba kernel):
-        #   SL vs TP1 on the same bar → SL wins (checked first).
-        #   TP1 is only confirmed on a PRIOR bar before SL at breakeven applies.
-        sl_hit = (high >= signal.stop_loss) if is_short else (low <= signal.stop_loss)
-        tp1_chk = (low <= signal.tp1) if is_short else (high >= signal.tp1)
-        tp2_hit = (low <= signal.tp2) if is_short else (high >= signal.tp2)
 
         if sl_hit and signal.status == SignalStatus.TRIGGERED:
             signal.realized_rr = -1.0
@@ -1006,12 +1050,13 @@ class SignalService:
             sl_hit  = (candle.high >= probe.stop_loss) if is_short else (candle.low  <= probe.stop_loss)
             tp1_chk = (candle.low  <= probe.tp1)       if is_short else (candle.high >= probe.tp1)
             tp2_hit = (candle.low  <= probe.tp2)       if is_short else (candle.high >= probe.tp2)
-            # INV uses prev.close — consistent with _evaluate_signal /
-            # update_watchlist, where candle_close=prev.close is passed in.
+            # FIX #23: use candle.close (current bar) for INV detection to match
+            # the backtest Numba/NumPy kernel.  Prior code used prev.close, lagging
+            # invalidation by one bar.
             inv_now = (
-                prev.close > probe.ltf_range.range_high
+                candle.close > probe.ltf_range.range_high
                 if is_short
-                else prev.close < probe.ltf_range.range_low
+                else candle.close < probe.ltf_range.range_low
             )
 
             # ── TRIGGERED ──────────────────────────────────────────────────
