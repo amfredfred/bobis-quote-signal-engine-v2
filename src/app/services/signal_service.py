@@ -566,7 +566,6 @@ class SignalService:
                 if not signal_candles:
                     continue
                 for i, candle in enumerate(signal_candles):
-                    prev = signal_candles[i - 1] if i > 0 else candle
                     self._evaluate_signal(
                         signal, candle.close, candle.high, candle.low, now
                     )
@@ -656,6 +655,28 @@ class SignalService:
         sl_hit = (high >= signal.stop_loss) if is_short else (low <= signal.stop_loss)
         tp1_chk = (low <= signal.tp1) if is_short else (high >= signal.tp1)
         tp2_hit = (low <= signal.tp2) if is_short else (high >= signal.tp2)
+
+        # FIX #25 (high): Same-bar TRIGGERED + TP1 + TP2 + INV — TP2 wins.
+        # Mirrors the Numba kernel's highest-priority guard:
+        #   (tp1_prev OR tp1_now) AND tp2_now → WIN_FULL before INV is checked.
+        # Without this, the INV block below fires first and returns LOSS,
+        # diverging from the backtest on large-range candles that simultaneously
+        # clear both TP levels and violate the zone boundary.
+        if tp1_chk and tp2_hit and signal.status == SignalStatus.TRIGGERED:
+            signal.status = SignalStatus.TP1_HIT
+            signal.tp1_hit_at = now
+            signal.realized_rr = signal.risk_reward_ratio
+            signal.tp2_hit_at = now
+            self._close_signal(
+                signal,
+                SignalOutcome.WIN_FULL,
+                signal.tp2,
+                now,
+                SignalStatus.TP2_HIT,
+                SignalEvent.SIGNAL_TP2_HIT,
+                prev_status,
+            )
+            return
 
         # FIX #21 (port of FIX #19): TP2 before INV when already in TP1_HIT —
         # matches backtest Numba/NumPy kernel.  Same-bar TP2 + INV → WIN_FULL.
@@ -1024,7 +1045,6 @@ class SignalService:
 
         for i, candle in enumerate(candles):
             now = candle.timestamp
-            prev = candles[i - 1] if i > 0 else candle
 
             # ── Expiry (FIX #11: now == candle.timestamp) ──────────────────
             if now - probe.created_at > expiry_ms:
@@ -1072,6 +1092,19 @@ class SignalService:
 
             # ── TRIGGERED ──────────────────────────────────────────────────
             if probe.status == SignalStatus.TRIGGERED:
+                # FIX #25: same-bar TRIGGERED + TP1 + TP2 + INV — TP2 wins.
+                # Checked before INV to match Numba kernel priority:
+                #   (tp1_prev OR tp1_now) AND tp2_now → WIN_FULL.
+                if tp1_chk and tp2_hit:
+                    probe.status = SignalStatus.TP2_HIT
+                    probe.outcome = SignalOutcome.WIN_FULL
+                    probe.realized_rr = probe.risk_reward_ratio
+                    probe.tp1_hit_at = now
+                    probe.tp2_hit_at = now
+                    probe.closed_at = now
+                    probe.close_price = probe.tp2
+                    return
+
                 # INV > SL on same bar (matches backtest kernel priority)
                 if inv_now and profile.use_invalidation:
                     probe.invalidated_at = now

@@ -11,7 +11,7 @@ dependencies without risk of accidental mutation.
 
 Derived properties (never exposed as env vars):
   stale_rejection_hours — min_ltf_minutes / 30 × 6 (adaptive to TF pair)
-  pivot_bars            — always 1 
+  pivot_bars            — always 1
   tp1_multiplier        — always 0.5
   stop_buffer_pct       — always 0.00001
   ws_candle_buffer_ms   — always 1 500 ms
@@ -122,15 +122,15 @@ def _default_sessions() -> dict[str, dict]:
 
 # ── Fixed constants (never in env) ────────────────────────────────────────────
 
-_STOP_BUFFER_PCT: float = 0.00001  
+_STOP_BUFFER_PCT: float = 0.00001
 # 1 pip buffer — never needs tuning
-_TP1_MULTIPLIER: float = 0.5  
+_TP1_MULTIPLIER: float = 0.5
 # partial close at 50% to TP2
-_STOP_PLACEMENT: str = "wick"  
+_STOP_PLACEMENT: str = "wick"
 # wick placement = High RRR // swing is more consistent and easier to explain to users
-_WS_CANDLE_BUFFER_MS: int = 1_500  
+_WS_CANDLE_BUFFER_MS: int = 1_500
 # ms after candle close for MT5 to settle
-_PIVOT_BARS: int = 1  
+_PIVOT_BARS: int = 1
 # structural pivot strength
 
 
@@ -142,7 +142,7 @@ class Settings:
 
     # ── Paths ─────────────────────────────────────────────────────────────────
     base_dir: Path = field(default_factory=lambda: Path.cwd())
-    log_level: str = "DEBUG"
+    log_level: str = "INFO"
     log_dir: str = "logs"
 
     @property
@@ -270,6 +270,13 @@ class Settings:
         if self.entry_model not in valid_models:
             raise ValueError(
                 f"entry_model must be one of {valid_models}, got {self.entry_model!r}."
+            )
+        if not self.ws_secret:
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "WS_SECRET is not set — WebSocket server is unauthenticated. "
+                "Set the WS_SECRET environment variable before deploying to production."
             )
 
     # ── Factory ───────────────────────────────────────────────────────────────
