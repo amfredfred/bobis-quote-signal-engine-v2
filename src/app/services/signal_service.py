@@ -146,12 +146,12 @@ class SignalService:
 
     def __init__(
         self,
-        market_data,    # MarketDataClient
-        settings,       # Settings
-        asset_registry, # AssetRegistry
-        session,        # SessionCoordinator
-        signal_store,   # SignalStore
-        metrics=None,   # MetricsCollector | None
+        market_data,  # MarketDataClient
+        settings,  # Settings
+        asset_registry,  # AssetRegistry
+        session,  # SessionCoordinator
+        signal_store,  # SignalStore
+        metrics=None,  # MetricsCollector | None
     ) -> None:
         self._md = market_data
         self._cfg = settings
@@ -275,7 +275,7 @@ class SignalService:
         if len(htf_full) < 10:
             logger.warning("[%s] Insufficient HTF data", pair_label)
             return []
-        htf = htf_full[-profile.htf_lookback:]
+        htf = htf_full[-profile.htf_lookback :]
         self._last_htf[pair_key] = htf
 
         # ── Fetch LTF candles ──────────────────────────────────────────────────
@@ -337,7 +337,7 @@ class SignalService:
         # Cache results here and reuse them in the signal-generation loop below,
         # halving the number of calls from 2× per zone to 1×.
         hi = bisect.bisect_right(ltf_timestamps, fired_at)
-        ltf_range_cache: dict[int, object] = {}   # htf_range.timestamp → LtfRange | None
+        ltf_range_cache: dict[int, object] = {}  # htf_range.timestamp → LtfRange | None
         live_ltf_ts: set[int] = set()
 
         for htf_range in htf_ranges:
@@ -591,11 +591,16 @@ class SignalService:
         )
         prev_status = signal.status
         is_short = signal.direction == SignalDirection.SHORT
-        expiry_ms = int(profile.signal_expiry_hours * 3_600_000)  # FIX #24 port: match backtest int cast
+        expiry_ms = int(
+            profile.signal_expiry_hours * 3_600_000
+        )  # FIX #24 port: match backtest int cast
 
         # ── Expiry ─────────────────────────────────────────────────────────────
         if now - signal.created_at > expiry_ms:
             if signal.status == SignalStatus.TRIGGERED:
+                signal.realized_rr = (
+                    0.0  # matches _simulate_lifecycle and TP1_HIT expiry path
+                )
                 signal.expired_at = now
                 self._close_signal(
                     signal,
@@ -662,7 +667,7 @@ class SignalService:
             self._close_signal(
                 signal,
                 SignalOutcome.WIN_FULL,
-                price,
+                signal.tp2,  # exact level — matches backtest kernel and _simulate_lifecycle
                 now,
                 SignalStatus.TP2_HIT,
                 SignalEvent.SIGNAL_TP2_HIT,
@@ -717,7 +722,7 @@ class SignalService:
             self._close_signal(
                 signal,
                 SignalOutcome.LOSS,
-                price,
+                signal.stop_loss,  # exact level — matches backtest kernel and _simulate_lifecycle
                 now,
                 SignalStatus.SL_HIT,
                 SignalEvent.SIGNAL_SL_HIT,
@@ -744,7 +749,7 @@ class SignalService:
                 self._close_signal(
                     signal,
                     SignalOutcome.LOSS,
-                    price,
+                    signal.stop_loss,  # exact level — matches backtest kernel and _simulate_lifecycle
                     now,
                     SignalStatus.SL_HIT,
                     SignalEvent.SIGNAL_SL_HIT,
@@ -769,7 +774,7 @@ class SignalService:
             self._close_signal(
                 signal,
                 SignalOutcome.WIN_FULL,
-                price,
+                signal.tp2,  # exact level — matches backtest kernel and _simulate_lifecycle
                 now,
                 SignalStatus.TP2_HIT,
                 SignalEvent.SIGNAL_TP2_HIT,
@@ -984,9 +989,7 @@ class SignalService:
 
     # ── _simulate_lifecycle ────────────────────────────────────────────────────
 
-    def _simulate_lifecycle(
-        self, probe: TradeSignal, candles: list[Candle]
-    ) -> None:
+    def _simulate_lifecycle(self, probe: TradeSignal, candles: list[Candle]) -> None:
         """
         Pure candle-by-candle replay — zero live-state side effects.
 
@@ -1020,36 +1023,44 @@ class SignalService:
         expiry_ms = int(profile.signal_expiry_hours * 3_600_000)  # FIX #20
 
         for i, candle in enumerate(candles):
-            now  = candle.timestamp
+            now = candle.timestamp
             prev = candles[i - 1] if i > 0 else candle
 
             # ── Expiry (FIX #11: now == candle.timestamp) ──────────────────
             if now - probe.created_at > expiry_ms:
                 if probe.status == SignalStatus.TRIGGERED:
-                    probe.outcome     = SignalOutcome.EXPIRED
+                    probe.outcome = SignalOutcome.EXPIRED
                     probe.realized_rr = 0.0
                     probe.close_price = candle.close
                 elif probe.status == SignalStatus.TP1_HIT:
                     # FIX #18: credit the partial close that already locked in
                     if profile.use_breakeven:
-                        probe.outcome     = SignalOutcome.BREAKEVEN
+                        probe.outcome = SignalOutcome.BREAKEVEN
                         probe.realized_rr = (
                             probe.risk_reward_ratio * profile.tp1_multiplier
                         )
                         probe.close_price = probe.entry_price
                     else:
-                        probe.outcome     = SignalOutcome.EXPIRED
+                        probe.outcome = SignalOutcome.EXPIRED
                         probe.realized_rr = 0.0
                         probe.close_price = candle.close
-                probe.status     = SignalStatus.EXPIRED
+                probe.status = SignalStatus.EXPIRED
                 probe.expired_at = now
-                probe.closed_at  = now
+                probe.closed_at = now
                 return
 
             # ── Per-bar level flags ─────────────────────────────────────────
-            sl_hit  = (candle.high >= probe.stop_loss) if is_short else (candle.low  <= probe.stop_loss)
-            tp1_chk = (candle.low  <= probe.tp1)       if is_short else (candle.high >= probe.tp1)
-            tp2_hit = (candle.low  <= probe.tp2)       if is_short else (candle.high >= probe.tp2)
+            sl_hit = (
+                (candle.high >= probe.stop_loss)
+                if is_short
+                else (candle.low <= probe.stop_loss)
+            )
+            tp1_chk = (
+                (candle.low <= probe.tp1) if is_short else (candle.high >= probe.tp1)
+            )
+            tp2_hit = (
+                (candle.low <= probe.tp2) if is_short else (candle.high >= probe.tp2)
+            )
             # FIX #23: use candle.close (current bar) for INV detection to match
             # the backtest Numba/NumPy kernel.  Prior code used prev.close, lagging
             # invalidation by one bar.
@@ -1064,12 +1075,12 @@ class SignalService:
                 # INV > SL on same bar (matches backtest kernel priority)
                 if inv_now and profile.use_invalidation:
                     probe.invalidated_at = now
-                    probe.status         = SignalStatus.INVALIDATED
-                    probe.outcome        = SignalOutcome.LOSS
-                    probe.realized_rr    = -(
+                    probe.status = SignalStatus.INVALIDATED
+                    probe.outcome = SignalOutcome.LOSS
+                    probe.realized_rr = -(
                         abs(probe.entry_price - candle.close) / probe.risk_pips
                     )
-                    probe.closed_at  = now
+                    probe.closed_at = now
                     probe.close_price = candle.close
                     return
                 if inv_now and not profile.use_invalidation:
@@ -1079,44 +1090,44 @@ class SignalService:
 
                 # SL beats same-bar TP1 (conservative, FIX #13)
                 if sl_hit:
-                    probe.status      = SignalStatus.SL_HIT
-                    probe.outcome     = SignalOutcome.LOSS
+                    probe.status = SignalStatus.SL_HIT
+                    probe.outcome = SignalOutcome.LOSS
                     probe.realized_rr = -1.0
-                    probe.sl_hit_at   = now
-                    probe.closed_at   = now
+                    probe.sl_hit_at = now
+                    probe.closed_at = now
                     probe.close_price = probe.stop_loss
                     return
 
                 # TP1 promotion — no return; fall through to TP1_HIT block
                 # so TP2 is evaluated on the same bar (same-bar TP1+TP2 → WIN).
                 if tp1_chk:
-                    probe.status     = SignalStatus.TP1_HIT
+                    probe.status = SignalStatus.TP1_HIT
                     probe.tp1_hit_at = now
 
             # ── TP1_HIT (entered this bar OR carried from a prior bar) ──────
             if probe.status == SignalStatus.TP1_HIT:
                 # FIX #19: TP2 before INV — matches backtest Numba/NumPy
                 if tp2_hit:
-                    probe.status      = SignalStatus.TP2_HIT
-                    probe.outcome     = SignalOutcome.WIN_FULL
+                    probe.status = SignalStatus.TP2_HIT
+                    probe.outcome = SignalOutcome.WIN_FULL
                     probe.realized_rr = probe.risk_reward_ratio
-                    probe.tp2_hit_at  = now
-                    probe.closed_at   = now
+                    probe.tp2_hit_at = now
+                    probe.closed_at = now
                     probe.close_price = probe.tp2
                     return
 
                 if inv_now and profile.use_invalidation:
                     probe.invalidated_at = now
-                    probe.status         = SignalStatus.INVALIDATED
-                    probe.closed_at      = now
+                    probe.status = SignalStatus.INVALIDATED
+                    probe.closed_at = now
                     if profile.use_breakeven:
-                        probe.outcome     = SignalOutcome.BREAKEVEN
+                        probe.outcome = SignalOutcome.BREAKEVEN
                         probe.realized_rr = (
                             probe.risk_reward_ratio * profile.tp1_multiplier
                         )
                         probe.close_price = probe.entry_price
                     else:
-                        probe.outcome     = SignalOutcome.LOSS
+                        probe.outcome = SignalOutcome.LOSS
                         probe.realized_rr = -(
                             abs(probe.entry_price - candle.close) / probe.risk_pips
                         )
@@ -1130,15 +1141,15 @@ class SignalService:
                 if sl_hit:
                     probe.sl_hit_at = now
                     probe.closed_at = now
-                    probe.status    = SignalStatus.SL_HIT
+                    probe.status = SignalStatus.SL_HIT
                     if profile.use_breakeven:
-                        probe.outcome     = SignalOutcome.BREAKEVEN
+                        probe.outcome = SignalOutcome.BREAKEVEN
                         probe.realized_rr = (
                             probe.risk_reward_ratio * profile.tp1_multiplier
                         )
                         probe.close_price = probe.entry_price
                     else:
-                        probe.outcome     = SignalOutcome.LOSS
+                        probe.outcome = SignalOutcome.LOSS
                         probe.realized_rr = -1.0
                         probe.close_price = probe.stop_loss
                     return
@@ -1161,10 +1172,14 @@ class SignalService:
         try:
             signal = TradeSignal.from_dict(signal_dict)
         except Exception as exc:
-            return self._make_error_result(request_id, signal_dict, f"deserialise error: {exc}")
+            return self._make_error_result(
+                request_id, signal_dict, f"deserialise error: {exc}"
+            )
 
         if not signal.ltf_interval:
-            return self._make_error_result(request_id, signal_dict, "signal has no ltf_interval")
+            return self._make_error_result(
+                request_id, signal_dict, "signal has no ltf_interval"
+            )
 
         fetch_from = signal.triggered_at or signal.created_at
         loop = asyncio.get_running_loop()
@@ -1176,43 +1191,45 @@ class SignalService:
                 ),
             )
         except Exception as exc:
-            return self._make_error_result(request_id, signal_dict, f"candle fetch failed: {exc}")
+            return self._make_error_result(
+                request_id, signal_dict, f"candle fetch failed: {exc}"
+            )
 
         if not candles:
-            return self._make_error_result(request_id, signal_dict, "no candles returned")
+            return self._make_error_result(
+                request_id, signal_dict, "no candles returned"
+            )
 
         probe = copy.deepcopy(signal)
-        probe.status                 = SignalStatus.TRIGGERED
-        probe.tp1_hit_at             = None
-        probe.tp2_hit_at             = None
-        probe.sl_hit_at              = None
-        probe.outcome                = None
-        probe.realized_rr            = None
-        probe.closed_at              = None
-        probe.close_price            = None
-        probe.expired_at             = None
-        probe.invalidated_at         = None
+        probe.status = SignalStatus.TRIGGERED
+        probe.tp1_hit_at = None
+        probe.tp2_hit_at = None
+        probe.sl_hit_at = None
+        probe.outcome = None
+        probe.realized_rr = None
+        probe.closed_at = None
+        probe.close_price = None
+        probe.expired_at = None
+        probe.invalidated_at = None
         probe.invalidation_logged_at = None
 
         # FIX #17: pure replay — no lock, no suppression flag needed.
         self._simulate_lifecycle(probe, candles)
 
         return {
-            "requestId":     request_id,
-            "signalId":      signal.id,
-            "status":        probe.status.value,
-            "outcome":       probe.outcome.value if probe.outcome else None,
-            "realizedRR":    probe.realized_rr,
-            "tp1HitAt":      probe.tp1_hit_at,
-            "tp2HitAt":      probe.tp2_hit_at,
-            "slHitAt":       probe.sl_hit_at,
-            "closePrice":    probe.close_price,
+            "requestId": request_id,
+            "signalId": signal.id,
+            "status": probe.status.value,
+            "outcome": probe.outcome.value if probe.outcome else None,
+            "realizedRR": probe.realized_rr,
+            "tp1HitAt": probe.tp1_hit_at,
+            "tp2HitAt": probe.tp2_hit_at,
+            "slHitAt": probe.sl_hit_at,
+            "closePrice": probe.close_price,
             "candlesScanned": len(candles),
         }
 
-    def _make_error_result(
-        self, request_id: str, signal_dict: dict, msg: str
-    ) -> dict:
+    def _make_error_result(self, request_id: str, signal_dict: dict, msg: str) -> dict:
         """FIX #16: extracted from lambda in query_signal_status for readability."""
         return {
             "requestId": request_id,
