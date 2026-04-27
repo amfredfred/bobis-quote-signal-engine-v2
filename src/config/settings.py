@@ -13,7 +13,7 @@ Derived properties (never exposed as env vars):
   stale_rejection_hours — min_ltf_minutes / 30 × 6 (adaptive to TF pair)
   pivot_bars            — always 1
   tp1_multiplier        — always 0.5
-  stop_buffer_pct       — always was 0.00001, now 0.0005 (5 pips) to reduce rejections and improve backtest realism
+  stop_buffer_pct       — always was 0.00001, now 0.00003 (3 pips) to reduce rejections and improve backtest realism
   ws_candle_buffer_ms   — always 1 500 ms
 """
 
@@ -122,7 +122,7 @@ def _default_sessions() -> dict[str, dict]:
 
 # ── Fixed constants (never in env) ────────────────────────────────────────────
 
-_STOP_BUFFER_PCT: float = 0.0005
+_STOP_BUFFER_PCT: float = 0.00003
 # 1 pip buffer — never needs tuning
 _TP1_MULTIPLIER: float = 0.5
 # partial close at 50% to TP2
