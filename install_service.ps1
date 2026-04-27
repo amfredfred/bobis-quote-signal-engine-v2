@@ -9,7 +9,7 @@ param(
 
 $ServiceName = "BobiFXSignalEngineV2"
 $EngineDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ScriptExe   = Join-Path $EngineDir "venv\Scripts\signal-engine.exe"
+$ScriptExe   = Join-Path $EngineDir ".venv\Scripts\signal-engine.exe"
 $NssmExe     = Join-Path $EngineDir "nssm\nssm-2.24\win64\nssm.exe"
 $LogDir      = Join-Path $EngineDir "logs"
 
@@ -37,7 +37,7 @@ if ($Action -ne "install") {
 }
 
 if (-not (Test-Path $ScriptExe)) {
-    Write-Error "signal-engine.exe not found: $ScriptExe`nRun: venv\Scripts\pip install -e . (from $EngineDir)"
+    Write-Error "signal-engine.exe not found: $ScriptExe`nRun: .venv\Scripts\pip install -e . (from $EngineDir)"
     exit 1
 }
 
