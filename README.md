@@ -53,9 +53,9 @@ Signal Engine is a real-time trading signal generator that sits between a [MetaT
 │  SessionStore      (SQLite — session state)     │            │
 │  MetricsCollector  (in-memory snapshot)         │            │
 │  SessionCoordinator ← SignalStore + SessionStore│            │
-│  SignalService     ← all domain + infra deps   │            │
-│  SignalScheduler   ← asyncio timer per symbol  │            │
-│  WebSocketServer   ← broadcasts to clients     │            │
+│  SignalService     ← all domain + infra deps    │            │
+│  SignalScheduler   ← asyncio timer per symbol   │            │
+│  WebSocketServer   ← broadcasts to clients      │            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
