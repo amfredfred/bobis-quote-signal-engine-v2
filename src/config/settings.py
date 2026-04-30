@@ -109,13 +109,13 @@ def _default_sessions() -> dict[str, dict]:
             "start": datetime.time(8, 0),
             "end": datetime.time(16, 0),
             "enabled": _bool_env("SESSION_LONDON_ENABLED", True),
-            "blocked_hours": _set_env("BLOCKED_HOURS_LONDON", {9}),
+            "blocked_hours": _set_env("BLOCKED_HOURS_LONDON", set()),
         },
         "NEW_YORK": {
             "start": datetime.time(16, 0),
             "end": datetime.time(0, 0),
             "enabled": _bool_env("SESSION_NY_ENABLED", True),
-            "blocked_hours": _set_env("BLOCKED_HOURS_NY", {17, 19}),
+            "blocked_hours": _set_env("BLOCKED_HOURS_NY", set()),
         },
     }
 
