@@ -20,6 +20,7 @@ dev = [
 
 [project.scripts]
 signal-engine = "interfaces.cli.main:main"
+backtest = "app.backtesting.backtest:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
