@@ -122,7 +122,7 @@ def _default_sessions() -> dict[str, dict]:
 
 # ── Fixed constants (never in env) ────────────────────────────────────────────
 
-_STOP_BUFFER_PCT: float = 0.00002
+_STOP_BUFFER_PCT: float = 0.00001
 # 1 pip buffer — never needs tuning
 _TP1_MULTIPLIER: float = 0.5
 # partial close at 50% to TP2
