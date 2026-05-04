@@ -71,4 +71,4 @@ def find_entry(
 
     if not candidates:
         return None
-    return max(candidates, key=lambda r: r[0].timestamp)
+    return min(candidates, key=lambda r: r[0].timestamp)
