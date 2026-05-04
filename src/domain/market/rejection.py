@@ -13,7 +13,7 @@ from typing import Optional
 
 from domain.entities.candle import Candle
 from domain.entities.enums import CandlePattern, SignalDirection
-from domain.entities.ranges import LtfRange, RejectionCandle, HtfRange, RejectionCandle
+from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +222,10 @@ class CrtDetector:
     def check(
         candle: Candle,
         ltf_range: LtfRange,
+        htf_range: Optional[HtfRange] = None,
     ) -> Optional[tuple[RejectionCandle, RejectionScore]]:
+        if htf_range is not None and not CrtDetector._inside_htf(candle, htf_range):
+            return None
         if ltf_range.direction == SignalDirection.SHORT:
             return CrtDetector._sell(candle, ltf_range)
         return CrtDetector._buy(candle, ltf_range)
@@ -318,22 +321,19 @@ class CrtDetector:
             ),
             score,
         )
+
     @staticmethod
     def find_most_recent(
         candles: list[Candle],
         ltf_range: LtfRange,
-        htf_range: Optional[HtfRange] = None,   # ← NEW
+        htf_range: Optional[HtfRange] = None,
     ) -> Optional[tuple[RejectionCandle, RejectionScore]]:
         if len(candles) < 2:
             return None
 
         for i in range(len(candles) - 1, 0, -1):
-            current     = candles[i]
+            current = candles[i]
             prev_candle = candles[i - 1]
-
-            # ── HTF containment gate ──────────────────────────────────────────
-            if htf_range is not None and not CrtDetector._inside_htf(current, htf_range):
-                continue
 
             prev_range = LtfRange(
                 range_high=prev_candle.high,
@@ -341,7 +341,7 @@ class CrtDetector:
                 direction=ltf_range.direction,
                 timestamp=prev_candle.timestamp,
             )
-            result = CrtDetector.check(current, prev_range)
+            result = CrtDetector.check(current, prev_range, htf_range)
             if result:
                 return result
 
@@ -351,19 +351,15 @@ class CrtDetector:
     def find_all_scored(
         candles: list[Candle],
         ltf_range: LtfRange,
-        htf_range: Optional[HtfRange] = None,   # ← NEW
+        htf_range: Optional[HtfRange] = None,
     ) -> list[tuple[RejectionCandle, RejectionScore]]:
         if len(candles) < 2:
             return []
 
         results = []
         for i in range(1, len(candles)):
-            current     = candles[i]
+            current = candles[i]
             prev_candle = candles[i - 1]
-
-            # ── HTF containment gate ──────────────────────────────────────────
-            if htf_range is not None and not CrtDetector._inside_htf(current, htf_range):
-                continue
 
             prev_range = LtfRange(
                 range_high=prev_candle.high,
@@ -371,7 +367,7 @@ class CrtDetector:
                 direction=ltf_range.direction,
                 timestamp=prev_candle.timestamp,
             )
-            result = CrtDetector.check(current, prev_range)
+            result = CrtDetector.check(current, prev_range, htf_range)
             if result:
                 results.append(result)
 
