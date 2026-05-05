@@ -1,74 +1,112 @@
-# install_service.ps1 - Run as Administrator
+# install_service.ps1 — Run as Administrator
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File install_service.ps1           # install
-#   powershell -ExecutionPolicy Bypass -File install_service.ps1 uninstall # uninstall
+#   powershell -ExecutionPolicy Bypass -File install_service.ps1
+#   powershell -ExecutionPolicy Bypass -File install_service.ps1 uninstall
 
 param(
+    [ValidateSet("install","uninstall")]
     [string]$Action = "install"
 )
 
+$ErrorActionPreference = "Stop"
+
 $ServiceName = "BobiFXSignalEngineV2"
 $EngineDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ScriptExe   = Join-Path $EngineDir ".venv\Scripts\signal-engine.exe"
+$AppExe      = Join-Path $EngineDir ".venv\Scripts\signal-engine.exe"
 $NssmExe     = Join-Path $EngineDir "nssm\nssm-2.24\win64\nssm.exe"
 $LogDir      = Join-Path $EngineDir "logs"
 
-function Remove-ExistingService {
-    $status = & $NssmExe status $ServiceName 2>$null
-    if ($status) {
-        Write-Host "Stopping and removing $ServiceName..."
-        & $NssmExe stop   $ServiceName confirm 2>$null | Out-Null
-        & $NssmExe remove $ServiceName confirm 2>$null | Out-Null
-        Start-Sleep -Seconds 2
-        Write-Host "$ServiceName removed."
-    } else {
-        Write-Host "$ServiceName is not installed -- nothing to remove."
-    }
+# ── Ensure NSSM exists ────────────────────────────────────────────────────────
+if (-not (Test-Path $NssmExe)) {
+    Write-Host "Downloading NSSM..."
+    $zip = Join-Path $EngineDir "nssm.zip"
+    Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile $zip
+    Expand-Archive $zip -DestinationPath (Join-Path $EngineDir "nssm") -Force
+    Remove-Item $zip
 }
 
+# ── Remove existing service (robust) ──────────────────────────────────────────
+function Remove-ExistingService {
+    $exists = sc.exe query $ServiceName 2>$null
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Stopping and removing $ServiceName..."
+
+        # Stop service
+        & $NssmExe stop $ServiceName confirm 2>$null | Out-Null
+        Start-Sleep -Seconds 2
+
+        # Remove service
+        & $NssmExe remove $ServiceName confirm 2>$null | Out-Null
+        Start-Sleep -Seconds 2
+
+        # Fallback hard delete (handles NSSM failures)
+        sc.exe delete $ServiceName 2>$null | Out-Null
+
+        Write-Host "$ServiceName removed."
+    } else {
+        Write-Host "$ServiceName not installed."
+    }
+
+    # Kill orphan processes (critical)
+    Get-Process | Where-Object {
+        $_.Path -like "*signal-engine*" -or $_.Path -like "*mt5*" -or $_.ProcessName -like "nssm*"
+    } | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
+# ── Uninstall ─────────────────────────────────────────────────────────────────
 if ($Action -eq "uninstall") {
     Remove-ExistingService
     exit 0
 }
 
-if ($Action -ne "install") {
-    Write-Error "Unknown action '$Action'. Use 'install' or 'uninstall'."
+# ── Validate install ──────────────────────────────────────────────────────────
+if (-not (Test-Path $AppExe)) {
+    Write-Error "Executable not found: $AppExe`nRun: .venv\Scripts\pip install -e ."
     exit 1
-}
-
-if (-not (Test-Path $ScriptExe)) {
-    Write-Error "signal-engine.exe not found: $ScriptExe`nRun: .venv\Scripts\pip install -e . (from $EngineDir)"
-    exit 1
-}
-
-if (-not (Test-Path $NssmExe)) {
-    Write-Host "Downloading NSSM..."
-    Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile "$EngineDir\nssm.zip"
-    Expand-Archive "$EngineDir\nssm.zip" -DestinationPath "$EngineDir\nssm" -Force
-    Remove-Item "$EngineDir\nssm.zip"
 }
 
 Remove-ExistingService
 
+# ── Install ───────────────────────────────────────────────────────────────────
 Write-Host "Installing $ServiceName..."
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-& $NssmExe install $ServiceName $ScriptExe
-& $NssmExe set $ServiceName AppDirectory   $EngineDir
-& $NssmExe set $ServiceName AppStdout      "$LogDir\service_stdout.log"
-& $NssmExe set $ServiceName AppStderr      "$LogDir\service_stderr.log"
+& $NssmExe install $ServiceName $AppExe
+
+# Working directory
+& $NssmExe set $ServiceName AppDirectory $EngineDir
+
+# Logging
+& $NssmExe set $ServiceName AppStdout "$LogDir\stdout.log"
+& $NssmExe set $ServiceName AppStderr "$LogDir\stderr.log"
 & $NssmExe set $ServiceName AppRotateFiles 1
 & $NssmExe set $ServiceName AppRotateBytes 10485760
-& $NssmExe set $ServiceName Start          SERVICE_AUTO_START
-& $NssmExe set $ServiceName DisplayName    "BobiFX Signal Engine"
-& $NssmExe set $ServiceName Description    "Real-time forex signal engine -- HTF zone detection, WebSocket broadcast."
 
-sc.exe failure $ServiceName reset= 60 actions= restart/5000/restart/10000/restart/30000 | Out-Null
+# Graceful shutdown (prevents orphan python processes)
+& $NssmExe set $ServiceName AppStopMethodConsole 15000
+& $NssmExe set $ServiceName AppStopMethodWindow  15000
+& $NssmExe set $ServiceName AppStopMethodThreads 15000
 
+# Controlled restart behavior (avoid infinite loops)
+& $NssmExe set $ServiceName AppThrottle 5000
+& $NssmExe set $ServiceName AppExit Default Restart
+
+# Metadata
+& $NssmExe set $ServiceName Start SERVICE_AUTO_START
+& $NssmExe set $ServiceName DisplayName "BobiFX Signal Engine"
+& $NssmExe set $ServiceName Description "Real-time forex signal engine (HTF zones + WebSocket broadcast)"
+
+# Bounded Windows recovery (NOT infinite)
+sc.exe failure $ServiceName reset= 300 actions= restart/5000/restart/15000/""/0 | Out-Null
+
+# ── Start ─────────────────────────────────────────────────────────────────────
 Write-Host "Starting $ServiceName..."
 & $NssmExe start $ServiceName
-Start-Sleep -Seconds 4
+
+Start-Sleep -Seconds 3
 & $NssmExe status $ServiceName
 
 Write-Host ""
-Write-Host "Logs: Get-Content '$LogDir\service_stderr.log' -Tail 50 -Wait"
+Write-Host "Logs:"
+Write-Host "  Get-Content '$LogDir\stderr.log' -Tail 50 -Wait"
