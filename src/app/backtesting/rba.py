@@ -13,17 +13,11 @@ from pathlib import Path
 
 ALL_SYMBOLS = [
     "XAUUSD",
-    "EURUSD",
-    "GBPUSD",
-    "USDJPY",
-    "USDCHF",
-    "AUDUSD",
-    "USDCAD",
-    "NZDUSD",
-    "US500",
     "US30",
+    "US500",
     "US100",
-    "BTCUSD",
+    "JP225",
+    "EURUSD",
 ]
 
 FAILED_STATE_FILE = ".backtest_failed.json"
