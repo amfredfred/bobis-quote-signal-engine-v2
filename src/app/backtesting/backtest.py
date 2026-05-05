@@ -80,7 +80,7 @@ from domain.entities.candle import Candle
 from domain.entities.enums import SignalDirection, SignalOutcome
 from domain.entities.trade import TradeSignal
 from domain.market.structure import MarketStructure
-from domain.market.swings import SwingDetector
+from domain.market.swings import SwingDetector, detect_displacement
 from domain.signals.builder import build_signal
 from domain.signals.entry import find_entry  # shared entry dispatcher
 from infrastructure.data_providers.market_data import MarketDataClient
@@ -529,7 +529,9 @@ class MultiPairBacktester:
         open_dir: dict[tuple, int] = {}
         expiry_ms = int(profile.signal_expiry_hours * 3_600_000)
         pivot_bars = cfg.pivot_bars
-        max_zones = cfg.max_htf_zones_per_dir
+        max_zones  = cfg.max_htf_zones_per_dir
+        use_disp        = cfg.use_displacement_filter
+        disp_atr_period = cfg.displacement_atr_period
 
         # Precomputed lookups
         _stale_ms = self._stale_ms
@@ -611,6 +613,21 @@ class MultiPairBacktester:
                             max_zones_per_dir=max_zones,
                         )
                     )
+                    # Apply displacement filter — mirrors signal_service behaviour.
+                    # Uses htf_all (full series) so there is always enough context
+                    # to compute the average body before the BOS candle.
+                    if use_disp:
+                        htf_all_full = self.htf_candles[htf_interval]
+                        disp_atr_mult = cfg.displacement_mult_for(htf_interval, ltf_interval)
+                        htf_ranges = [
+                            z for z in htf_ranges
+                            if detect_displacement(
+                                htf_all_full,
+                                z.broken_at,
+                                atr_period=disp_atr_period,
+                                atr_mult=disp_atr_mult,
+                            )
+                        ]
                     _rng_cache[htf_interval] = (last_htf_ts, htf_ranges)
                 else:
                     htf_ranges = cached_rng[1]

@@ -84,8 +84,18 @@ class SignalScheduler:
                 upper = symbol.upper()
                 if upper not in self._schedules:
                     self._schedules[upper] = SymbolSchedule(upper)
-                    self._schedule_next(upper)
-                    logger.info("[Scheduler] Started %s in HTF_WATCH mode", upper)
+                    # Fire the first tick immediately so the engine analyses
+                    # current data on restart rather than waiting for the next
+                    # candle boundary.  _on_done() will schedule the proper
+                    # boundary-aligned timer once the immediate run completes.
+                    immediate = threading.Timer(0.0, self._run, args=(upper,))
+                    immediate.daemon = True
+                    immediate.start()
+                    self._schedules[upper].timer = immediate
+                    logger.info(
+                        "[Scheduler] Started %s in HTF_WATCH mode — firing immediately",
+                        upper,
+                    )
                 self._schedules[upper].subscriber_ids.add(subscriber_id)
 
     def unsubscribe(self, subscriber_id: str) -> None:

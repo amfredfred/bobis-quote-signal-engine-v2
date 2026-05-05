@@ -126,7 +126,7 @@ from domain.entities.payloads import (
 from domain.entities.session import ClosedSignalRecord
 from domain.entities.trade import TradeSignal
 from domain.market.structure import MarketStructure
-from domain.market.swings import SwingDetector
+from domain.market.swings import SwingDetector, detect_displacement
 from domain.signals.builder import build_signal
 from domain.signals.correlation import correlation_conflict
 from domain.signals.entry import find_entry  # FIX #14: shared dispatcher
@@ -319,6 +319,32 @@ class SignalService:
             len(htf_ranges),
             len(ltf_all),
         )
+
+        # ── Displacement filter ────────────────────────────────────────────────
+        # Drop zones whose BOS candle was not impulsive enough.  A doji or
+        # below-average-sized BOS candle indicates a ranging market, not a
+        # trending one, so the zone is skipped entirely.
+        if self._cfg.use_displacement_filter:
+            before = len(htf_ranges)
+            pair_disp_mult = self._cfg.displacement_mult_for(htf_interval, ltf_interval)
+            htf_ranges = [
+                z for z in htf_ranges
+                if detect_displacement(
+                    htf_full,
+                    z.broken_at,
+                    atr_period=self._cfg.displacement_atr_period,
+                    atr_mult=pair_disp_mult,
+                )
+            ]
+            dropped = before - len(htf_ranges)
+            if dropped:
+                logger.info(
+                    "[%s] Displacement filter dropped %d/%d zone(s) — ranging BOS",
+                    pair_label, dropped, before,
+                )
+            # Re-sync the cached ranges after filtering so has_armed_zones() is
+            # also displacement-aware across ticks.
+            self._last_ranges[pair_key] = htf_ranges
 
         ltf_timestamps = [c.timestamp for c in ltf_all]
         now = self._cfg.now_ms()

@@ -95,6 +95,62 @@ def detect_bos_events(
 
 # ── SwingDetector ─────────────────────────────────────────────────────────────
 
+# ── Displacement detector ─────────────────────────────────────────────────────
+
+def detect_displacement(
+    candles: list[Candle],
+    bos_ts: int,
+    atr_period: int = 10,
+    atr_mult: float = 1.2,
+) -> bool:
+    """
+    Return True when the BOS candle shows genuine displacement (impulse).
+
+    Displacement is defined as: the BOS candle's body size (|close - open|)
+    must be >= atr_mult × the average body size of the prior ``atr_period``
+    candles.
+
+    A small or doji-like BOS candle signals a ranging market grinding through
+    a level rather than an impulsive break — those zones are suppressed.
+
+    Parameters
+    ──────────
+    candles    — HTF candle list (chronological).
+    bos_ts     — timestamp of the BOS candle (HtfRange.broken_at).
+    atr_period — how many candles before the BOS to use for the avg body.
+    atr_mult   — required multiple of avg body (1.2 = 20 % above average).
+    """
+    bos_idx: Optional[int] = None
+    for i, c in enumerate(candles):
+        if c.timestamp == bos_ts:
+            bos_idx = i
+            break
+
+    if bos_idx is None or bos_idx == 0:
+        # BOS candle not found or is the very first — can't measure; allow.
+        logger.debug("detect_displacement: BOS candle ts=%d not found — allowing", bos_ts)
+        return True
+
+    bos_candle = candles[bos_idx]
+    bos_body   = abs(bos_candle.close - bos_candle.open)
+
+    start  = max(0, bos_idx - atr_period)
+    prior  = candles[start:bos_idx]
+    if not prior:
+        return True  # not enough history — allow
+
+    avg_body = sum(abs(c.close - c.open) for c in prior) / len(prior)
+    if avg_body < 1e-10:
+        return True  # degenerate identical candles — allow
+
+    displaced = bos_body >= atr_mult * avg_body
+    logger.debug(
+        "detect_displacement: bos_ts=%d  body=%.6f  avg=%.6f  mult=%.2f → %s",
+        bos_ts, bos_body, avg_body, atr_mult, "DISPLACED" if displaced else "RANGING",
+    )
+    return displaced
+
+
 class SwingDetector:
 
     @staticmethod

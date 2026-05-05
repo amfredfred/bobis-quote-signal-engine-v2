@@ -248,6 +248,24 @@ class Settings:
     multi_tf_independent_positions: bool = True
     entry_model: str = "candle_pattern"  # candle_pattern | crt | all
 
+    # ── Displacement filter ───────────────────────────────────────────────────
+    # Guards against ranging markets by requiring the BOS candle to show a
+    # strong impulsive body.  The BOS candle body must be >= displacement_atr_mult
+    # × the average body size of the prior displacement_atr_period candles.
+    # Set use_displacement_filter=False to disable entirely.
+    use_displacement_filter: bool = True
+    displacement_atr_period: int   = 10   # lookback candles for avg body size
+    displacement_atr_mult:   float = 1.2  # global fallback multiplier
+    # Per-pair overrides — same format as TF_MAX_RR.
+    # e.g. "60/1:0.8,60/5:0.8,30/1:1.3,30/5:1.3"
+    # Falls back to displacement_atr_mult for any pair not listed.
+    tf_displacement_mult: dict = field(default_factory=dict)
+
+    def displacement_mult_for(self, htf_interval: str, ltf_interval: str) -> float:
+        """Return the displacement multiplier for a specific TF pair."""
+        key = f"{interval_to_minutes(htf_interval)}/{interval_to_minutes(ltf_interval)}"
+        return float(self.tf_displacement_mult.get(key, self.displacement_atr_mult))
+
     # ── Circuit breaker ───────────────────────────────────────────────────────
     max_consecutive_losses: int = 10
     pause_after_streak_h: float = 10.0
@@ -337,6 +355,10 @@ class Settings:
                 "MULTI_TF_INDEPENDENT_POSITIONS", True
             ),
             entry_model=os.getenv("ENTRY_MODEL", "candle_pattern").lower(),
+            use_displacement_filter=_bool_env("USE_DISPLACEMENT_FILTER", True),
+            displacement_atr_period=int(os.getenv("DISPLACEMENT_ATR_PERIOD", "10")),
+            displacement_atr_mult=float(os.getenv("DISPLACEMENT_ATR_MULT", "1.2")),
+            tf_displacement_mult=_parse_tf_max_rr(os.getenv("TF_DISPLACEMENT_MULT", "")),
             max_consecutive_losses=int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3")),
             pause_after_streak_h=float(os.getenv("PAUSE_AFTER_STREAK_H", "12")),
             use_session_filter=_bool_env("USE_SESSION_FILTER", True),
