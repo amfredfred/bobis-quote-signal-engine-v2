@@ -577,7 +577,7 @@ class WebSocketServer:
             try:
                 loop    = asyncio.get_running_loop()
                 candles = await loop.run_in_executor(
-                    None, lambda: self._md.fetch_candles(symbol, interval, limit, "ASC")
+                    None, lambda: self._md.fetch_candles(symbol, interval, limit)
                 )
                 await client.send_json({"event": "candles", "payload": {
                     "symbol":   symbol,

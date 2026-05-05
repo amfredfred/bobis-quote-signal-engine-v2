@@ -234,7 +234,6 @@ class MarketDataClient:
         symbol: str,
         interval: str,
         outputsize: int = 200,
-        order: str = "ASC",
         allow_gaps: bool = True,
     ) -> list[Candle]:
         """Fetch the most recent `outputsize` bars for a symbol/interval."""

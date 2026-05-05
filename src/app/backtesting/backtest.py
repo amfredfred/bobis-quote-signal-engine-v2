@@ -1032,7 +1032,7 @@ def load_from_api(
 ) -> list[Candle]:
     client = MarketDataClient(cfg.local_base_url)
     try:
-        return client.fetch_candles(symbol, interval, outputsize, "ASC")
+        return client.fetch_candles(symbol, interval, outputsize)
     finally:
         client.close()
 

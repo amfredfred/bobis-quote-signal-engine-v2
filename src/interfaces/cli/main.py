@@ -120,7 +120,7 @@ class SignalEngine:
                 htf = await loop.run_in_executor(
                     None,
                     lambda iv=htf_interval: self._md.fetch_candles(
-                        symbol, iv, self._cfg.htf_outputsize, "ASC"
+                        symbol, iv, self._cfg.htf_outputsize
                     ),
                 )
                 if len(htf) < 10:
@@ -133,9 +133,9 @@ class SignalEngine:
                 if ltf:
                     self._service.update_ltf_cache(symbol, htf_interval, ltf_interval, ltf)
 
-            if self._service.has_armed_zones(symbol):
-                self._scheduler.set_symbol_mode(symbol, WatchMode.LTF_WATCH)
-                await self._ltf_tick(symbol)
+                if self._service.has_armed_zones(symbol) or self._service.has_active_htf_zones(symbol):
+                    self._scheduler.set_symbol_mode(symbol, WatchMode.LTF_WATCH)
+                    await self._ltf_tick(symbol)
         except Exception as exc:
             logger.error("[%s] HTF tick error: %s", symbol, exc, exc_info=True)
 
@@ -149,8 +149,9 @@ class SignalEngine:
             await self._service.update_watchlist(symbol)
 
             armed    = self._service.has_armed_zones(symbol)
+            has_active_zone = self._service.has_active_htf_zones(symbol)
             has_open = any(s.symbol == symbol for s in self._service.get_active_signals())
-            if not (armed or has_open):
+            if not (armed or has_open or has_active_zone):
                 self._scheduler.set_symbol_mode(symbol, WatchMode.HTF_WATCH)
                 logger.info("[%s] No armed zones/signals — reverting to HTF_WATCH", symbol)
         except Exception as exc:

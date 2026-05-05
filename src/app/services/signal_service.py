@@ -100,6 +100,19 @@ Fixes applied in this revision
   FIX #24 (low):     FIX #20 (expiry_ms int cast) was applied only to
            _simulate_lifecycle.  _evaluate_signal still computed expiry_ms as
            a float.  Fixed: int() cast added to _evaluate_signal.
+
+Async optimisations
+────────────────────────────────
+  OPT #1:  analyze() iterated tf_pairs sequentially.  Replaced with
+           asyncio.gather so all pairs are analysed concurrently.
+
+  OPT #2:  update_watchlist() fetched candles for each ltf_interval
+           sequentially.  Replaced with asyncio.gather so all intervals
+           are fetched and evaluated concurrently.
+
+  Note:    HTF + LTF fetches inside _analyze_pair cannot be fully
+           parallelised because the LTF start timestamp is derived from
+           htf[0].timestamp (data dependency).
 """
 
 from __future__ import annotations
@@ -243,12 +256,27 @@ class SignalService:
         self._current_fired[symbol] = fired_at
         logger.info("[%s] Analyzing…  %s", symbol, self._session.status_line())
 
+        # OPT #1: all tf_pairs are dispatched concurrently instead of sequentially.
+        results = await asyncio.gather(
+            *[
+                self._analyze_pair(symbol, htf_interval, ltf_interval, fired_at)
+                for htf_interval, ltf_interval in self._cfg.tf_pairs
+            ],
+            return_exceptions=True,
+        )
+
         all_new: list[TradeSignal] = []
-        for htf_interval, ltf_interval in self._cfg.tf_pairs:
-            pair_signals = await self._analyze_pair(
-                symbol, htf_interval, ltf_interval, fired_at
-            )
-            all_new.extend(pair_signals)
+        for htf_interval, ltf_interval, result in zip(
+            *zip(*self._cfg.tf_pairs), results  # unzip pairs alongside results
+        ):
+            if isinstance(result, Exception):
+                logger.error(
+                    "[%s %s/%s] _analyze_pair failed: %s",
+                    symbol, htf_interval, ltf_interval, result,
+                )
+            else:
+                all_new.extend(result)
+
         return all_new
 
     async def _analyze_pair(
@@ -266,10 +294,12 @@ class SignalService:
         profile = self._registry.get(symbol, htf_interval, ltf_interval)
 
         # ── Fetch HTF candles ──────────────────────────────────────────────────
+        # HTF must be fetched first: the LTF start timestamp is derived from
+        # htf[0].timestamp, so the two fetches cannot be parallelised here.
         htf_full = await loop.run_in_executor(
             None,
             lambda: self._md.fetch_candles(
-                symbol, htf_interval, self._cfg.htf_outputsize, "ASC"
+                symbol, htf_interval, self._cfg.htf_outputsize
             ),
         )
         if len(htf_full) < 10:
@@ -568,7 +598,10 @@ class SignalService:
             by_ltf.setdefault(s.ltf_interval, []).append(s)
 
         now = self._cfg.now_ms()
-        for ltf_interval, signals in by_ltf.items():
+
+        # OPT #2: fetch + evaluate all ltf_intervals concurrently instead of
+        # sequentially.
+        async def _fetch_and_evaluate(ltf_interval: str, signals: list[TradeSignal]) -> None:
             oldest_ts = min(s.created_at for s in signals)
             try:
                 candles = await loop.run_in_executor(
@@ -578,12 +611,12 @@ class SignalService:
                     ),
                 )
                 if len(candles) < 2:
-                    continue
+                    return
             except Exception as exc:
                 logger.error(
                     "[%s] Price fetch failed (%s): %s", symbol, ltf_interval, exc
                 )
-                continue
+                return
 
             for signal in signals:
                 signal_candles = [
@@ -591,7 +624,7 @@ class SignalService:
                 ]
                 if not signal_candles:
                     continue
-                for i, candle in enumerate(signal_candles):
+                for candle in signal_candles:
                     self._evaluate_signal(
                         signal, candle.close, candle.high, candle.low, now
                     )
@@ -600,6 +633,14 @@ class SignalService:
                         SignalStatus.TP1_HIT,
                     ):
                         break
+
+        await asyncio.gather(
+            *[
+                _fetch_and_evaluate(ltf_interval, signals)
+                for ltf_interval, signals in by_ltf.items()
+            ],
+            return_exceptions=True,
+        )
 
     # ── Signal evaluation ──────────────────────────────────────────────────────
 
@@ -984,6 +1025,23 @@ class SignalService:
                 lr = SwingDetector.find_ltf_range(ltf_zone, htf_range, ltf_all)
                 if lr:
                     return True
+        return False
+
+    def has_active_htf_zones(self, symbol: str) -> bool:
+        for htf_interval, ltf_interval in self._cfg.tf_pairs:
+            pair_key = (symbol, htf_interval, ltf_interval)
+            cached_ranges = self._last_ranges.get(pair_key)
+
+            if not cached_ranges:
+                continue
+
+            for htf_range in cached_ranges:
+                # zone must have BOS confirmation
+                if htf_range.broken_at is None:
+                    continue
+
+                return True
+
         return False
 
     def get_armed_zones(self) -> list[dict]:
