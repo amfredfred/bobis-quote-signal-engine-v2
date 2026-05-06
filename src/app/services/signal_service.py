@@ -2,117 +2,16 @@
 app/services/signal_service.py — signal analysis pipeline and watchlist manager.
 
 Orchestrates:
-  1. Market data fetching  (infrastructure/data_providers)
-  2. Swing + rejection detection  (domain/market)
-  3. Signal construction + quality gates  (domain/signals)
-  4. Dedup via SessionCoordinator  (app/session)
-  5. Persistence  (infrastructure/persistence)
-  6. Event emission to WebSocket clients
+  1. Market data fetching
+  2. Swing + rejection detection
+  3. Signal construction + quality gates
+  4. Deduplication via SessionCoordinator
+  5. Persistence
+  6. Event emission
 
-Fixes vs old signal_service.py
-────────────────────────────────
-  BUG (medium): query_signal_status collapsed all candles into one
-                _evaluate_signal call, so SL-before-TP1 scenarios were
-                reported as wins. Fixed: uses the same candle-by-candle
-                loop as update_watchlist.
-
-  BUG (low): _pending_emitted eviction comment admitted the age check was
-             wrong (used ltf_ts as proxy for zone age). Fixed: eviction
-             now tracks the zone's broken_at timestamp directly.
-
-Fixes applied in this revision
-────────────────────────────────
-  FIX #3:  _emit monkey-patch in query_signal_status was not thread-safe.
-           Replaced with a _suppress_emit flag guarded by asyncio.Lock.
-
-  FIX #4:  has_armed_zones / get_armed_zones passed [] as the ltf_zone
-           slice to find_ltf_range, making armed-zone queries always
-           return empty. Fixed: compute the correct zone slice from cached
-           LTF data.
-
-  FIX #10: find_ltf_range was called twice per zone in _analyze_pair
-           (once for invalidation detection, once for signal generation).
-           Results from the first pass are now cached and reused.
-
-  FIX #11: query_signal_status used wall-clock now for expiry checks during
-           candle replay, causing any historically old signal to appear
-           expired on the first candle. Fixed: pass candle.timestamp as
-           the time reference so expiry advances with the replay.
-
-  FIX #12: _close_signal called _persist_open_signals() after delete_open,
-           triggering a full O(n) upsert of every remaining signal on every
-           close. Removed: delete_open is sufficient; a full persist is only
-           needed after a TP1 state transition (already handled separately).
-
-  FIX #13: SL vs TP1 same-candle conflict priority was undocumented.
-           Comment added above the SL check explaining the conservative
-           policy and its consistency with the backtest Numba kernel.
-
-  FIX #14: _find_entry duplicated between signal_service and backtest.
-           Replaced with shared domain.signals.entry.find_entry().
-
-  FIX #15: `from datetime import datetime` inside _close_signal moved to
-           module-level.
-
-  FIX #16: error_result lambda in query_signal_status extracted to a
-           proper private method.
-
-Fixes applied in this revision
-────────────────────────────────
-  FIX #17 (critical): query_signal_status called _close_signal on the probe,
-           which mutated _watchlist, _store, and _session even though
-           _suppress_emit was True.  Replaced with _simulate_lifecycle(), a
-           pure candle-loop helper that sets only probe fields and has zero
-           side effects.  _suppress_emit / _emit_lock are now unused and have
-           been removed.
-
-  FIX #18 (high):    TP1_HIT + expiry + use_breakeven=True returned EXPIRED
-           0.0 R instead of BREAKEVEN +partial R, understating realized
-           performance.  _simulate_lifecycle honours use_breakeven at expiry.
-
-  FIX #19 (medium):  Same-bar INV vs TP2 conflict: _evaluate_signal checked
-           INV before TP2 (INV wins), while the backtest Numba/NumPy kernel
-           checks TP2 first (TP2 wins).  _simulate_lifecycle checks TP2
-           before INV when status is TP1_HIT, matching the backtest.
-
-  FIX #20 (low):     expiry_ms was a float in _evaluate_signal; the backtest
-           casts to int.  _simulate_lifecycle uses int() to match.
-
-Fixes applied in this revision
-────────────────────────────────
-  FIX #21 (high):    FIX #19 (TP2 before INV for TP1_HIT) was applied only to
-           _simulate_lifecycle, not _evaluate_signal.  _evaluate_signal still
-           checked INV before TP2, so a same-bar TP2+INV while TP1_HIT would
-           produce INV (BREAKEVEN/LOSS) instead of WIN_FULL.  Fixed by hoisting
-           a tp2_hit + tp1_hit pre-check above the INV block.
-
-  FIX #22 (high):    INV detection in _evaluate_signal used candle_close
-           (prev.close) while the backtest Numba/NumPy kernel uses close[i]
-           (current bar).  This lagged invalidation by one bar and also made
-           the exit price (price = candle.close) inconsistent with the
-           detection input.  Fixed: INV detection now uses price (current bar
-           close), matching the backtest and making detection/exit consistent.
-
-  FIX #23 (high):    Same candle-input lag as FIX #22 existed in
-           _simulate_lifecycle: inv_now was computed from prev.close.  Fixed:
-           inv_now now uses candle.close, matching the backtest kernel.
-
-  FIX #24 (low):     FIX #20 (expiry_ms int cast) was applied only to
-           _simulate_lifecycle.  _evaluate_signal still computed expiry_ms as
-           a float.  Fixed: int() cast added to _evaluate_signal.
-
-Async optimisations
-────────────────────────────────
-  OPT #1:  analyze() iterated tf_pairs sequentially.  Replaced with
-           asyncio.gather so all pairs are analysed concurrently.
-
-  OPT #2:  update_watchlist() fetched candles for each ltf_interval
-           sequentially.  Replaced with asyncio.gather so all intervals
-           are fetched and evaluated concurrently.
-
-  Note:    HTF + LTF fetches inside _analyze_pair cannot be fully
-           parallelised because the LTF start timestamp is derived from
-           htf[0].timestamp (data dependency).
+Architecture:
+• _step_signal_state() is the single source of truth for lifecycle logic.
+• Live evaluation and simulation paths share identical behavior.
 """
 
 from __future__ import annotations
@@ -121,10 +20,13 @@ import asyncio
 import bisect
 import copy
 import logging
+from dataclasses import dataclass
 from datetime import datetime as _dt
-from typing import Callable, Optional
+from datetime import tzinfo
+from typing import Callable, Optional, Protocol
 
 from domain.assets.profiles import AssetProfile, AssetRegistry
+from domain.entities.candle import Candle
 from domain.entities.enums import (
     SignalDirection,
     SignalEvent,
@@ -142,29 +44,128 @@ from domain.market.structure import MarketStructure
 from domain.market.swings import SwingDetector, detect_displacement
 from domain.signals.builder import build_signal
 from domain.signals.correlation import correlation_conflict
-from domain.signals.entry import find_entry  # FIX #14: shared dispatcher
-from domain.entities.candle import Candle
+from domain.signals.entry import find_entry
 
 logger = logging.getLogger(__name__)
 
 EventListener = Callable[[SignalEvent, dict], None]
 
 
+# ── Dependency Protocols ─────────────────────────────────────────────────────
+
+
+class _MarketDataClient(Protocol):
+    def fetch_candles(
+        self, symbol: str, interval: str, outputsize: int
+    ) -> list[Candle]: ...
+    def fetch_candles_range(
+        self, symbol: str, interval: str, from_ts: int
+    ) -> list[Candle]: ...
+
+
+class _Settings(Protocol):
+    tf_pairs: list[tuple[str, str]]
+    htf_outputsize: int
+    pivot_bars: int
+    max_htf_zones_per_dir: int
+    use_displacement_filter: bool
+    displacement_atr_period: int
+    signal_expiry_hours: float
+    entry_model: str
+    min_wick_ratio: float
+    session_tz: tzinfo
+
+    def now_ms(self) -> int: ...
+    def displacement_mult_for(self, htf_interval: str, ltf_interval: str) -> float: ...
+
+
+class _SessionCoordinator(Protocol):
+    def should_emit(
+        self,
+        *,
+        htf_range: object,
+        ltf_range: object,
+        rejection: object,
+        direction: SignalDirection,
+        symbol: str,
+        current_ts: int,
+        htf_interval: str,
+        ltf_interval: str,
+    ) -> tuple[bool, str]: ...
+    def register_signal(
+        self,
+        *,
+        signal_id: str,
+        symbol: str,
+        direction: SignalDirection,
+        htf_range: object,
+        ltf_range: object,
+        rejection: object,
+        htf_interval: str,
+        ltf_interval: str,
+    ) -> None: ...
+    def record_outcome(self, rec: ClosedSignalRecord) -> None: ...
+    def stats(self) -> dict: ...
+    def status_line(self) -> str: ...
+
+
+class _SignalStore(Protocol):
+    def upsert_open(self, signal: TradeSignal, now: int) -> None: ...
+    def delete_open(self, signal_id: str) -> None: ...
+    def load_open_signals(self) -> list[dict]: ...
+
+
+class _MetricsCollector(Protocol):
+    def on_signal_event(self, event: SignalEvent, payload: dict) -> None: ...
+    def signal_analyze_start(self, symbol: str, fired_at: int) -> None: ...
+    def signal_emitted(
+        self, signal_id: str, symbol: str, fired_at: int, pair: str
+    ) -> None: ...
+    def set_active_signals(self, signals: list[dict]) -> None: ...
+
+
+# ── Value Objects ────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _PendingKey:
+    symbol: str
+    htf_interval: str
+    ltf_interval: str
+    ltf_ts: int
+    direction: str
+
+
+@dataclass(frozen=True)
+class _StepOutcome:
+    terminal: bool
+    emit_tp1: bool = False
+    emit_inv_log: bool = False
+
+
+# ── Module Helpers ───────────────────────────────────────────────────────────
+
+_STATUS_TO_CLOSE_EVENT: dict[SignalStatus, SignalEvent] = {
+    SignalStatus.EXPIRED: SignalEvent.SIGNAL_EXPIRED,
+    SignalStatus.TP2_HIT: SignalEvent.SIGNAL_TP2_HIT,
+    SignalStatus.INVALIDATED: SignalEvent.SIGNAL_INVALIDATED,
+    SignalStatus.SL_HIT: SignalEvent.SIGNAL_SL_HIT,
+}
+
+
 class SignalService:
     """
-    Stateful analysis pipeline and open-signal watchlist.
-
-    Dependencies injected at construction — no module-level singletons.
+    Stateful signal analysis pipeline and open-signal watchlist.
     """
 
     def __init__(
         self,
-        market_data,  # MarketDataClient
-        settings,  # Settings
-        asset_registry,  # AssetRegistry
-        session,  # SessionCoordinator
-        signal_store,  # SignalStore
-        metrics=None,  # MetricsCollector | None
+        market_data: _MarketDataClient,
+        settings: _Settings,
+        asset_registry: AssetRegistry,
+        session: _SessionCoordinator,
+        signal_store: _SignalStore,
+        metrics: Optional[_MetricsCollector] = None,
     ) -> None:
         self._md = market_data
         self._cfg = settings
@@ -178,45 +179,19 @@ class SignalService:
         self._last_htf: dict[tuple, list[Candle]] = {}
         self._last_ltf: dict[tuple, list[Candle]] = {}
         self._last_ranges: dict[tuple, list] = {}
+        self._last_ltf_ranges: dict[tuple, dict[int, object]] = {}
         self._current_fired: dict[str, int] = {}
-        # FIX: store (zone_broken_at, direction) so eviction uses real zone age
-        self._pending_emitted: dict[tuple, int] = {}  # key → broken_at ms
+        self._pending_emitted: dict[_PendingKey, int] = {}
 
-        self._restore_open_signals()
+    # ── Initialization ───────────────────────────────────────────────────────
 
-    # ── Event system ──────────────────────────────────────────────────────────
-
-    def add_listener(self, fn: EventListener) -> None:
-        self._listeners.append(fn)
-
-    def remove_listener(self, fn: EventListener) -> None:
-        self._listeners.remove(fn)
-
-    def _emit(self, event: SignalEvent, payload: dict) -> None:
-        if self._metrics:
-            try:
-                self._metrics.on_signal_event(event, payload)
-            except Exception as exc:
-                logger.warning("Metrics error on %s: %s", event, exc)
-        for fn in self._listeners:
-            try:
-                fn(event, payload)
-            except Exception as exc:
-                logger.error("Listener error on %s: %s", event, exc)
-
-    # ── Persistence helpers ───────────────────────────────────────────────────
-
-    def _persist_open_signals(self) -> None:
-        now = self._cfg.now_ms()
-        for signal in self._watchlist.values():
-            try:
-                self._store.upsert_open(signal, now)
-            except Exception as exc:
-                logger.error("Failed to upsert open signal %s: %s", signal.id, exc)
-
-    def _restore_open_signals(self) -> None:
+    async def initialize(self) -> None:
+        """Restore persisted open signals."""
+        loop = asyncio.get_running_loop()
         try:
-            rows = self._store.load_open_signals()
+            rows: list[dict] = await loop.run_in_executor(
+                None, self._store.load_open_signals
+            )
         except Exception as exc:
             logger.warning("Failed to load open signals: %s", exc)
             return
@@ -246,7 +221,37 @@ class SignalService:
         if restored:
             logger.info("Restored %d open signal(s)", restored)
 
-    # ── Main analysis pipeline ─────────────────────────────────────────────────
+    # ── Event System ─────────────────────────────────────────────────────────
+
+    def add_listener(self, fn: EventListener) -> None:
+        self._listeners.append(fn)
+
+    def remove_listener(self, fn: EventListener) -> None:
+        self._listeners.remove(fn)
+
+    def _emit(self, event: SignalEvent, payload: dict) -> None:
+        if self._metrics:
+            try:
+                self._metrics.on_signal_event(event, payload)
+            except Exception as exc:
+                logger.warning("Metrics error on %s: %s", event, exc)
+        for fn in self._listeners:
+            try:
+                fn(event, payload)
+            except Exception as exc:
+                logger.error("Listener error on %s: %s", event, exc)
+
+    # ── Persistence ──────────────────────────────────────────────────────────
+
+    def _persist_open_signals(self) -> None:
+        now = self._cfg.now_ms()
+        for signal in self._watchlist.values():
+            try:
+                self._store.upsert_open(signal, now)
+            except Exception as exc:
+                logger.error("Failed to upsert open signal %s: %s", signal.id, exc)
+
+    # ── Analysis Pipeline ────────────────────────────────────────────────────
 
     async def analyze(self, symbol: str, fired_at: int = 0) -> list[TradeSignal]:
         if not fired_at:
@@ -256,7 +261,6 @@ class SignalService:
         self._current_fired[symbol] = fired_at
         logger.info("[%s] Analyzing…  %s", symbol, self._session.status_line())
 
-        # OPT #1: all tf_pairs are dispatched concurrently instead of sequentially.
         results = await asyncio.gather(
             *[
                 self._analyze_pair(symbol, htf_interval, ltf_interval, fired_at)
@@ -266,25 +270,21 @@ class SignalService:
         )
 
         all_new: list[TradeSignal] = []
-        for htf_interval, ltf_interval, result in zip(
-            *zip(*self._cfg.tf_pairs), results  # unzip pairs alongside results
-        ):
+        for (htf_interval, ltf_interval), result in zip(self._cfg.tf_pairs, results):
             if isinstance(result, Exception):
                 logger.error(
                     "[%s %s/%s] _analyze_pair failed: %s",
-                    symbol, htf_interval, ltf_interval, result,
+                    symbol,
+                    htf_interval,
+                    ltf_interval,
+                    result,
                 )
             else:
                 all_new.extend(result)
-
         return all_new
 
     async def _analyze_pair(
-        self,
-        symbol: str,
-        htf_interval: str,
-        ltf_interval: str,
-        fired_at: int,
+        self, symbol: str, htf_interval: str, ltf_interval: str, fired_at: int
     ) -> list[TradeSignal]:
         from config.settings import interval_to_minutes
 
@@ -293,9 +293,7 @@ class SignalService:
         loop = asyncio.get_running_loop()
         profile = self._registry.get(symbol, htf_interval, ltf_interval)
 
-        # ── Fetch HTF candles ──────────────────────────────────────────────────
-        # HTF must be fetched first: the LTF start timestamp is derived from
-        # htf[0].timestamp, so the two fetches cannot be parallelised here.
+        # HTF
         htf_full = await loop.run_in_executor(
             None,
             lambda: self._md.fetch_candles(
@@ -308,7 +306,7 @@ class SignalService:
         htf = htf_full[-profile.htf_lookback :]
         self._last_htf[pair_key] = htf
 
-        # ── Fetch LTF candles ──────────────────────────────────────────────────
+        # LTF
         ltf_all = await loop.run_in_executor(
             None,
             lambda: self._md.fetch_candles_range(
@@ -320,21 +318,15 @@ class SignalService:
             logger.warning("[%s] Insufficient LTF data", pair_label)
             return []
 
-        # ── Trend bias ─────────────────────────────────────────────────────────
+        # Trend bias
         structure = None
         if profile.use_trend_filter:
             structure = MarketStructure.detect(htf, pivot_bars=self._cfg.pivot_bars)
             if structure.bias.value == "NEUTRAL":
                 logger.info("[%s] HTF bias=NEUTRAL — skipping", pair_label)
                 return []
-            logger.info(
-                "[%s] HTF bias=%s — %s",
-                pair_label,
-                structure.bias.value,
-                structure.reason,
-            )
 
-        # ── HTF ranges ─────────────────────────────────────────────────────────
+        # HTF ranges
         htf_interval_ms = interval_to_minutes(htf_interval) * 60 * 1000
         htf_ranges = SwingDetector.find_htf_ranges(
             htf,
@@ -342,23 +334,13 @@ class SignalService:
             htf_interval_ms=htf_interval_ms,
             max_zones_per_dir=self._cfg.max_htf_zones_per_dir,
         )
-        self._last_ranges[pair_key] = htf_ranges
-        logger.info(
-            "[%s] %d BOS-confirmed HTF ranges  |  LTF candles: %d",
-            pair_label,
-            len(htf_ranges),
-            len(ltf_all),
-        )
 
-        # ── Displacement filter ────────────────────────────────────────────────
-        # Drop zones whose BOS candle was not impulsive enough.  A doji or
-        # below-average-sized BOS candle indicates a ranging market, not a
-        # trending one, so the zone is skipped entirely.
+        # Displacement filter
         if self._cfg.use_displacement_filter:
-            before = len(htf_ranges)
             pair_disp_mult = self._cfg.displacement_mult_for(htf_interval, ltf_interval)
             htf_ranges = [
-                z for z in htf_ranges
+                z
+                for z in htf_ranges
                 if detect_displacement(
                     htf_full,
                     z.broken_at,
@@ -366,34 +348,21 @@ class SignalService:
                     atr_mult=pair_disp_mult,
                 )
             ]
-            dropped = before - len(htf_ranges)
-            if dropped:
-                logger.info(
-                    "[%s] Displacement filter dropped %d/%d zone(s) — ranging BOS",
-                    pair_label, dropped, before,
-                )
-            # Re-sync the cached ranges after filtering so has_armed_zones() is
-            # also displacement-aware across ticks.
-            self._last_ranges[pair_key] = htf_ranges
+        self._last_ranges[pair_key] = htf_ranges
 
         ltf_timestamps = [c.timestamp for c in ltf_all]
-        now = self._cfg.now_ms()
+        now = fired_at
         expiry_ms = self._cfg.signal_expiry_hours * 3_600_000
 
-        # ── Evict stale pending keys ───────────────────────────────────────────
+        # Evict stale pending
         stale_cutoff = fired_at - int(expiry_ms)
         self._pending_emitted = {
-            k: broken_at
-            for k, broken_at in self._pending_emitted.items()
-            if broken_at > stale_cutoff
+            k: v for k, v in self._pending_emitted.items() if v > stale_cutoff
         }
 
-        # ── FIX #10: Build ltf_range_cache from a single pass ─────────────────
-        # find_ltf_range is the most expensive domain call per zone.
-        # Cache results here and reuse them in the signal-generation loop below,
-        # halving the number of calls from 2× per zone to 1×.
+        # LTF range cache (single pass)
         hi = bisect.bisect_right(ltf_timestamps, fired_at)
-        ltf_range_cache: dict[int, object] = {}  # htf_range.timestamp → LtfRange | None
+        ltf_range_cache: dict[int, object] = {}
         live_ltf_ts: set[int] = set()
 
         for htf_range in htf_ranges:
@@ -404,25 +373,31 @@ class SignalService:
             if lr:
                 live_ltf_ts.add(lr.timestamp)
 
-        # ── Detect invalidated zones ───────────────────────────────────────────
+        self._last_ltf_ranges[pair_key] = {
+            ts: lr for ts, lr in ltf_range_cache.items() if lr is not None
+        }
+
+        # Invalidate stale zones
         invalidated = {
             k
             for k in self._pending_emitted
-            if k[0] == symbol
-            and k[1] == htf_interval
-            and k[2] == ltf_interval
-            and k[3] not in live_ltf_ts
+            if (
+                k.symbol == symbol
+                and k.htf_interval == htf_interval
+                and k.ltf_interval == ltf_interval
+                and k.ltf_ts not in live_ltf_ts
+            )
         }
         for inv_key in invalidated:
             del self._pending_emitted[inv_key]
             self._emit(
                 SignalEvent.SIGNAL_INVALIDATED,
                 {
-                    "symbol": inv_key[0],
-                    "htfInterval": inv_key[1],
-                    "ltfInterval": inv_key[2],
-                    "timestamp": inv_key[3],
-                    "direction": inv_key[4],
+                    "symbol": inv_key.symbol,
+                    "htfInterval": inv_key.htf_interval,
+                    "ltfInterval": inv_key.ltf_interval,
+                    "timestamp": inv_key.ltf_ts,
+                    "direction": inv_key.direction,
                     "reason": "zone_invalidated",
                     "invalidatedAt": now,
                 },
@@ -435,23 +410,21 @@ class SignalService:
             lo = bisect.bisect_left(ltf_timestamps, zone_start)
             ltf_zone = ltf_all[lo:hi]
 
-            # FIX #10: reuse cached result — no second call to find_ltf_range.
             ltf_range = ltf_range_cache.get(htf_range.timestamp)
             if not ltf_range:
                 continue
-
             if structure is not None and not structure.allows(
                 ltf_range.direction.value
             ):
                 continue
 
-            # ── Emit PENDING if zone is new ────────────────────────────────────
-            pending_key = (
-                symbol,
-                htf_interval,
-                ltf_interval,
-                ltf_range.timestamp,
-                ltf_range.direction.value,
+            # Pending signal
+            pending_key = _PendingKey(
+                symbol=symbol,
+                htf_interval=htf_interval,
+                ltf_interval=ltf_interval,
+                ltf_ts=ltf_range.timestamp,
+                direction=ltf_range.direction.value,
             )
             if pending_key not in self._pending_emitted:
                 self._pending_emitted[pending_key] = (
@@ -486,7 +459,7 @@ class SignalService:
                     ),
                 )
 
-            # ── Find entry candle via shared dispatcher (FIX #14) ─────────────
+            # Entry
             rej_result = find_entry(
                 ltf_zone,
                 ltf_range,
@@ -498,15 +471,14 @@ class SignalService:
                 continue
             rejection, _ = rej_result
 
-            # ── Correlation gate ───────────────────────────────────────────────
-            corr_conflict, corr_reason = correlation_conflict(
+            # Correlation & dedup
+            corr_conflict_flag, corr_reason = correlation_conflict(
                 symbol, ltf_range.direction, self.get_active_signals()
             )
-            if corr_conflict:
+            if corr_conflict_flag:
                 logger.info("[%s] ✗ Correlation block: %s", pair_label, corr_reason)
                 continue
 
-            # ── Dedup ──────────────────────────────────────────────────────────
             allowed, reason = self._session.should_emit(
                 htf_range=htf_range,
                 ltf_range=ltf_range,
@@ -522,13 +494,12 @@ class SignalService:
                 continue
 
             signal_id = (
-                f"{symbol}_{htf_interval}_{ltf_interval}"
-                f"_{rejection.timestamp}_{ltf_range.direction.value}"
+                f"{symbol}_{htf_interval}_{ltf_interval}_"
+                f"{rejection.timestamp}_{ltf_range.direction.value}"
             )
             if signal_id in self._watchlist:
                 continue
 
-            # ── Build signal ───────────────────────────────────────────────────
             signal = build_signal(
                 symbol=symbol,
                 htf_interval=htf_interval,
@@ -543,7 +514,6 @@ class SignalService:
             if signal is None:
                 continue
 
-            # Register before emit — locks zone/ltf/rejection in dedup state
             self._session.register_signal(
                 signal_id=signal.id,
                 symbol=symbol,
@@ -554,9 +524,15 @@ class SignalService:
                 htf_interval=htf_interval,
                 ltf_interval=ltf_interval,
             )
+
             self._pending_emitted.pop(pending_key, None)
             self._watchlist[signal.id] = signal
-            self._persist_open_signals()
+
+            try:
+                self._store.upsert_open(signal, now)
+            except Exception as exc:
+                logger.error("Failed to persist new signal %s: %s", signal.id, exc)
+
             new_signals.append(signal)
 
             logger.info(
@@ -581,14 +557,14 @@ class SignalService:
                     [s.to_dict() for s in self.get_active_signals()]
                 )
 
-            break  # one signal per pair per analyze() call
+            break  # one signal per pair per analyze call
 
         return new_signals
 
-    # ── Watchlist update (candle-by-candle) ────────────────────────────────────
+    # ── Watchlist Update ─────────────────────────────────────────────────────
 
     async def update_watchlist(self, symbol: str) -> None:
-        open_signals = [s for s in self._watchlist.values() if s.symbol == symbol]
+        open_signals = [s for s in list(self._watchlist.values()) if s.symbol == symbol]
         if not open_signals:
             return
 
@@ -599,9 +575,9 @@ class SignalService:
 
         now = self._cfg.now_ms()
 
-        # OPT #2: fetch + evaluate all ltf_intervals concurrently instead of
-        # sequentially.
-        async def _fetch_and_evaluate(ltf_interval: str, signals: list[TradeSignal]) -> None:
+        async def _fetch_and_evaluate(
+            ltf_interval: str, signals: list[TradeSignal]
+        ) -> None:
             oldest_ts = min(s.created_at for s in signals)
             try:
                 candles = await loop.run_in_executor(
@@ -622,12 +598,8 @@ class SignalService:
                 signal_candles = [
                     c for c in candles if c.timestamp >= signal.triggered_at
                 ]
-                if not signal_candles:
-                    continue
                 for candle in signal_candles:
-                    self._evaluate_signal(
-                        signal, candle.close, candle.high, candle.low, now
-                    )
+                    self._evaluate_signal(signal, candle, now)
                     if signal.status not in (
                         SignalStatus.TRIGGERED,
                         SignalStatus.TP1_HIT,
@@ -635,272 +607,202 @@ class SignalService:
                         break
 
         await asyncio.gather(
-            *[
-                _fetch_and_evaluate(ltf_interval, signals)
-                for ltf_interval, signals in by_ltf.items()
-            ],
+            *[_fetch_and_evaluate(ltf, sigs) for ltf, sigs in by_ltf.items()],
             return_exceptions=True,
         )
 
-    # ── Signal evaluation ──────────────────────────────────────────────────────
+    # ── State Machine ────────────────────────────────────────────────────────
 
-    def _evaluate_signal(
-        self,
-        signal: TradeSignal,
-        price: float,
-        high: float,
-        low: float,
-        now: int,
-    ) -> None:
+    @staticmethod
+    def _step_signal_state(
+        signal: TradeSignal, candle: Candle, profile: AssetProfile, now: int
+    ) -> _StepOutcome:
+        """Single source of truth — matches backtest kernel exactly."""
+        is_short = signal.direction == SignalDirection.SHORT
+        expiry_ms = int(profile.signal_expiry_hours * 3_600_000)
+
+        # Expiry
+        if now - signal.created_at > expiry_ms:
+            if signal.status == SignalStatus.TRIGGERED:
+                signal.outcome = SignalOutcome.EXPIRED
+                signal.realized_rr = 0.0
+                signal.close_price = candle.close
+            elif signal.status == SignalStatus.TP1_HIT:
+                if profile.use_breakeven:
+                    signal.outcome = SignalOutcome.BREAKEVEN
+                    signal.realized_rr = (
+                        signal.risk_reward_ratio * profile.tp1_multiplier
+                    )
+                    signal.close_price = signal.entry_price
+                else:
+                    signal.outcome = SignalOutcome.EXPIRED
+                    signal.realized_rr = 0.0
+                    signal.close_price = candle.close
+            signal.status = SignalStatus.EXPIRED
+            signal.expired_at = now
+            signal.closed_at = now
+            return _StepOutcome(terminal=True)
+
+        # Per-bar flags
+        sl_hit = (
+            (candle.high >= signal.stop_loss)
+            if is_short
+            else (candle.low <= signal.stop_loss)
+        )
+        tp1_chk = (
+            (candle.low <= signal.tp1) if is_short else (candle.high >= signal.tp1)
+        )
+        tp2_hit = (
+            (candle.low <= signal.tp2) if is_short else (candle.high >= signal.tp2)
+        )
+        inv_now = (
+            (candle.close > signal.ltf_range.range_high)
+            if is_short
+            else (candle.close < signal.ltf_range.range_low)
+        )
+
+        emit_inv_log = False
+        emit_tp1 = False
+
+        if signal.status == SignalStatus.TRIGGERED:
+            if tp1_chk and tp2_hit:  # FIX #25
+                signal.status = SignalStatus.TP2_HIT
+                signal.outcome = SignalOutcome.WIN_FULL
+                signal.realized_rr = signal.risk_reward_ratio
+                signal.tp1_hit_at = now
+                signal.tp2_hit_at = now
+                signal.closed_at = now
+                signal.close_price = signal.tp2
+                return _StepOutcome(terminal=True)
+
+            if inv_now and profile.use_invalidation:
+                signal.invalidated_at = now
+                signal.status = SignalStatus.INVALIDATED
+                signal.outcome = SignalOutcome.LOSS
+                signal.realized_rr = -(
+                    abs(signal.entry_price - candle.close) / signal.risk_pips
+                )
+                signal.closed_at = now
+                signal.close_price = candle.close
+                return _StepOutcome(terminal=True)
+
+            if inv_now and not profile.use_invalidation:
+                if signal.invalidation_logged_at is None:
+                    signal.invalidation_logged_at = now
+                    emit_inv_log = True
+
+            if sl_hit:
+                signal.status = SignalStatus.SL_HIT
+                signal.outcome = SignalOutcome.LOSS
+                signal.realized_rr = -1.0
+                signal.sl_hit_at = now
+                signal.closed_at = now
+                signal.close_price = signal.stop_loss
+                return _StepOutcome(terminal=True, emit_inv_log=emit_inv_log)
+
+            if tp1_chk:
+                signal.status = SignalStatus.TP1_HIT
+                signal.tp1_hit_at = now
+                emit_tp1 = True
+
+        if signal.status == SignalStatus.TP1_HIT:
+            if tp2_hit:  # TP2 before INV
+                signal.status = SignalStatus.TP2_HIT
+                signal.outcome = SignalOutcome.WIN_FULL
+                signal.realized_rr = signal.risk_reward_ratio
+                signal.tp2_hit_at = now
+                signal.closed_at = now
+                signal.close_price = signal.tp2
+                return _StepOutcome(terminal=True, emit_tp1=emit_tp1)
+
+            if inv_now and profile.use_invalidation:
+                signal.invalidated_at = now
+                signal.status = SignalStatus.INVALIDATED
+                signal.closed_at = now
+                if profile.use_breakeven:
+                    signal.outcome = SignalOutcome.BREAKEVEN
+                    signal.realized_rr = (
+                        signal.risk_reward_ratio * profile.tp1_multiplier
+                    )
+                    signal.close_price = signal.entry_price
+                else:
+                    signal.outcome = SignalOutcome.LOSS
+                    signal.realized_rr = -(
+                        abs(signal.entry_price - candle.close) / signal.risk_pips
+                    )
+                    signal.close_price = candle.close
+                return _StepOutcome(terminal=True, emit_tp1=emit_tp1)
+
+            if inv_now and not profile.use_invalidation:
+                if signal.invalidation_logged_at is None:
+                    signal.invalidation_logged_at = now
+                    emit_inv_log = True
+
+            if sl_hit:
+                signal.sl_hit_at = now
+                signal.closed_at = now
+                signal.status = SignalStatus.SL_HIT
+                if profile.use_breakeven:
+                    signal.outcome = SignalOutcome.BREAKEVEN
+                    signal.realized_rr = (
+                        signal.risk_reward_ratio * profile.tp1_multiplier
+                    )
+                    signal.close_price = signal.entry_price
+                else:
+                    signal.outcome = SignalOutcome.LOSS
+                    signal.realized_rr = -1.0
+                    signal.close_price = signal.stop_loss
+                return _StepOutcome(
+                    terminal=True, emit_tp1=emit_tp1, emit_inv_log=emit_inv_log
+                )
+
+        return _StepOutcome(
+            terminal=False, emit_tp1=emit_tp1, emit_inv_log=emit_inv_log
+        )
+
+    def _evaluate_signal(self, signal: TradeSignal, candle: Candle, now: int) -> None:
         profile = self._registry.get(
             signal.symbol, signal.htf_interval, signal.ltf_interval
         )
         prev_status = signal.status
-        is_short = signal.direction == SignalDirection.SHORT
-        expiry_ms = int(
-            profile.signal_expiry_hours * 3_600_000
-        )  # FIX #24 port: match backtest int cast
 
-        # ── Expiry ─────────────────────────────────────────────────────────────
-        if now - signal.created_at > expiry_ms:
-            if signal.status == SignalStatus.TRIGGERED:
-                signal.realized_rr = (
-                    0.0  # matches _simulate_lifecycle and TP1_HIT expiry path
-                )
-                signal.expired_at = now
-                self._close_signal(
-                    signal,
-                    SignalOutcome.EXPIRED,
-                    price,
-                    now,
-                    SignalStatus.EXPIRED,
-                    SignalEvent.SIGNAL_EXPIRED,
-                    prev_status,
-                )
-                return
-            elif signal.status == SignalStatus.TP1_HIT:
-                if profile.use_breakeven:
-                    signal.realized_rr = (
-                        signal.risk_reward_ratio * profile.tp1_multiplier
-                    )
-                    signal.expired_at = now
-                    self._close_signal(
-                        signal,
-                        SignalOutcome.BREAKEVEN,
-                        signal.entry_price,
-                        now,
-                        SignalStatus.EXPIRED,
-                        SignalEvent.SIGNAL_EXPIRED,
-                        prev_status,
-                    )
-                else:
-                    signal.realized_rr = 0.0
-                    signal.expired_at = now
-                    self._close_signal(
-                        signal,
-                        SignalOutcome.EXPIRED,
-                        price,
-                        now,
-                        SignalStatus.EXPIRED,
-                        SignalEvent.SIGNAL_EXPIRED,
-                        prev_status,
-                    )
-                return
+        step = self._step_signal_state(signal, candle, profile, now)
 
-        # ── SL / TP / INV flags ────────────────────────────────────────────────
-        # FIX #22: INV detection now uses price (current bar close) to match the
-        # backtest Numba/NumPy kernel.  Prior code used candle_close (prev.close),
-        # lagging invalidation by one bar and making exit price inconsistent with
-        # the detection input.
-        short_inv = is_short and price > signal.ltf_range.range_high
-        long_inv = not is_short and price < signal.ltf_range.range_low
-        tp1_hit = signal.status == SignalStatus.TP1_HIT
-
-        # FIX #13: Same-bar conflict policy (conservative, matches backtest Numba kernel):
-        #   SL vs TP1 on the same bar → SL wins (checked first).
-        #   TP1 is only confirmed on a PRIOR bar before SL at breakeven applies.
-        sl_hit = (high >= signal.stop_loss) if is_short else (low <= signal.stop_loss)
-        tp1_chk = (low <= signal.tp1) if is_short else (high >= signal.tp1)
-        tp2_hit = (low <= signal.tp2) if is_short else (high >= signal.tp2)
-
-        # FIX #25 (high): Same-bar TRIGGERED + TP1 + TP2 + INV — TP2 wins.
-        # Mirrors the Numba kernel's highest-priority guard:
-        #   (tp1_prev OR tp1_now) AND tp2_now → WIN_FULL before INV is checked.
-        # Without this, the INV block below fires first and returns LOSS,
-        # diverging from the backtest on large-range candles that simultaneously
-        # clear both TP levels and violate the zone boundary.
-        if tp1_chk and tp2_hit and signal.status == SignalStatus.TRIGGERED:
-            signal.status = SignalStatus.TP1_HIT
-            signal.tp1_hit_at = now
-            signal.realized_rr = signal.risk_reward_ratio
-            signal.tp2_hit_at = now
-            self._close_signal(
-                signal,
-                SignalOutcome.WIN_FULL,
-                signal.tp2,
-                now,
-                SignalStatus.TP2_HIT,
-                SignalEvent.SIGNAL_TP2_HIT,
-                prev_status,
-            )
-            return
-
-        # FIX #21 (port of FIX #19): TP2 before INV when already in TP1_HIT —
-        # matches backtest Numba/NumPy kernel.  Same-bar TP2 + INV → WIN_FULL.
-        # (Same-bar TRIGGERED→TP1→TP2 is handled by the tp2_hit block further
-        # below, after TP1 promotion updates signal.status to TP1_HIT.)
-        if tp2_hit and tp1_hit:
-            signal.realized_rr = signal.risk_reward_ratio
-            signal.tp2_hit_at = now
-            self._close_signal(
-                signal,
-                SignalOutcome.WIN_FULL,
-                signal.tp2,  # exact level — matches backtest kernel and _simulate_lifecycle
-                now,
-                SignalStatus.TP2_HIT,
-                SignalEvent.SIGNAL_TP2_HIT,
-                prev_status,
-            )
-            return
-
-        # ── Invalidation ───────────────────────────────────────────────────────
-        if short_inv or long_inv:
-            if not profile.use_invalidation:
-                if signal.invalidation_logged_at is None:
-                    signal.invalidation_logged_at = now
-                    self._emit(
-                        SignalEvent.SIGNAL_INVALIDATED,
-                        self._update_payload(
-                            signal, SignalEvent.SIGNAL_INVALIDATED, prev_status, price
-                        ),
-                    )
-            else:
-                signal.invalidated_at = now
-                if tp1_hit and profile.use_breakeven:
-                    signal.realized_rr = (
-                        signal.risk_reward_ratio * profile.tp1_multiplier
-                    )
-                    self._close_signal(
-                        signal,
-                        SignalOutcome.BREAKEVEN,
-                        signal.entry_price,
-                        now,
-                        SignalStatus.INVALIDATED,
-                        SignalEvent.SIGNAL_INVALIDATED,
-                        prev_status,
-                    )
-                else:
-                    signal.realized_rr = -(
-                        abs(signal.entry_price - price) / signal.risk_pips
-                    )
-                    self._close_signal(
-                        signal,
-                        SignalOutcome.LOSS,
-                        price,
-                        now,
-                        SignalStatus.INVALIDATED,
-                        SignalEvent.SIGNAL_INVALIDATED,
-                        prev_status,
-                    )
-                return
-
-        if sl_hit and signal.status == SignalStatus.TRIGGERED:
-            signal.realized_rr = -1.0
-            signal.sl_hit_at = now
-            self._close_signal(
-                signal,
-                SignalOutcome.LOSS,
-                signal.stop_loss,  # exact level — matches backtest kernel and _simulate_lifecycle
-                now,
-                SignalStatus.SL_HIT,
-                SignalEvent.SIGNAL_SL_HIT,
-                prev_status,
-            )
-            return
-
-        if sl_hit and signal.status == SignalStatus.TP1_HIT:
-            if profile.use_breakeven:
-                signal.realized_rr = signal.risk_reward_ratio * profile.tp1_multiplier
-                signal.sl_hit_at = now
-                self._close_signal(
-                    signal,
-                    SignalOutcome.BREAKEVEN,
-                    signal.entry_price,
-                    now,
-                    SignalStatus.SL_HIT,
-                    SignalEvent.SIGNAL_SL_HIT,
-                    prev_status,
-                )
-            else:
-                signal.realized_rr = -1.0
-                signal.sl_hit_at = now
-                self._close_signal(
-                    signal,
-                    SignalOutcome.LOSS,
-                    signal.stop_loss,  # exact level — matches backtest kernel and _simulate_lifecycle
-                    now,
-                    SignalStatus.SL_HIT,
-                    SignalEvent.SIGNAL_SL_HIT,
-                    prev_status,
-                )
-            return
-
-        if tp1_chk and signal.status == SignalStatus.TRIGGERED:
-            signal.status = SignalStatus.TP1_HIT
-            signal.tp1_hit_at = now
+        if step.emit_tp1:
             self._emit(
                 SignalEvent.SIGNAL_TP1_HIT,
                 self._update_payload(
-                    signal, SignalEvent.SIGNAL_TP1_HIT, prev_status, price
+                    signal, SignalEvent.SIGNAL_TP1_HIT, prev_status, candle.close
                 ),
             )
             prev_status = SignalStatus.TP1_HIT
 
-        if tp2_hit and signal.status == SignalStatus.TP1_HIT:
-            signal.realized_rr = signal.risk_reward_ratio
-            signal.tp2_hit_at = now
+        if step.emit_inv_log:
+            self._emit(
+                SignalEvent.SIGNAL_INVALIDATED,
+                self._update_payload(
+                    signal, SignalEvent.SIGNAL_INVALIDATED, prev_status, candle.close
+                ),
+            )
+
+        if step.terminal:
             self._close_signal(
-                signal,
-                SignalOutcome.WIN_FULL,
-                signal.tp2,  # exact level — matches backtest kernel and _simulate_lifecycle
-                now,
-                SignalStatus.TP2_HIT,
-                SignalEvent.SIGNAL_TP2_HIT,
-                prev_status,
+                signal, _STATUS_TO_CLOSE_EVENT[signal.status], prev_status
             )
             return
 
-        if signal.status == SignalStatus.TP1_HIT and signal.tp1_hit_at == now:
-            self._persist_open_signals()
+        if step.emit_tp1:
+            try:
+                self._store.upsert_open(signal, now)
+            except Exception as exc:
+                logger.error("Failed to persist TP1 signal %s: %s", signal.id, exc)
 
     def _close_signal(
-        self,
-        signal: TradeSignal,
-        outcome: SignalOutcome,
-        price: float,
-        now: int,
-        new_status: SignalStatus,
-        event: SignalEvent,
-        prev: SignalStatus,
+        self, signal: TradeSignal, event: SignalEvent, prev: SignalStatus
     ) -> None:
-        signal.status = new_status
-        signal.outcome = outcome
-        signal.closed_at = now
-        signal.close_price = price
-
-        profile = self._registry.get(
-            signal.symbol, signal.htf_interval, signal.ltf_interval
-        )
-        realized = (
-            signal.realized_rr
-            if signal.realized_rr is not None
-            else {
-                SignalOutcome.WIN_FULL: signal.risk_reward_ratio,
-                SignalOutcome.LOSS: -1.0,
-                SignalOutcome.BREAKEVEN: signal.risk_reward_ratio
-                * profile.tp1_multiplier,
-            }.get(outcome, 0.0)
-        )
+        assert (
+            signal.realized_rr is not None
+        ), f"realized_rr must be set for {signal.id}"
 
         self._watchlist.pop(signal.id, None)
         try:
@@ -908,24 +810,19 @@ class SignalService:
         except Exception as exc:
             logger.warning("Failed to delete open signal %s: %s", signal.id, exc)
 
-        # FIX #12: Removed blanket _persist_open_signals() call.
-        # delete_open() handles the closed signal; a full re-persist of all
-        # remaining signals is unnecessary here and was O(n) on every close.
-        # The TP1 state transition path in _evaluate_signal calls
-        # _persist_open_signals() explicitly when needed.
-
-        # FIX #15: _dt imported at module level — no per-call import.
         session_day = (
-            _dt.fromtimestamp(now / 1000, tz=self._cfg.session_tz).date().isoformat()
+            _dt.fromtimestamp(signal.closed_at / 1000, tz=self._cfg.session_tz)
+            .date()
+            .isoformat()
         )
 
         rec = ClosedSignalRecord(
             signal_id=signal.id,
             symbol=signal.symbol,
             direction=signal.direction.value,
-            outcome=outcome.value,
-            realized_rr=realized,
-            closed_at=now,
+            outcome=signal.outcome.value,
+            realized_rr=signal.realized_rr,
+            closed_at=signal.closed_at,
             htf_ts=signal.htf_range.timestamp,
             ltf_ts=signal.ltf_range.timestamp,
             rej_ts=signal.rejection_candle.timestamp,
@@ -957,20 +854,16 @@ class SignalService:
             signal.symbol,
             signal.id,
             signal.direction.value,
-            outcome.value,
-            realized,
+            signal.outcome.value,
+            signal.realized_rr,
             self._session.status_line(),
         )
-        self._emit(event, self._update_payload(signal, event, prev, price))
+        self._emit(event, self._update_payload(signal, event, prev, signal.close_price))
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────────────────────
 
     def _update_payload(
-        self,
-        signal: TradeSignal,
-        event: SignalEvent,
-        prev: SignalStatus,
-        price: float,
+        self, signal: TradeSignal, event: SignalEvent, prev: SignalStatus, price: float
     ) -> dict:
         return {
             "event": event.value,
@@ -979,7 +872,7 @@ class SignalService:
             "previousStatus": prev.value,
             "currentStatus": signal.status.value,
             "outcome": signal.outcome.value if signal.outcome else None,
-            "realizedRR": getattr(signal, "realized_rr", None),
+            "realizedRR": signal.realized_rr,
             "price": price,
             "timestamp": signal.closed_at or signal.created_at,
             "signal": signal.to_dict(),
@@ -999,69 +892,20 @@ class SignalService:
     def get_session_stats(self) -> dict:
         return self._session.stats()
 
-    def update_htf_cache(self, symbol, htf, ltf, candles) -> None:
-        self._last_htf[(symbol, htf, ltf)] = candles
-
-    def update_ltf_cache(self, symbol, htf, ltf, candles) -> None:
-        self._last_ltf[(symbol, htf, ltf)] = candles
-
-    def has_armed_zones(self, symbol: str) -> bool:
-        for htf_interval, ltf_interval in self._cfg.tf_pairs:
-            pair_key = (symbol, htf_interval, ltf_interval)
-            cached_ranges = self._last_ranges.get(pair_key)
-            if cached_ranges is None:
-                return True  # cold start — default to LTF_WATCH
-
-            # FIX #4: compute the correct ltf_zone slice instead of passing [].
-            ltf_all = self._last_ltf.get(pair_key, [])
-            ltf_timestamps = [c.timestamp for c in ltf_all]
-            fired_at = self._cfg.now_ms()
-
-            for htf_range in cached_ranges:
-                zone_start = htf_range.broken_at or htf_range.timestamp
-                lo = bisect.bisect_left(ltf_timestamps, zone_start)
-                hi = bisect.bisect_right(ltf_timestamps, fired_at)
-                ltf_zone = ltf_all[lo:hi]
-                lr = SwingDetector.find_ltf_range(ltf_zone, htf_range, ltf_all)
-                if lr:
-                    return True
-        return False
-
-    def has_active_htf_zones(self, symbol: str) -> bool:
-        for htf_interval, ltf_interval in self._cfg.tf_pairs:
-            pair_key = (symbol, htf_interval, ltf_interval)
-            cached_ranges = self._last_ranges.get(pair_key)
-
-            if not cached_ranges:
-                continue
-
-            for htf_range in cached_ranges:
-                # zone must have BOS confirmation
-                if htf_range.broken_at is None:
-                    continue
-
-                return True
-
-        return False
-
     def get_armed_zones(self) -> list[dict]:
         armed: list[dict] = []
+        fired_at = self._cfg.now_ms()
+
         for (
             symbol,
             htf_interval,
             ltf_interval,
         ), htf_ranges in self._last_ranges.items():
-            # FIX #4: compute the correct ltf_zone slice instead of passing [].
-            ltf_all = self._last_ltf.get((symbol, htf_interval, ltf_interval), [])
-            ltf_timestamps = [c.timestamp for c in ltf_all]
-            fired_at = self._cfg.now_ms()
-
+            ltf_range_map = self._last_ltf_ranges.get(
+                (symbol, htf_interval, ltf_interval), {}
+            )
             for htf_range in htf_ranges:
-                zone_start = htf_range.broken_at or htf_range.timestamp
-                lo = bisect.bisect_left(ltf_timestamps, zone_start)
-                hi = bisect.bisect_right(ltf_timestamps, fired_at)
-                ltf_zone = ltf_all[lo:hi]
-                lr = SwingDetector.find_ltf_range(ltf_zone, htf_range, ltf_all)
+                lr = ltf_range_map.get(htf_range.timestamp)
                 if not lr:
                     continue
                 armed.append(
@@ -1092,200 +936,21 @@ class SignalService:
                 )
         return armed
 
-    # ── _simulate_lifecycle ────────────────────────────────────────────────────
+    # ── Simulation ───────────────────────────────────────────────────────────
 
     def _simulate_lifecycle(self, probe: TradeSignal, candles: list[Candle]) -> None:
-        """
-        Pure candle-by-candle replay — zero live-state side effects.
-
-        Mutates only *probe* fields (status, outcome, realized_rr, *_hit_at,
-        closed_at, close_price, expired_at, invalidated_at,
-        invalidation_logged_at).  Never touches _watchlist, _store, _session,
-        or _listeners.  (FIX #17)
-
-        Outcome policy vs _evaluate_signal
-        ────────────────────────────────────
-        FIX #18: TP1_HIT + expiry + use_breakeven=True → BREAKEVEN +partial R,
-                 not EXPIRED 0.0 R.
-        FIX #19: TP2 is checked before INV when status is TP1_HIT, matching the
-                 backtest Numba/NumPy kernel.  (For TRIGGERED, INV still beats
-                 SL on the same bar, also matching the kernel.)
-        FIX #20: expiry_ms is cast to int (floor), matching the backtest.
-
-        Expiry semantics (FIX #11, preserved): each bar's own timestamp is used
-        as the "now" reference, so expiry advances with the replay rather than
-        being evaluated against the wall-clock.
-
-        Same-bar conflict policy (FIX #13, preserved):
-          SL vs TP1 while TRIGGERED  → SL wins (checked first).
-          INV vs SL while TRIGGERED  → INV wins (checked first).
-          TP2 vs INV while TP1_HIT   → TP2 wins (FIX #19, checked first).
-        """
+        """Pure replay used by query_signal_status."""
         profile = self._registry.get(
             probe.symbol, probe.htf_interval, probe.ltf_interval
         )
-        is_short = probe.direction == SignalDirection.SHORT
-        expiry_ms = int(profile.signal_expiry_hours * 3_600_000)  # FIX #20
-
-        for i, candle in enumerate(candles):
-            now = candle.timestamp
-
-            # ── Expiry (FIX #11: now == candle.timestamp) ──────────────────
-            if now - probe.created_at > expiry_ms:
-                if probe.status == SignalStatus.TRIGGERED:
-                    probe.outcome = SignalOutcome.EXPIRED
-                    probe.realized_rr = 0.0
-                    probe.close_price = candle.close
-                elif probe.status == SignalStatus.TP1_HIT:
-                    # FIX #18: credit the partial close that already locked in
-                    if profile.use_breakeven:
-                        probe.outcome = SignalOutcome.BREAKEVEN
-                        probe.realized_rr = (
-                            probe.risk_reward_ratio * profile.tp1_multiplier
-                        )
-                        probe.close_price = probe.entry_price
-                    else:
-                        probe.outcome = SignalOutcome.EXPIRED
-                        probe.realized_rr = 0.0
-                        probe.close_price = candle.close
-                probe.status = SignalStatus.EXPIRED
-                probe.expired_at = now
-                probe.closed_at = now
+        for candle in candles:
+            step = self._step_signal_state(probe, candle, profile, candle.timestamp)
+            if step.terminal:
                 return
 
-            # ── Per-bar level flags ─────────────────────────────────────────
-            sl_hit = (
-                (candle.high >= probe.stop_loss)
-                if is_short
-                else (candle.low <= probe.stop_loss)
-            )
-            tp1_chk = (
-                (candle.low <= probe.tp1) if is_short else (candle.high >= probe.tp1)
-            )
-            tp2_hit = (
-                (candle.low <= probe.tp2) if is_short else (candle.high >= probe.tp2)
-            )
-            # FIX #23: use candle.close (current bar) for INV detection to match
-            # the backtest Numba/NumPy kernel.  Prior code used prev.close, lagging
-            # invalidation by one bar.
-            inv_now = (
-                candle.close > probe.ltf_range.range_high
-                if is_short
-                else candle.close < probe.ltf_range.range_low
-            )
-
-            # ── TRIGGERED ──────────────────────────────────────────────────
-            if probe.status == SignalStatus.TRIGGERED:
-                # FIX #25: same-bar TRIGGERED + TP1 + TP2 + INV — TP2 wins.
-                # Checked before INV to match Numba kernel priority:
-                #   (tp1_prev OR tp1_now) AND tp2_now → WIN_FULL.
-                if tp1_chk and tp2_hit:
-                    probe.status = SignalStatus.TP2_HIT
-                    probe.outcome = SignalOutcome.WIN_FULL
-                    probe.realized_rr = probe.risk_reward_ratio
-                    probe.tp1_hit_at = now
-                    probe.tp2_hit_at = now
-                    probe.closed_at = now
-                    probe.close_price = probe.tp2
-                    return
-
-                # INV > SL on same bar (matches backtest kernel priority)
-                if inv_now and profile.use_invalidation:
-                    probe.invalidated_at = now
-                    probe.status = SignalStatus.INVALIDATED
-                    probe.outcome = SignalOutcome.LOSS
-                    probe.realized_rr = -(
-                        abs(probe.entry_price - candle.close) / probe.risk_pips
-                    )
-                    probe.closed_at = now
-                    probe.close_price = candle.close
-                    return
-                if inv_now and not profile.use_invalidation:
-                    if probe.invalidation_logged_at is None:
-                        probe.invalidation_logged_at = now
-                    # trade stays open — fall through to SL/TP
-
-                # SL beats same-bar TP1 (conservative, FIX #13)
-                if sl_hit:
-                    probe.status = SignalStatus.SL_HIT
-                    probe.outcome = SignalOutcome.LOSS
-                    probe.realized_rr = -1.0
-                    probe.sl_hit_at = now
-                    probe.closed_at = now
-                    probe.close_price = probe.stop_loss
-                    return
-
-                # TP1 promotion — no return; fall through to TP1_HIT block
-                # so TP2 is evaluated on the same bar (same-bar TP1+TP2 → WIN).
-                if tp1_chk:
-                    probe.status = SignalStatus.TP1_HIT
-                    probe.tp1_hit_at = now
-
-            # ── TP1_HIT (entered this bar OR carried from a prior bar) ──────
-            if probe.status == SignalStatus.TP1_HIT:
-                # FIX #19: TP2 before INV — matches backtest Numba/NumPy
-                if tp2_hit:
-                    probe.status = SignalStatus.TP2_HIT
-                    probe.outcome = SignalOutcome.WIN_FULL
-                    probe.realized_rr = probe.risk_reward_ratio
-                    probe.tp2_hit_at = now
-                    probe.closed_at = now
-                    probe.close_price = probe.tp2
-                    return
-
-                if inv_now and profile.use_invalidation:
-                    probe.invalidated_at = now
-                    probe.status = SignalStatus.INVALIDATED
-                    probe.closed_at = now
-                    if profile.use_breakeven:
-                        probe.outcome = SignalOutcome.BREAKEVEN
-                        probe.realized_rr = (
-                            probe.risk_reward_ratio * profile.tp1_multiplier
-                        )
-                        probe.close_price = probe.entry_price
-                    else:
-                        probe.outcome = SignalOutcome.LOSS
-                        probe.realized_rr = -(
-                            abs(probe.entry_price - candle.close) / probe.risk_pips
-                        )
-                        probe.close_price = candle.close
-                    return
-
-                if inv_now and not profile.use_invalidation:
-                    if probe.invalidation_logged_at is None:
-                        probe.invalidation_logged_at = now
-
-                if sl_hit:
-                    probe.sl_hit_at = now
-                    probe.closed_at = now
-                    probe.status = SignalStatus.SL_HIT
-                    if profile.use_breakeven:
-                        probe.outcome = SignalOutcome.BREAKEVEN
-                        probe.realized_rr = (
-                            probe.risk_reward_ratio * profile.tp1_multiplier
-                        )
-                        probe.close_price = probe.entry_price
-                    else:
-                        probe.outcome = SignalOutcome.LOSS
-                        probe.realized_rr = -1.0
-                        probe.close_price = probe.stop_loss
-                    return
-
-    # ── query_signal_status ────────────────────────────────────────────────────
+    # ── Query Status ─────────────────────────────────────────────────────────
 
     async def query_signal_status(self, signal_dict: dict, request_id: str) -> dict:
-        """
-        Short backtest: replay the signal lifecycle candle-by-candle from
-        triggered_at to now, using _simulate_lifecycle().
-
-        _simulate_lifecycle() is a pure function that mutates only the probe —
-        no _watchlist / _store / _session / _emit side effects (FIX #17).
-        The _emit_lock / _suppress_emit mechanism is therefore no longer needed
-        and has been removed.
-
-        FIX #11 (preserved): expiry is evaluated against each candle's own
-        timestamp so it advances with the replay, not the wall-clock.
-        """
         try:
             signal = TradeSignal.from_dict(signal_dict)
         except Exception as exc:
@@ -1330,7 +995,6 @@ class SignalService:
         probe.invalidated_at = None
         probe.invalidation_logged_at = None
 
-        # FIX #17: pure replay — no lock, no suppression flag needed.
         self._simulate_lifecycle(probe, candles)
 
         return {
@@ -1347,12 +1011,11 @@ class SignalService:
         }
 
     def _make_error_result(self, request_id: str, signal_dict: dict, msg: str) -> dict:
-        """FIX #16: extracted from lambda in query_signal_status for readability."""
         return {
             "requestId": request_id,
             "error": msg,
             "signalId": signal_dict.get("id", ""),
-            "status": signal_dict.get("status", "TRIGGERED"),
+            "status": None,
             "outcome": None,
             "realizedRR": None,
             "tp1HitAt": None,
