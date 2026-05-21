@@ -75,5 +75,5 @@ session_filter:
       blocked_hours: []
 
 logging:
-  level: ERROR
+  level: DEBUG
   dir: logs
