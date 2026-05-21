@@ -2,7 +2,8 @@
 infrastructure/data_providers/market_data.py - direct MetaTrader 5 data client.
 
 The engine reads OHLC candles from the local MetaTrader 5 terminal through the
-official Python package. Candle timestamps are normalized to UTC milliseconds.
+official Python package. MT5 Python returns bar timestamps in UTC, so the engine
+keeps them as UTC milliseconds.
 """
 
 from __future__ import annotations
@@ -92,9 +93,12 @@ def _parse_rates(rates) -> list[Candle]:
 
     candles: list[Candle] = []
     for row in rates:
+        # MT5 Python rate timestamps are UTC epoch seconds. Broker chart/server
+        # time is a terminal display concern and must not be subtracted here.
+        timestamp = int(_row_value(row, "time")) * 1000
         candles.append(
             Candle(
-                timestamp=int(_row_value(row, "time")) * 1000,
+                timestamp=timestamp,
                 open=float(_row_value(row, "open")),
                 high=float(_row_value(row, "high")),
                 low=float(_row_value(row, "low")),
@@ -236,7 +240,10 @@ class MarketDataClient:
         started = time.perf_counter()
         try:
             rates = mt5.copy_rates_range(
-                mt5_symbol, mt5_interval, _utc_dt(start_ts), _utc_dt(end_ts)
+                mt5_symbol,
+                mt5_interval,
+                _utc_dt(start_ts),
+                _utc_dt(end_ts),
             )
             candles = _parse_rates(rates)
             self._record_metrics(symbol, interval, called_at, started, True)

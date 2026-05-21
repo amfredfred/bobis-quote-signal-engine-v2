@@ -125,6 +125,8 @@ Edit [config.yaml](config.yaml) for:
 - UTC session filters.
 - Logging.
 
+MT5 Python candle timestamps are UTC epoch timestamps. Broker chart/server time, such as a UTC+3 broker display, is not applied in the data provider. Backtest date prints are therefore UTC; a latest 5-minute bar at `22:15` is expected when the machine UTC clock is around `22:18`.
+
 ## Running
 
 Start the engine:
