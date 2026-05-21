@@ -6,19 +6,18 @@ Wires all dependencies in one place (composition root) and starts the engine.
 Dependency graph (all injected, no module-level singletons):
   Settings
     ↓
-  MarketDataClient  ←  Settings.local_base_url
+  MarketDataClient  ←  Settings MT5 terminal fields
   AssetRegistry     ←  Settings
   SignalStore       ←  Settings.session_dir / "signals.db"
-  SessionStore      ←  Settings.session_dir, live_dir, session_tz
+  SessionStore      ←  Settings.session_dir, live_dir
   SessionCoordinator ← SignalStore + SessionStore + Settings
   SignalService     ←  all of the above
   SignalScheduler   ←  loop + callback
   WebSocketServer   ←  SignalScheduler + SignalService + MarketDataClient + Settings
 
 WatchMode / dual-cadence removed: the engine now runs every symbol at LTF
-cadence unconditionally.  The MT5 bridge supplies data locally so the
-HTF_WATCH / LTF_WATCH split (originally an API-cost optimisation) is no
-longer needed.  _htf_tick, has_armed_zones, has_active_htf_zones, and
+cadence unconditionally. Direct MT5 access makes the old API-cost optimisation
+unnecessary. _htf_tick, has_armed_zones, has_active_htf_zones, and
 the mode-switching guards in _ltf_tick are all gone.
 """
 
@@ -87,12 +86,12 @@ class SignalEngine:
         self._cfg = settings
 
         # ── Infrastructure ────────────────────────────────────────────────────
-        self._md = MarketDataClient(base_url=settings.local_base_url)
+        self._md = MarketDataClient.from_settings(settings)
 
         db_path = settings.session_dir / "signals.db"
         live_dir = settings.base_dir / "results" / "live"
         self._store = SignalStore(db_path)
-        self._sstore = SessionStore(settings.session_dir, live_dir, settings.session_tz)
+        self._sstore = SessionStore(settings.session_dir, live_dir)
         self._metrics = MetricsCollector(settings)
 
         # ── Domain / app ──────────────────────────────────────────────────────

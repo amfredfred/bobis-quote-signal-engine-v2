@@ -9,7 +9,8 @@ description     = "Swing-to-BOS signal engine with WebSocket broadcast"
 requires-python = ">=3.11"
 dependencies = [
     "python-dotenv>=1.0",
-    "requests>=2.31",
+    "MetaTrader5>=5.0.45",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -26,5 +27,5 @@ backtest = "app.backtesting.backtest:main"
 where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths    = ["tests"]
+testpaths    = ["src/tests"]
 asyncio_mode = "auto"

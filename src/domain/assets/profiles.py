@@ -49,7 +49,6 @@ class _ConfigProtocol(Protocol):
     use_trend_filter: bool
     htf_lookback: int
     multi_tf_independent_positions: bool
-    session_timezone: str
     tf_max_rr: dict
 
 
@@ -208,7 +207,7 @@ SYMBOL_OVERRIDES: dict[str, dict] = {}
 # ── Session filter ────────────────────────────────────────────────────────────
 
 
-def in_session(profile: AssetProfile, ts_ms: int, session_tz: Any) -> bool:
+def in_session(profile: AssetProfile, ts_ms: int) -> bool:
     """
     Return True if ts_ms falls inside an enabled, non-blocked session window.
 
@@ -224,7 +223,7 @@ def in_session(profile: AssetProfile, ts_ms: int, session_tz: Any) -> bool:
 
     import datetime as _dt
 
-    dt = _dt.datetime.fromtimestamp(ts_ms / 1000, tz=session_tz)
+    dt = _dt.datetime.fromtimestamp(ts_ms / 1000, tz=_dt.timezone.utc)
     hour = dt.hour
 
     for _name, s in profile.sessions.items():

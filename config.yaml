@@ -1,0 +1,79 @@
+websocket:
+  host: 0.0.0.0
+  port: 8765
+  max_clients: 10
+
+mt5:
+  terminal_path: "c:\\Program Files\\FBS MetaTrader 5\\terminal64.exe"
+  timeout_ms: 60000
+  portable: false
+
+timeframes:
+  pairs:
+    - htf: 30min
+      ltf: 5min
+    - htf: 1h
+      ltf: 5min
+  htf_lookback: 240
+  htf_outputsize: 1000
+
+signal_quality:
+  min_wick_ratio: 0.51
+  max_sl_zone_mult: 3.0
+  min_rr: 1.0
+  max_rr: 5.0
+  tf_max_rr:
+    "60/5": 5.0
+    "30/5": 5.0
+    "60/1": 5.0
+    "30/1": 5.0
+
+signal_lifetime:
+  expiry_hours: 120
+
+zones:
+  max_htf_zones_per_dir: 2
+
+features:
+  use_trend_filter: true
+  use_breakeven: false
+  use_invalidation: false
+  multi_tf_independent_positions: false
+  entry_model: crt
+
+displacement_filter:
+  enabled: false
+  atr_period: 10
+  atr_mult: 1.2
+  tf_mult:
+    "60/1": 0.8
+    "60/5": 0.8
+    "30/1": 1.3
+    "30/5": 1.3
+
+circuit_breaker:
+  max_consecutive_losses: 10
+  pause_after_streak_h: 12
+
+session_filter:
+  enabled: true
+  sessions:
+    tokyo:
+      start: "00:00"
+      end: "08:00"
+      enabled: false
+      blocked_hours: []
+    london:
+      start: "08:00"
+      end: "16:00"
+      enabled: true
+      blocked_hours: []
+    new_york:
+      start: "16:00"
+      end: "00:00"
+      enabled: true
+      blocked_hours: []
+
+logging:
+  level: DEBUG
+  dir: logs

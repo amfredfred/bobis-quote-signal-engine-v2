@@ -72,7 +72,6 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from zoneinfo import ZoneInfo
 
 from config.settings import Settings, interval_to_minutes as _interval_to_minutes
 from domain.assets.profiles import AssetRegistry, AssetProfile
@@ -86,8 +85,6 @@ from domain.signals.entry import find_entry  # shared entry dispatcher
 from infrastructure.data_providers.market_data import MarketDataClient
 
 logger = logging.getLogger(__name__)
-
-_CSV_TZ = ZoneInfo("UTC")
 
 interval_to_minutes: callable = lru_cache(maxsize=64)(_interval_to_minutes)
 
@@ -714,7 +711,6 @@ class MultiPairBacktester:
                             f"_{rejection.timestamp}_{direction}"
                         ),
                         profile=_pair_profiles[(htf_interval, ltf_interval)],
-                        session_tz=cfg.session_tz,
                     )
                     if signal is None:
                         continue
@@ -1012,7 +1008,7 @@ def load_csv(path: str) -> list[Candle]:
                     ):
                         try:
                             dt = datetime.datetime.strptime(ts_raw, fmt)
-                            ts = int(dt.replace(tzinfo=_CSV_TZ).timestamp() * 1000)
+                            ts = int(dt.replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
                             break
                         except ValueError:
                             continue
@@ -1030,7 +1026,7 @@ def load_csv(path: str) -> list[Candle]:
 def load_from_api(
     symbol: str, interval: str, outputsize: int, cfg: Settings
 ) -> list[Candle]:
-    client = MarketDataClient(cfg.local_base_url)
+    client = MarketDataClient.from_settings(cfg)
     try:
         return client.fetch_candles(symbol, interval, outputsize)
     finally:
@@ -1044,7 +1040,7 @@ def load_from_api_range(
     end_ts: Optional[int],
     cfg: Settings,
 ) -> list[Candle]:
-    client = MarketDataClient(cfg.local_base_url)
+    client = MarketDataClient.from_settings(cfg)
     try:
         return client.fetch_candles_range(symbol, interval, start_ts, end_ts)
     finally:
@@ -1118,12 +1114,12 @@ def main() -> None:
     range_end_ts: Optional[int] = None
     if args.from_date:
         _dt = datetime.datetime.strptime(args.from_date, _date_fmt).replace(
-            tzinfo=cfg.session_tz
+            tzinfo=datetime.timezone.utc
         )
         range_start_ts = int(_dt.timestamp() * 1000)
     if args.to_date:
         _dt = datetime.datetime.strptime(args.to_date, _date_fmt).replace(
-            tzinfo=cfg.session_tz, hour=23, minute=59, second=59
+            tzinfo=datetime.timezone.utc, hour=23, minute=59, second=59
         )
         range_end_ts = int(_dt.timestamp() * 1000)
 

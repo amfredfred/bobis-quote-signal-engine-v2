@@ -28,7 +28,6 @@ def build_signal(
     rejection:    RejectionCandle,
     signal_id:    str,
     profile:      AssetProfile,
-    session_tz,                     # ZoneInfo — passed from app layer
 ) -> Optional[TradeSignal]:
     """
     Validate and construct a TradeSignal.
@@ -105,7 +104,7 @@ def build_signal(
         rr = profile.max_rr
 
     # ── 6. Session filter ─────────────────────────────────────────────────────
-    if not in_session(profile, rejection.timestamp, session_tz):
+    if not in_session(profile, rejection.timestamp):
         logger.debug(
             "[%s] Rejection at %d outside allowed sessions — skipped",
             symbol, rejection.timestamp,

@@ -22,7 +22,7 @@ import copy
 import logging
 from dataclasses import dataclass
 from datetime import datetime as _dt
-from datetime import tzinfo
+from datetime import timezone
 from typing import Callable, Optional, Protocol
 
 from domain.assets.profiles import AssetProfile, AssetRegistry
@@ -73,7 +73,6 @@ class _Settings(Protocol):
     signal_expiry_hours: float
     entry_model: str
     min_wick_ratio: float
-    session_tz: tzinfo
 
     def now_ms(self) -> int: ...
     def displacement_mult_for(self, htf_interval: str, ltf_interval: str) -> float: ...
@@ -509,7 +508,6 @@ class SignalService:
                 rejection=rejection,
                 signal_id=signal_id,
                 profile=profile,
-                session_tz=self._cfg.session_tz,
             )
             if signal is None:
                 continue
@@ -811,7 +809,7 @@ class SignalService:
             logger.warning("Failed to delete open signal %s: %s", signal.id, exc)
 
         session_day = (
-            _dt.fromtimestamp(signal.closed_at / 1000, tz=self._cfg.session_tz)
+            _dt.fromtimestamp(signal.closed_at / 1000, tz=timezone.utc)
             .date()
             .isoformat()
         )

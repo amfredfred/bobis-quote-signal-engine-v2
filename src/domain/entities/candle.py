@@ -1,28 +1,19 @@
-"""
-domain/entities/candle.py — raw market data atom.
-
-No external dependencies. No config imports.
-The `dt` property requires a tzinfo — callers supply it; the domain
-does NOT reach into config.
-"""
+"""domain/entities/candle.py - raw UTC market data atom."""
 
 from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass
-from zoneinfo import ZoneInfo
 
 
 @dataclass(slots=True)
 class Candle:
-    timestamp: int    # UTC milliseconds
-    open:      float
-    high:      float
-    low:       float
-    close:     float
-    volume:    float = 0.0
-
-    # ── Derived geometry ──────────────────────────────────────────────────────
+    timestamp: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
 
     @property
     def is_bullish(self) -> bool:
@@ -44,6 +35,7 @@ class Candle:
     def lower_wick(self) -> float:
         return min(self.open, self.close) - self.low
 
-    def dt(self, tz: ZoneInfo) -> datetime.datetime:
-        """Localise the UTC-ms timestamp to the given timezone."""
-        return datetime.datetime.fromtimestamp(self.timestamp / 1000, tz=tz)
+    def dt(self) -> datetime.datetime:
+        return datetime.datetime.fromtimestamp(
+            self.timestamp / 1000, tz=datetime.timezone.utc
+        )

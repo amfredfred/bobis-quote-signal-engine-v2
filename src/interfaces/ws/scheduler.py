@@ -2,8 +2,8 @@
 interfaces/ws/scheduler.py — candle scheduler (LTF cadence only).
 
 WatchMode / HTF_WATCH removed: the engine now runs every symbol at LTF
-cadence unconditionally.  The MT5 bridge supplies data locally so the
-dual-speed design (originally an API-cost optimisation) is no longer needed.
+cadence unconditionally. Direct MT5 access makes the old API-cost optimisation
+unnecessary.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import datetime
 import logging
 import threading
 from typing import Callable, Awaitable
-from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +98,7 @@ class SignalScheduler:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _ms_until_next_boundary(self, interval_minutes: int) -> int:
-        tz     = ZoneInfo(self._cfg.session_timezone)
-        now_ms = int(datetime.datetime.now(tz=tz).timestamp() * 1000)
+        now_ms = int(datetime.datetime.now(tz=datetime.timezone.utc).timestamp() * 1000)
         now_s  = now_ms // 1000
         iv_s   = interval_minutes * 60
         next_s = (now_s // iv_s + 1) * iv_s

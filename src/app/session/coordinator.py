@@ -13,7 +13,7 @@ Separates the rule engine (domain/signals/dedup.py) from persistence
 The coordinator is constructed with its dependencies injected:
   - SignalStore  — authoritative SQLite source for startup replay
   - SessionStore — JSON backup + CSV writer
-  - Settings     — config values (expiry, circuit breaker, TZ)
+  - Settings     — config values (expiry, circuit breaker)
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 from domain.entities.enums import (
     SignalDirection, SignalOutcome,
@@ -54,10 +53,8 @@ class SessionCoordinator:
         self._session_store = session_store
         self._settings      = settings
 
-        tz = settings.session_tz
         now_ms = settings.now_ms()
 
-        self._tz:               ZoneInfo                    = tz
         self._session_day:      date                        = self._to_date(now_ms)
         self._session_start_ms: int                         = self._day_start_ms(self._session_day)
         self._state:            DedupState                  = DedupState()
@@ -66,8 +63,8 @@ class SessionCoordinator:
 
         self._load_session()
         logger.info(
-            "SessionCoordinator ready  day=%s  tz=%s  zones=%d  history=%d  streak=%d",
-            self._session_day, settings.session_timezone,
+            "SessionCoordinator ready  day=%s  zones=%d  history=%d  streak=%d",
+            self._session_day,
             len(self._state.dead_zones), len(self._history), self.consecutive_losses,
         )
 
@@ -205,7 +202,6 @@ class SessionCoordinator:
         paused = bool(self._paused_until and now < self._paused_until)
         return {
             "session_day":         self._session_day.isoformat(),
-            "session_timezone":    self._settings.session_timezone,
             "session_r":           round(self.session_r, 2),
             "total_signals":       len(self._history),
             "wins":                len(wins),
@@ -215,7 +211,7 @@ class SessionCoordinator:
             "consecutive_losses":  self.consecutive_losses,
             "paused":              paused,
             "paused_until":        (
-                datetime.fromtimestamp(self._paused_until / 1000, tz=self._tz).isoformat()
+                datetime.fromtimestamp(self._paused_until / 1000, tz=timezone.utc).isoformat()
                 if paused else None
             ),
             "dead_zones":          len(self._state.dead_zones),
@@ -232,7 +228,7 @@ class SessionCoordinator:
         paused = "  🔴 PAUSED" if (self._paused_until and now < self._paused_until) else ""
         open_pos = [f"{s}:{d}[{h}/{l}]" for s, d, h, l in self._state.open_dir] or ["∅"]
         return (
-            f"[{self._session_day} {self._settings.session_timezone}]  "
+            f"[{self._session_day} UTC]  "
             f"{self.session_r:+.2f}R  WR {wr}  "
             f"zones={len(self._state.dead_zones)}  open={open_pos}"
             f"{streak}{paused}"
@@ -241,10 +237,10 @@ class SessionCoordinator:
     # ── Internals ─────────────────────────────────────────────────────────────
 
     def _to_date(self, ts_ms: int) -> date:
-        return datetime.fromtimestamp(ts_ms / 1000, tz=self._tz).date()
+        return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date()
 
     def _day_start_ms(self, day: date) -> int:
-        dt = datetime(day.year, day.month, day.day, 0, 0, 0, tzinfo=self._tz)
+        dt = datetime(day.year, day.month, day.day, 0, 0, 0, tzinfo=timezone.utc)
         return int(dt.timestamp() * 1000)
 
     def _load_session(self) -> None:
@@ -327,7 +323,7 @@ class SessionCoordinator:
                 logger.warning(
                     "⚠  %d consecutive losses — engine PAUSED for %.1f hours (until %s)",
                     cl, pause_hours,
-                    datetime.fromtimestamp(pause_until / 1000, tz=self._tz).isoformat(),
+                    datetime.fromtimestamp(pause_until / 1000, tz=timezone.utc).isoformat(),
                 )
             self._paused_until = pause_until
         else:

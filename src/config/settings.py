@@ -23,7 +23,7 @@ import datetime
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from typing import Any
 
 from dotenv import load_dotenv, find_dotenv
 
@@ -38,15 +38,29 @@ def _bool_env(key: str, default: bool) -> bool:
     return val.strip().lower() not in ("false", "0", "no")
 
 
-def _parse_tf_max_rr(raw: str) -> dict:
-    """Parse TF_MAX_RR env var.
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() not in ("false", "0", "no", "off")
+
+
+def _parse_pair_map(raw: Any) -> dict:
+    """Parse per-timeframe mapping values.
 
     Accepts JSON  : '{"5/1": 3.0, "60/5": 10.0}'
     or shorthand  : '5/1:3,60/5:10'
-    Returns {}    on empty / invalid input (falls through to tier table).
+    or YAML dict : {"5/1": 3.0, "60/5": 10.0}
     """
     import json
 
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): float(v) for k, v in raw.items()}
     raw = raw.strip()
     if not raw:
         return {}
@@ -64,14 +78,64 @@ def _parse_tf_max_rr(raw: str) -> dict:
     return result
 
 
-def _set_env(key: str, default: set[int]) -> set[int]:
-    val = os.getenv(key)
-    if val is None:
-        return default
-    val = val.strip()
-    if not val:
+def _int_set(value: Any, default: set[int] | None = None) -> set[int]:
+    if value is None:
+        return default or set()
+    if value == "":
         return set()
-    return {int(x.strip()) for x in val.split(",") if x.strip()}
+    if isinstance(value, (list, tuple, set)):
+        return {int(x) for x in value}
+    return {int(x.strip()) for x in str(value).split(",") if x.strip()}
+
+
+def _load_yaml(path: Path) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError("PyYAML is required to load YAML config files.") from exc
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Config file root must be a mapping: {path}")
+    return data
+
+
+def _config_path_from_env() -> Path | None:
+    raw = os.getenv("USE_CONFIG") or os.getenv("APEX_CONFIG")
+    if raw:
+        return Path(raw).expanduser()
+    default = Path("config.yaml")
+    return default if default.exists() else None
+
+
+def _get(data: dict, key: str, default: Any = None) -> Any:
+    cur: Any = data
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
+
+
+def _parse_tf_pairs(value: Any) -> tuple:
+    if value is None:
+        return (("1h", "5min"),)
+    if isinstance(value, str):
+        return tuple(
+            tuple(p.strip().split(":"))
+            for p in value.split(",")
+            if ":" in p.strip()
+        ) or (("1h", "5min"),)
+    pairs = []
+    for item in value:
+        if isinstance(item, str) and ":" in item:
+            pairs.append(tuple(item.strip().split(":")))
+        elif isinstance(item, dict):
+            pairs.append((str(item["htf"]), str(item["ltf"])))
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            pairs.append((str(item[0]), str(item[1])))
+    return tuple(pairs) or (("1h", "5min"),)
 
 
 def interval_to_minutes(interval: str) -> int:
@@ -102,22 +166,59 @@ def _default_sessions() -> dict[str, dict]:
         "TOKYO": {
             "start": datetime.time(0, 0),
             "end": datetime.time(8, 0),
-            "enabled": _bool_env("SESSION_TOKYO_ENABLED", False),
-            "blocked_hours": _set_env("BLOCKED_HOURS_TOKYO", set()),
+            "enabled": False,
+            "blocked_hours": set(),
         },
         "LONDON": {
             "start": datetime.time(8, 0),
             "end": datetime.time(16, 0),
-            "enabled": _bool_env("SESSION_LONDON_ENABLED", True),
-            "blocked_hours": _set_env("BLOCKED_HOURS_LONDON", set()),
+            "enabled": True,
+            "blocked_hours": {9},
         },
         "NEW_YORK": {
             "start": datetime.time(16, 0),
             "end": datetime.time(0, 0),
-            "enabled": _bool_env("SESSION_NY_ENABLED", True),
-            "blocked_hours": _set_env("BLOCKED_HOURS_NY", set()),
+            "enabled": True,
+            "blocked_hours": {17, 19},
         },
     }
+
+
+def _parse_time(value: Any, default: datetime.time) -> datetime.time:
+    if value is None:
+        return default
+    if isinstance(value, datetime.time):
+        return value
+    text = str(value).strip()
+    hour, _, minute = text.partition(":")
+    return datetime.time(int(hour), int(minute or 0))
+
+
+def _sessions_from_config(raw: Any) -> dict[str, dict]:
+    sessions = _default_sessions()
+    if not isinstance(raw, dict):
+        return sessions
+    for name, overrides in raw.items():
+        key = str(name).upper()
+        base = sessions.get(
+            key,
+            {
+                "start": datetime.time(0, 0),
+                "end": datetime.time(0, 0),
+                "enabled": False,
+                "blocked_hours": set(),
+            },
+        )
+        overrides = overrides or {}
+        sessions[key] = {
+            "start": _parse_time(overrides.get("start"), base["start"]),
+            "end": _parse_time(overrides.get("end"), base["end"]),
+            "enabled": _as_bool(overrides.get("enabled"), base["enabled"]),
+            "blocked_hours": _int_set(
+                overrides.get("blocked_hours"), base.get("blocked_hours", set())
+            ),
+        }
+    return sessions
 
 
 # ── Fixed constants (never in env) ────────────────────────────────────────────
@@ -165,15 +266,18 @@ class Settings:
     ws_secret: str = ""
     max_ws_clients: int = 10
 
-    # ── MT5 data server ───────────────────────────────────────────────────────
-    local_base_url: str = "http://localhost:8000"
+    # ── MT5 terminal ──────────────────────────────────────────────────────────
+    mt5_terminal_path: str = ""
+    mt5_login: int = 0
+    mt5_password: str = ""
+    mt5_server: str = ""
+    mt5_timeout_ms: int = 60_000
+    mt5_portable: bool = False
 
-    # ── Timezone ──────────────────────────────────────────────────────────────
-    session_timezone: str = "UTC"
-
-    @property
-    def session_tz(self) -> ZoneInfo:
-        return ZoneInfo(self.session_timezone)
+    # ── Deployment / trading guardrails ───────────────────────────────────────
+    apex_env: str = "paper"
+    apex_live_confirm: str = ""
+    apex_disable_trading: bool = False
 
     # ── Timeframes ────────────────────────────────────────────────────────────
     tf_pairs: tuple = (("1h", "5min"),)
@@ -289,6 +393,12 @@ class Settings:
             raise ValueError(
                 f"entry_model must be one of {valid_models}, got {self.entry_model!r}."
             )
+        if self.apex_env not in {"paper", "live"}:
+            raise ValueError("apex_env must be 'paper' or 'live'.")
+        if self.apex_env == "live" and self.apex_live_confirm != "YES_I_ACCEPT_RISK":
+            raise ValueError(
+                "APEX_ENV=live requires APEX_LIVE_CONFIRM=YES_I_ACCEPT_RISK."
+            )
         if not self.ws_secret:
             import logging as _logging
 
@@ -302,7 +412,8 @@ class Settings:
     @classmethod
     def from_env(cls, env_file: "Path | None" = None) -> "Settings":
         """
-        Read all settings from os.environ / .env. Call once at startup.
+        Read secrets/runtime flags from os.environ / .env and engine settings
+        from YAML. Call once at startup.
 
         .env search order:
           1. explicit env_file argument (testing / Docker bind-mount)
@@ -310,9 +421,9 @@ class Settings:
              so it finds .env at the project root regardless of cwd
           3. silent no-op if not found (pure-env deployments / CI)
 
-        Loading happens here, not at module import time, so the working
-        directory is irrelevant when the engine runs as an installed script.
-        override=False means existing env vars always win over .env values.
+        Set USE_CONFIG=config.yaml or APEX_CONFIG=config.yaml to choose the YAML
+        file. If neither is set, config.yaml is used when present; otherwise
+        dataclass defaults are used.
         """
         if env_file is not None:
             load_dotenv(env_file, override=False)
@@ -321,58 +432,65 @@ class Settings:
             if dotenv_path:
                 load_dotenv(dotenv_path, override=False)
 
-        raw_pairs = os.getenv("TF_PAIRS", "1h:5min")
-        tf_pairs: tuple = tuple(
-            tuple(p.strip().split(":"))
-            for p in raw_pairs.split(",")
-            if ":" in p.strip()
-        ) or (("1h", "5min"),)
+        config_path = _config_path_from_env()
+        cfg = _load_yaml(config_path) if config_path else {}
 
         return cls(
             base_dir=Path.cwd(),
-            log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
-            log_dir=os.getenv("LOG_DIR", "logs"),
-            ws_host=os.getenv("WS_HOST", "0.0.0.0"),
-            ws_port=int(os.getenv("WS_PORT", "8765")),
+            log_level=str(_get(cfg, "logging.level", "INFO")).upper(),
+            log_dir=str(_get(cfg, "logging.dir", "logs")),
+            ws_host=str(_get(cfg, "websocket.host", "0.0.0.0")),
+            ws_port=int(_get(cfg, "websocket.port", 8765)),
             ws_secret=os.getenv("WS_SECRET", ""),
-            max_ws_clients=int(os.getenv("MAX_WS_CLIENTS", "10")),
-            local_base_url=os.getenv("LOCAL_BASE_URL", "http://localhost:8000"),
-            session_timezone=os.getenv("SESSION_TIMEZONE", "UTC"),
-            tf_pairs=tf_pairs,
-            htf_lookback=int(os.getenv("HTF_LOOKBACK", "120")),
-            htf_outputsize=int(os.getenv("HTF_OUTPUTSIZE", "1000")),
-            min_wick_ratio=float(os.getenv("MIN_WICK_RATIO", "0.65")),
-            max_sl_zone_mult=float(os.getenv("MAX_SL_ZONE_MULT", "2.0")),
-            min_rr=float(os.getenv("MIN_RR", "1.5")),
-            max_rr=float(os.getenv("MAX_RR", "9.0")),
-            tf_max_rr=_parse_tf_max_rr(os.getenv("TF_MAX_RR", "")),
-            signal_expiry_hours=float(os.getenv("SIGNAL_EXPIRY_HOURS", "120")),
-            max_htf_zones_per_dir=int(os.getenv("MAX_HTF_ZONES_PER_DIR", "3")),
-            use_trend_filter=_bool_env("USE_TREND_FILTER", True),
-            use_breakeven=_bool_env("USE_BREAKEVEN", True),
-            use_invalidation=_bool_env("USE_INVALIDATION", False),
-            multi_tf_independent_positions=_bool_env(
-                "MULTI_TF_INDEPENDENT_POSITIONS", True
+            max_ws_clients=int(_get(cfg, "websocket.max_clients", 10)),
+            mt5_terminal_path=str(_get(cfg, "mt5.terminal_path", "")),
+            mt5_login=int(os.getenv("MT5_LOGIN", "0") or "0"),
+            mt5_password=os.getenv("MT5_PASSWORD", ""),
+            mt5_server=os.getenv("MT5_SERVER", ""),
+            mt5_timeout_ms=int(_get(cfg, "mt5.timeout_ms", 60_000)),
+            mt5_portable=_as_bool(_get(cfg, "mt5.portable", False)),
+            apex_env=os.getenv("APEX_ENV", "paper").strip().lower(),
+            apex_live_confirm=os.getenv("APEX_LIVE_CONFIRM", ""),
+            apex_disable_trading=_bool_env("APEX_DISABLE_TRADING", False),
+            tf_pairs=_parse_tf_pairs(_get(cfg, "timeframes.pairs")),
+            htf_lookback=int(_get(cfg, "timeframes.htf_lookback", 120)),
+            htf_outputsize=int(_get(cfg, "timeframes.htf_outputsize", 1000)),
+            min_wick_ratio=float(_get(cfg, "signal_quality.min_wick_ratio", 0.65)),
+            max_sl_zone_mult=float(_get(cfg, "signal_quality.max_sl_zone_mult", 2.0)),
+            min_rr=float(_get(cfg, "signal_quality.min_rr", 1.5)),
+            max_rr=float(_get(cfg, "signal_quality.max_rr", 9.0)),
+            tf_max_rr=_parse_pair_map(_get(cfg, "signal_quality.tf_max_rr")),
+            signal_expiry_hours=float(_get(cfg, "signal_lifetime.expiry_hours", 120)),
+            max_htf_zones_per_dir=int(_get(cfg, "zones.max_htf_zones_per_dir", 3)),
+            use_trend_filter=_as_bool(_get(cfg, "features.use_trend_filter", True)),
+            use_breakeven=_as_bool(_get(cfg, "features.use_breakeven", True)),
+            use_invalidation=_as_bool(_get(cfg, "features.use_invalidation", False)),
+            multi_tf_independent_positions=_as_bool(
+                _get(cfg, "features.multi_tf_independent_positions", True)
             ),
-            entry_model=os.getenv("ENTRY_MODEL", "candle_pattern").lower(),
-            use_displacement_filter=_bool_env("USE_DISPLACEMENT_FILTER", True),
-            displacement_atr_period=int(os.getenv("DISPLACEMENT_ATR_PERIOD", "10")),
-            displacement_atr_mult=float(os.getenv("DISPLACEMENT_ATR_MULT", "1.2")),
-            tf_displacement_mult=_parse_tf_max_rr(os.getenv("TF_DISPLACEMENT_MULT", "")),
-            max_consecutive_losses=int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3")),
-            pause_after_streak_h=float(os.getenv("PAUSE_AFTER_STREAK_H", "12")),
-            use_session_filter=_bool_env("USE_SESSION_FILTER", True),
-            sessions=_default_sessions(),
+            entry_model=str(_get(cfg, "features.entry_model", "candle_pattern")).lower(),
+            use_displacement_filter=_as_bool(
+                _get(cfg, "displacement_filter.enabled", True)
+            ),
+            displacement_atr_period=int(_get(cfg, "displacement_filter.atr_period", 10)),
+            displacement_atr_mult=float(_get(cfg, "displacement_filter.atr_mult", 1.2)),
+            tf_displacement_mult=_parse_pair_map(
+                _get(cfg, "displacement_filter.tf_mult")
+            ),
+            max_consecutive_losses=int(_get(cfg, "circuit_breaker.max_consecutive_losses", 3)),
+            pause_after_streak_h=float(_get(cfg, "circuit_breaker.pause_after_streak_h", 12)),
+            use_session_filter=_as_bool(_get(cfg, "session_filter.enabled", True)),
+            sessions=_sessions_from_config(_get(cfg, "session_filter.sessions")),
         )
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 
     def now_ms(self) -> int:
         """Current time as a UTC millisecond timestamp."""
-        return int(datetime.datetime.now(tz=self.session_tz).timestamp() * 1000)
+        return int(datetime.datetime.now(tz=datetime.timezone.utc).timestamp() * 1000)
 
     def ms_to_str(self, ms: int) -> str:
-        return datetime.datetime.fromtimestamp(ms / 1000, tz=self.session_tz).strftime(
+        return datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
 

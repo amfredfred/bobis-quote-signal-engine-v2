@@ -1,32 +1,8 @@
 """
-infrastructure/data_providers/market_data.py — MT5 HTTP bridge client.
+infrastructure/data_providers/market_data.py - direct MetaTrader 5 data client.
 
-All candle data is fetched from the local MT5 bridge server.
-
-Fixes vs old market_data.py
-────────────────────────────
-  BUG: string-format timestamps were tagged with session_tz instead of UTC.
-       The MT5 server always returns UTC. Fixed: datetime strings are now
-       always parsed as UTC regardless of session_tz.
-
-  BUG: client expected a flat list from the server but the server wraps
-       successful responses in {"status": "success", "count": N, "candles": [...]}.
-       Fixed: _unwrap_raw() normalises both success and error envelopes before
-       passing data to _parse_candles().
-
-  IMPROVEMENT: MarketDataClient is now a plain class — no module-level _cfg.
-               Inject base_url and settings at construction time.
-
-API contract (POST /time-series)
-──────────────────────────────────
-  Request:  { "symbols": [...], "timeframes": [...], "limit": N }
-            { "symbols": [...], "timeframes": [...], "from_date": "...", "to_date": "..." }
-  Response: { "EUR/USD": { "1h": { "status": "success", "count": N, "candles": [...] } } }
-         or { "EUR/USD": { "1h": { "status": "error",   "error": "..." } } }
-
-Interval map (config format → MT5 format):
-  "1min"→"1m"  "5min"→"5m" "10min"→"10m"  "15min"→"15m"  "30min"→"30m"
-  "1h"→"1h"    "4h"→"4h"    "1day"→"d1"     "1week"→"w1"
+The engine reads OHLC candles from the local MetaTrader 5 terminal through the
+official Python package. Candle timestamps are normalized to UTC milliseconds.
 """
 
 from __future__ import annotations
@@ -36,33 +12,49 @@ import logging
 import time
 from typing import Optional
 
-import requests
-from requests.adapters import HTTPAdapter
-
 from domain.entities.candle import Candle
 
 logger = logging.getLogger(__name__)
-
-_INTERVAL_MAP: dict[str, str] = {
-    "1min": "1m",
-    "5min": "5m",
-    "6min": "6m",
-    "10min": "10m",
-    "15min": "15m",
-    "30min": "30m",
-    "1h": "1h",
-    "4h": "4h",
-    "1day": "d1",
-    "1week": "w1",
-    "1month": "mn1",
-}
 
 
 class MarketDataError(Exception):
     pass
 
 
-def _to_mt5_interval(interval: str) -> str:
+try:
+    import MetaTrader5 as mt5
+except ImportError:  # pragma: no cover - exercised only on missing runtime dep
+    mt5 = None
+
+
+_INTERVAL_MAP = {}
+if mt5 is not None:
+    _INTERVAL_MAP = {
+        "1min": mt5.TIMEFRAME_M1,
+        "2min": mt5.TIMEFRAME_M2,
+        "3min": mt5.TIMEFRAME_M3,
+        "4min": mt5.TIMEFRAME_M4,
+        "5min": mt5.TIMEFRAME_M5,
+        "6min": mt5.TIMEFRAME_M6,
+        "10min": mt5.TIMEFRAME_M10,
+        "12min": mt5.TIMEFRAME_M12,
+        "15min": mt5.TIMEFRAME_M15,
+        "20min": mt5.TIMEFRAME_M20,
+        "30min": mt5.TIMEFRAME_M30,
+        "1h": mt5.TIMEFRAME_H1,
+        "2h": mt5.TIMEFRAME_H2,
+        "3h": mt5.TIMEFRAME_H3,
+        "4h": mt5.TIMEFRAME_H4,
+        "6h": mt5.TIMEFRAME_H6,
+        "8h": mt5.TIMEFRAME_H8,
+        "12h": mt5.TIMEFRAME_H12,
+        "1day": mt5.TIMEFRAME_D1,
+        "1week": mt5.TIMEFRAME_W1,
+        "1month": mt5.TIMEFRAME_MN1,
+    }
+
+
+def _to_mt5_interval(interval: str) -> int:
     mapped = _INTERVAL_MAP.get(interval)
     if mapped is None:
         raise MarketDataError(
@@ -72,162 +64,141 @@ def _to_mt5_interval(interval: str) -> str:
     return mapped
 
 
-def _ms_to_utc_str(ms: int) -> str:
-    """UTC ms timestamp → 'YYYY-MM-DD HH:MM:SS' in UTC."""
-    return datetime.datetime.fromtimestamp(
-        ms / 1000, tz=datetime.timezone.utc
-    ).strftime("%Y-%m-%d %H:%M:%S")
+def _utc_dt(ms: int) -> datetime.datetime:
+    return datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc)
 
 
-def _unwrap_raw(raw, symbol: str, mt5_interval: str) -> list[dict]:
-    """
-    Normalise the per-timeframe value returned by the bridge.
-
-    The server wraps results in an envelope:
-        success → {"status": "success", "count": N, "candles": [...]}
-        error   → {"status": "error",   "error": "..."}
-
-    A bare list is also accepted for forward-compatibility.
-    Raises MarketDataError on any error payload.
-    """
-    if isinstance(raw, list):
-        return raw
-
-    if isinstance(raw, dict):
-        if raw.get("status") == "error" or "error" in raw:
-            raise MarketDataError(
-                f"MT5 server error for {symbol}/{mt5_interval}: {raw.get('error')}"
-            )
-        candles = raw.get("candles")
-        if candles is None:
-            raise MarketDataError(
-                f"Unexpected response shape for {symbol}/{mt5_interval}: {raw}"
-            )
-        return candles
-
-    raise MarketDataError(
-        f"Unrecognised response type for {symbol}/{mt5_interval}: {type(raw)}"
-    )
+def _now_ms() -> int:
+    return int(datetime.datetime.now(tz=datetime.timezone.utc).timestamp() * 1000)
 
 
-def _parse_candles(values: list[dict]) -> list[Candle]:
-    """
-    Parse raw candle dicts from the MT5 server into Candle objects.
+def _last_error() -> str:
+    if mt5 is None:
+        return "MetaTrader5 package is not installed"
+    code, message = mt5.last_error()
+    return f"{code}: {message}"
 
-    MT5 always returns UTC timestamps. String-format datetimes are parsed
-    as UTC — never as session_tz (that was the old timezone bug).
-    """
+
+def _row_value(row, key: str, default=0):
+    try:
+        return row[key]
+    except Exception:
+        return getattr(row, key, default)
+
+
+def _parse_rates(rates) -> list[Candle]:
+    if rates is None:
+        raise MarketDataError(f"MT5 returned no rates ({_last_error()})")
+
     candles: list[Candle] = []
-    for v in values:
-        try:
-            raw = v.get("timestamp") or v.get("datetime")
-            if raw is None:
-                raise KeyError("no 'timestamp' or 'datetime' field")
-
-            if isinstance(raw, int):
-                ts_ms = raw
-            else:
-                # FIX: always UTC — MT5 server contract guarantees UTC strings
-                ts_ms = int(
-                    datetime.datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
-                    .replace(tzinfo=datetime.timezone.utc)
-                    .timestamp()
-                    * 1000
-                )
-
-            candles.append(
-                Candle(
-                    timestamp=ts_ms,
-                    open=float(v["open"]),
-                    high=float(v["high"]),
-                    low=float(v["low"]),
-                    close=float(v["close"]),
-                    volume=float(v.get("volume") or 0),
-                )
+    for row in rates:
+        candles.append(
+            Candle(
+                timestamp=int(_row_value(row, "time")) * 1000,
+                open=float(_row_value(row, "open")),
+                high=float(_row_value(row, "high")),
+                low=float(_row_value(row, "low")),
+                close=float(_row_value(row, "close")),
+                volume=float(
+                    _row_value(row, "tick_volume", _row_value(row, "real_volume", 0))
+                ),
             )
-        except (KeyError, ValueError) as exc:
-            logger.warning("Skipping malformed candle: %s -- %s", v, exc)
+        )
+    candles.sort(key=lambda c: c.timestamp)
     return candles
 
 
 class MarketDataClient:
     """
-    HTTP client for the local MT5 bridge server.
+    Synchronous client for the local MetaTrader 5 terminal.
 
-    All methods are synchronous — wrap in loop.run_in_executor() from async code.
-
-    Parameters
-    ──────────
-    base_url    — MT5 bridge URL, e.g. "http://localhost:8000"
-    metrics_fn  — optional callable(symbol, interval, source, called_at, duration_ms, success, error)
-                  injected so this class doesn't import the metrics singleton.
+    The public methods intentionally match the old data client so the signal
+    service and backtester can keep using `fetch_candles`,
+    `fetch_candles_range`, and `close`.
     """
-
-    _RETRY_ATTEMPTS = 8
-    _RETRY_BACKOFF = [1.0, 2.0, 4.0, 8.0, 12.0, 20.0]
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8000",
+        *,
+        terminal_path: str = "",
+        login: Optional[int] = None,
+        password: str = "",
+        server: str = "",
+        timeout_ms: int = 60_000,
+        portable: bool = False,
         metrics_fn=None,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        if mt5 is None:
+            raise MarketDataError(
+                "MetaTrader5 package is not installed. Install project dependencies "
+                "with `pip install -e .` on the MT5 host."
+            )
+
         self._metrics_fn = metrics_fn
-        self._session = requests.Session()
-        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20)
-        self._session.mount("http://", adapter)
-        self._session.mount("https://", adapter)
-        logger.info("MarketDataClient initialised  base_url=%r", self._base_url)
+        self._shutdown_on_close = False
 
-    def _post(self, path: str, body: dict) -> dict:
-        url = f"{self._base_url}{path}"
-        symbol = str(body.get("symbols", ["?"])[0])
-        interval = str(body.get("timeframes", ["?"])[0])
-        called_at = int(time.time() * 1000)
-        last_exc: Exception = RuntimeError("no attempts made")
+        kwargs = {"timeout": timeout_ms, "portable": portable}
+        if terminal_path:
+            kwargs["path"] = terminal_path
+        if login is not None:
+            kwargs["login"] = login
+        if password:
+            kwargs["password"] = password
+        if server:
+            kwargs["server"] = server
 
-        for attempt in range(1, self._RETRY_ATTEMPTS + 1):
-            t0 = time.perf_counter()
-            try:
-                resp = self._session.post(url, json=body, timeout=1200)
-                resp.raise_for_status()
-                duration_ms = (time.perf_counter() - t0) * 1000
-                if self._metrics_fn:
-                    self._metrics_fn(
-                        symbol, interval, "local", called_at, duration_ms, True, None
-                    )
-                return resp.json()
-            except requests.RequestException as exc:
-                last_exc = exc
-                duration_ms = (time.perf_counter() - t0) * 1000
-                if self._metrics_fn:
-                    self._metrics_fn(
-                        symbol,
-                        interval,
-                        "local",
-                        called_at,
-                        duration_ms,
-                        False,
-                        str(exc),
-                    )
-                if attempt < self._RETRY_ATTEMPTS:
-                    wait = self._RETRY_BACKOFF[
-                        min(attempt - 1, len(self._RETRY_BACKOFF) - 1)
-                    ]
-                    logger.warning(
-                        "[%s %s] MT5 fetch failed (attempt %d/%d), retrying in %.0fs: %s",
-                        symbol,
-                        interval,
-                        attempt,
-                        self._RETRY_ATTEMPTS,
-                        wait,
-                        exc,
-                    )
-                    time.sleep(wait)
+        if not mt5.initialize(**kwargs):
+            raise MarketDataError(f"MT5 initialize failed: {_last_error()}")
 
-        raise MarketDataError(
-            f"HTTP error on {path} after {self._RETRY_ATTEMPTS} attempts: {last_exc}"
-        ) from last_exc
+        self._shutdown_on_close = True
+        account = mt5.account_info()
+        terminal = mt5.terminal_info()
+        logger.info(
+            "MarketDataClient initialised via MT5  login=%s  terminal=%s",
+            getattr(account, "login", None),
+            getattr(terminal, "path", None),
+        )
+
+    @classmethod
+    def from_settings(cls, settings, metrics_fn=None) -> "MarketDataClient":
+        login = settings.mt5_login
+        return cls(
+            terminal_path=settings.mt5_terminal_path,
+            login=login if login else None,
+            password=settings.mt5_password,
+            server=settings.mt5_server,
+            timeout_ms=settings.mt5_timeout_ms,
+            portable=settings.mt5_portable,
+            metrics_fn=metrics_fn,
+        )
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        return symbol.upper().replace("/", "")
+
+    def _ensure_symbol(self, symbol: str) -> str:
+        mt5_symbol = self._normalize_symbol(symbol)
+        info = mt5.symbol_info(mt5_symbol)
+        if info is None:
+            raise MarketDataError(f"MT5 symbol {mt5_symbol!r} not found")
+        if not info.visible and not mt5.symbol_select(mt5_symbol, True):
+            raise MarketDataError(
+                f"MT5 symbol {mt5_symbol!r} is not visible and could not be selected"
+            )
+        return mt5_symbol
+
+    def _record_metrics(
+        self,
+        symbol: str,
+        interval: str,
+        called_at: int,
+        started: float,
+        success: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        if not self._metrics_fn:
+            return
+        duration_ms = (time.perf_counter() - started) * 1000
+        self._metrics_fn(symbol, interval, "mt5", called_at, duration_ms, success, error)
 
     def fetch_candles(
         self,
@@ -236,26 +207,19 @@ class MarketDataClient:
         outputsize: int = 200,
         allow_gaps: bool = True,
     ) -> list[Candle]:
-        """Fetch the most recent `outputsize` bars for a symbol/interval."""
         mt5_interval = _to_mt5_interval(interval)
-        response = self._post(
-            "/time-series",
-            {
-                "symbols": [symbol],
-                "timeframes": [mt5_interval],
-                "limit": outputsize,
-                "allow_gaps": allow_gaps,
-            },
-        )
-        raw = response.get(symbol, {}).get(mt5_interval)
-        candles = sorted(
-            _parse_candles(_unwrap_raw(raw, symbol, mt5_interval)),
-            key=lambda c: c.timestamp,
-        )
-        logger.debug(
-            "[%s %s] fetch_candles: %d candles", symbol, interval, len(candles)
-        )
-        return candles
+        mt5_symbol = self._ensure_symbol(symbol)
+        called_at = _now_ms()
+        started = time.perf_counter()
+        try:
+            rates = mt5.copy_rates_from_pos(mt5_symbol, mt5_interval, 0, outputsize)
+            candles = _parse_rates(rates)
+            self._record_metrics(symbol, interval, called_at, started, True)
+            logger.debug("[%s %s] fetch_candles: %d candles", symbol, interval, len(candles))
+            return candles
+        except Exception as exc:
+            self._record_metrics(symbol, interval, called_at, started, False, str(exc))
+            raise
 
     def fetch_candles_range(
         self,
@@ -265,67 +229,29 @@ class MarketDataClient:
         end_ts: Optional[int] = None,
         allow_gaps: bool = True,
     ) -> list[Candle]:
-        """Fetch all bars in [start_ts, end_ts] with automatic pagination."""
-        from config.settings import interval_to_minutes  # lazy — avoids circular import
-
         mt5_interval = _to_mt5_interval(interval)
-        bar_ms = interval_to_minutes(interval) * 60 * 1000
-        end_ts = end_ts or int(time.time() * 1000)
-        cursor = start_ts
-        all_candles: list[Candle] = []
-        seen_ts: set[int] = set()
-        batch_num = 0
-
-        logger.info(
-            "[%s %s] fetch_candles_range: %s → %s",
-            symbol,
-            interval,
-            _ms_to_utc_str(start_ts),
-            _ms_to_utc_str(end_ts),
-        )
-
-        while cursor <= end_ts:
-            batch_num += 1
-            response = self._post(
-                "/time-series",
-                {
-                    "symbols": [symbol],
-                    "timeframes": [mt5_interval],
-                    "from_date": _ms_to_utc_str(cursor),
-                    "to_date": _ms_to_utc_str(end_ts),
-                    "allow_gaps": allow_gaps,
-                },
+        mt5_symbol = self._ensure_symbol(symbol)
+        end_ts = end_ts or _now_ms()
+        called_at = _now_ms()
+        started = time.perf_counter()
+        try:
+            rates = mt5.copy_rates_range(
+                mt5_symbol, mt5_interval, _utc_dt(start_ts), _utc_dt(end_ts)
             )
-            raw = response.get(symbol, {}).get(mt5_interval)
-            batch = sorted(
-                _parse_candles(_unwrap_raw(raw, symbol, mt5_interval)),
-                key=lambda c: c.timestamp,
+            candles = _parse_rates(rates)
+            self._record_metrics(symbol, interval, called_at, started, True)
+            logger.debug(
+                "[%s %s] fetch_candles_range: %d candles",
+                symbol,
+                interval,
+                len(candles),
             )
-            if not batch:
-                break
-
-            new = [c for c in batch if c.timestamp not in seen_ts]
-            if not new:
-                break
-
-            for c in new:
-                seen_ts.add(c.timestamp)
-                if c.timestamp <= end_ts:
-                    all_candles.append(c)
-
-            if batch[-1].timestamp >= end_ts:
-                break
-            cursor = batch[-1].timestamp + bar_ms
-
-        all_candles.sort(key=lambda c: c.timestamp)
-        logger.info(
-            "[%s %s] fetch_candles_range complete: %d candles  %d batch(es)",
-            symbol,
-            interval,
-            len(all_candles),
-            batch_num,
-        )
-        return all_candles
+            return candles
+        except Exception as exc:
+            self._record_metrics(symbol, interval, called_at, started, False, str(exc))
+            raise
 
     def close(self) -> None:
-        self._session.close()
+        if self._shutdown_on_close and mt5 is not None:
+            mt5.shutdown()
+            self._shutdown_on_close = False

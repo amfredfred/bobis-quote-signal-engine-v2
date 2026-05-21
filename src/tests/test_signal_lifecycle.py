@@ -170,7 +170,6 @@ def make_service(
     settings.now_ms.return_value = BASE_TS
     settings.signal_expiry_hours = signal_expiry_hours
     settings.tf_pairs = []
-    settings.session_tz = None
 
     svc = SignalService(
         market_data=MagicMock(),
@@ -186,7 +185,7 @@ def make_service(
 
 
 def eval_signal(svc, signal: TradeSignal, candle: Candle, now: int) -> None:
-    svc._evaluate_signal(signal, candle.close, candle.high, candle.low, now)
+    svc._evaluate_signal(signal, candle, now)
 
 
 def simulate(svc, signal: TradeSignal, candles: list[Candle]) -> TradeSignal:

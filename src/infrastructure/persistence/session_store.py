@@ -43,18 +43,16 @@ class SessionStore:
 
     session_dir  — e.g. Path("sessions")
     live_dir     — e.g. Path("results/live")
-    session_tz   — ZoneInfo used for the JSON metadata only
+    Session metadata is written in UTC.
     """
 
     def __init__(
         self,
         session_dir: Path,
         live_dir: Path,
-        session_tz,
     ) -> None:
         self._session_dir = session_dir
         self._live_dir    = live_dir
-        self._session_tz  = session_tz
         session_dir.mkdir(parents=True, exist_ok=True)
         live_dir.mkdir(parents=True, exist_ok=True)
 
@@ -77,15 +75,15 @@ class SessionStore:
             else:
                 data = {
                     "session_day": day.isoformat(),
-                    "timezone":    str(self._session_tz),
+                    "timezone":    "UTC",
                     "session_start": datetime.fromtimestamp(
-                        session_start_ms / 1000, tz=self._session_tz
+                        session_start_ms / 1000, tz=timezone.utc
                     ).isoformat(),
                     "records": [],
                 }
             data["records"].append(rec.to_dict())
             data["last_updated"] = datetime.fromtimestamp(
-                rec.closed_at / 1000, tz=self._session_tz
+                rec.closed_at / 1000, tz=timezone.utc
             ).isoformat()
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(data, indent=2))

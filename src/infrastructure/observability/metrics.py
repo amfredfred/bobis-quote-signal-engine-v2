@@ -17,7 +17,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -166,14 +166,8 @@ class MetricsCollector:
         return self._cfg.now_ms()
 
     def _session_day(self, ts_ms: Optional[int] = None) -> str:
-        from zoneinfo import ZoneInfo
-
         ts = (ts_ms or self._now_ms()) / 1000
-        return (
-            datetime.fromtimestamp(ts, tz=ZoneInfo(self._cfg.session_timezone))
-            .date()
-            .isoformat()
-        )
+        return datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
 
     # ── Scheduler ─────────────────────────────────────────────────────────────
 
@@ -519,7 +513,6 @@ class MetricsCollector:
             "use_invalidation": self._cfg.use_invalidation,
             "max_consecutive_losses": self._cfg.max_consecutive_losses,
             "pause_after_streak_h": self._cfg.pause_after_streak_h,
-            "session_timezone": self._cfg.session_timezone,
             "ws_port": self._cfg.ws_port,
             "ws_candle_buffer_ms": self._cfg.ws_candle_buffer_ms,
         }
