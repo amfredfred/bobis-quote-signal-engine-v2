@@ -511,6 +511,7 @@ class MultiPairBacktester:
         master_candles = self.ltf_candles[master_ltf]
         max_htf_mins = max(interval_to_minutes(htf) for htf, _ in self.pairs)
         min_ltf_mins = interval_to_minutes(master_ltf)
+        master_ltf_ms = min_ltf_mins * 60_000
         ltf_lb = max(100, htf_lookback * (max_htf_mins // min_ltf_mins))
         n = len(master_candles)
         total_steps = n - ltf_lb
@@ -566,6 +567,7 @@ class MultiPairBacktester:
                 )
 
             current_ts = master_candles[ltf_i].timestamp
+            analysis_close = current_ts + master_ltf_ms
 
             # Expire direction locks
             if open_dir:
@@ -577,9 +579,13 @@ class MultiPairBacktester:
                 htf_all = self.htf_candles[htf_interval]
                 htf_ts_idx = self._htf_ts[htf_interval]
 
-                # O(log n) HTF window
-                hi_htf = _bisect_right(htf_ts_idx, current_ts)
+                # O(log n) HTF window. HTF timestamps are candle opens; only
+                # include bars whose close is known at this analysis point.
+                hi_htf = _bisect_right(
+                    htf_ts_idx, analysis_close - _htf_int_ms[htf_interval]
+                )
                 lo_htf = max(0, hi_htf - htf_lookback)
+                htf_visible_all = htf_all[:hi_htf]
                 htf_w = htf_all[lo_htf:hi_htf]
                 if len(htf_w) < htf_lookback // 3:
                     continue
@@ -600,7 +606,8 @@ class MultiPairBacktester:
                     structure = None
 
                 # HTF ranges — recompute only on HTF bar close
-                cached_rng = _rng_cache.get(htf_interval)
+                range_cache_key = (htf_interval, ltf_interval)
+                cached_rng = _rng_cache.get(range_cache_key)
                 if cached_rng is None or cached_rng[0] != last_htf_ts:
                     htf_ranges = list(
                         _find_htf(
@@ -611,45 +618,56 @@ class MultiPairBacktester:
                         )
                     )
                     # Apply displacement filter — mirrors signal_service behaviour.
-                    # Uses htf_all (full series) so there is always enough context
-                    # to compute the average body before the BOS candle.
+                    # Uses visible HTF context only to avoid future candle leakage.
                     if use_disp:
-                        htf_all_full = self.htf_candles[htf_interval]
                         disp_atr_mult = cfg.displacement_mult_for(htf_interval, ltf_interval)
                         htf_ranges = [
                             z for z in htf_ranges
                             if detect_displacement(
-                                htf_all_full,
+                                htf_visible_all,
                                 z.broken_at,
                                 atr_period=disp_atr_period,
                                 atr_mult=disp_atr_mult,
                             )
                         ]
-                    _rng_cache[htf_interval] = (last_htf_ts, htf_ranges)
+                    _rng_cache[range_cache_key] = (last_htf_ts, htf_ranges)
                 else:
                     htf_ranges = cached_rng[1]
 
                 ltf_all = self.ltf_candles[ltf_interval]
                 ltf_ts_idx = self._ltf_ts[ltf_interval]
                 stale_ms = _stale_ms[(htf_interval, ltf_interval)]
+                ltf_interval_ms = interval_to_minutes(ltf_interval) * 60_000
+                pair_current_ts = (
+                    (analysis_close // ltf_interval_ms) * ltf_interval_ms
+                    - ltf_interval_ms
+                )
+                ltf_hi_idx = _bisect_right(ltf_ts_idx, pair_current_ts)
+                if ltf_hi_idx <= 0:
+                    continue
+                ltf_visible = ltf_all[:ltf_hi_idx]
 
                 for htf_range in htf_ranges:
                     zone_key = (htf_range.timestamp, htf_range.bos_direction.value)
+                    cache_key = (
+                        htf_interval,
+                        ltf_interval,
+                        htf_range.timestamp,
+                        htf_range.bos_direction.value,
+                    )
                     if zone_key in dead_zones:
                         continue
 
                     # ★ TIER 2: lo-index computed once per zone (zone_start is immutable)
-                    if zone_key not in _zone_lo:
+                    if cache_key not in _zone_lo:
                         zone_start = htf_range.broken_at or htf_range.timestamp
-                        _zone_lo[zone_key] = _bisect_left(ltf_ts_idx, zone_start)
-                    ltf_lo_idx = _zone_lo[zone_key]
-
-                    ltf_hi_idx = _bisect_right(ltf_ts_idx, current_ts)
+                        _zone_lo[cache_key] = _bisect_left(ltf_ts_idx, zone_start)
+                    ltf_lo_idx = _zone_lo[cache_key]
 
                     # ★ TIER 1: Zone-level find_ltf + find_entry cache
                     #   Key: ltf_hi_idx — changes only when a new LTF bar arrives.
                     #   On a cache hit the ltf_zone list is NEVER constructed.
-                    cached = _zone_cache.get(zone_key)
+                    cached = _zone_cache.get(cache_key)
                     if cached is not None and cached[0] == ltf_hi_idx:
                         # Fast path — reuse previously computed results
                         ltf_range = cached[1]
@@ -658,8 +676,8 @@ class MultiPairBacktester:
                         rej_result = cached[2]
                     else:
                         # Slow path — compute and store
-                        ltf_zone = ltf_all[ltf_lo_idx:ltf_hi_idx]
-                        ltf_range = _find_ltf(ltf_zone, htf_range, ltf_all)
+                        ltf_zone = ltf_visible[ltf_lo_idx:ltf_hi_idx]
+                        ltf_range = _find_ltf(ltf_zone, htf_range, ltf_visible)
                         rej_result = (
                             find_entry(
                                 ltf_zone,
@@ -671,7 +689,7 @@ class MultiPairBacktester:
                             if ltf_range
                             else None
                         )
-                        _zone_cache[zone_key] = (ltf_hi_idx, ltf_range, rej_result)
+                        _zone_cache[cache_key] = (ltf_hi_idx, ltf_range, rej_result)
                         if not ltf_range:
                             continue
 
@@ -694,7 +712,7 @@ class MultiPairBacktester:
                     )
                     if pair_dir_key in open_dir:
                         continue
-                    if current_ts - rejection.timestamp > stale_ms:
+                    if pair_current_ts - rejection.timestamp > stale_ms:
                         continue
 
                     # FIX: include direction in signal_id to match signal_service
@@ -715,7 +733,7 @@ class MultiPairBacktester:
                     if signal is None:
                         continue
 
-                    cur_ltf_i = _bisect_right(ltf_ts_idx, current_ts) - 1
+                    cur_ltf_i = ltf_hi_idx - 1
                     future_np = self.ltf_candles_np[ltf_interval][cur_ltf_i + 1 :]
                     result = _simulate(signal, future_np)
 
@@ -725,8 +743,8 @@ class MultiPairBacktester:
                     # never generate a second signal, so holding cached state for
                     # it wastes memory for the remainder of the backtest.
                     dead_zones.add(zone_key)
-                    _zone_cache.pop(zone_key, None)
-                    _zone_lo.pop(zone_key, None)
+                    _zone_cache.pop(cache_key, None)
+                    _zone_lo.pop(cache_key, None)
 
                     open_dir[pair_dir_key] = result.close_ts or (
                         signal.created_at + expiry_ms

@@ -59,7 +59,7 @@ class _MarketDataClient(Protocol):
         self, symbol: str, interval: str, outputsize: int
     ) -> list[Candle]: ...
     def fetch_candles_range(
-        self, symbol: str, interval: str, from_ts: int
+        self, symbol: str, interval: str, from_ts: int, end_ts: Optional[int] = None
     ) -> list[Candle]: ...
 
 
@@ -178,7 +178,7 @@ class SignalService:
         self._last_htf: dict[tuple, list[Candle]] = {}
         self._last_ltf: dict[tuple, list[Candle]] = {}
         self._last_ranges: dict[tuple, list] = {}
-        self._last_ltf_ranges: dict[tuple, dict[int, object]] = {}
+        self._last_ltf_ranges: dict[tuple, dict[tuple[int, str], object]] = {}
         self._current_fired: dict[str, int] = {}
         self._pending_emitted: dict[_PendingKey, int] = {}
 
@@ -291,6 +291,11 @@ class SignalService:
         pair_label = f"{symbol} {htf_interval}/{ltf_interval}"
         loop = asyncio.get_running_loop()
         profile = self._registry.get(symbol, htf_interval, ltf_interval)
+        htf_interval_ms = interval_to_minutes(htf_interval) * 60 * 1000
+        ltf_interval_ms = interval_to_minutes(ltf_interval) * 60 * 1000
+        min_ltf_ms = min(interval_to_minutes(ltf) for _, ltf in self._cfg.tf_pairs) * 60 * 1000
+        analysis_close = fired_at + min_ltf_ms
+        pair_fired_at = (analysis_close // ltf_interval_ms) * ltf_interval_ms - ltf_interval_ms
 
         # HTF
         htf_full = await loop.run_in_executor(
@@ -302,18 +307,26 @@ class SignalService:
         if len(htf_full) < 10:
             logger.warning("[%s] Insufficient HTF data", pair_label)
             return []
-        htf = htf_full[-profile.htf_lookback :]
+        htf_closed_cutoff = analysis_close - htf_interval_ms
+        htf_visible = [c for c in htf_full if c.timestamp <= htf_closed_cutoff]
+        if len(htf_visible) < 10:
+            logger.warning("[%s] Insufficient closed HTF data", pair_label)
+            return []
+        htf = htf_visible[-profile.htf_lookback :]
         self._last_htf[pair_key] = htf
 
         # LTF
         ltf_all = await loop.run_in_executor(
             None,
             lambda: self._md.fetch_candles_range(
-                symbol, ltf_interval, htf[0].timestamp
+                symbol, ltf_interval, htf[0].timestamp, analysis_close
             ),
         )
-        self._last_ltf[pair_key] = ltf_all
-        if len(ltf_all) < 10:
+        ltf_timestamps = [c.timestamp for c in ltf_all]
+        hi = bisect.bisect_right(ltf_timestamps, pair_fired_at)
+        ltf_visible = ltf_all[:hi]
+        self._last_ltf[pair_key] = ltf_visible
+        if len(ltf_visible) < 10:
             logger.warning("[%s] Insufficient LTF data", pair_label)
             return []
 
@@ -326,7 +339,6 @@ class SignalService:
                 return []
 
         # HTF ranges
-        htf_interval_ms = interval_to_minutes(htf_interval) * 60 * 1000
         htf_ranges = SwingDetector.find_htf_ranges(
             htf,
             pivot_bars=self._cfg.pivot_bars,
@@ -341,7 +353,7 @@ class SignalService:
                 z
                 for z in htf_ranges
                 if detect_displacement(
-                    htf_full,
+                    htf_visible,
                     z.broken_at,
                     atr_period=self._cfg.displacement_atr_period,
                     atr_mult=pair_disp_mult,
@@ -349,28 +361,29 @@ class SignalService:
             ]
         self._last_ranges[pair_key] = htf_ranges
 
-        ltf_timestamps = [c.timestamp for c in ltf_all]
-        now = fired_at
+        now = pair_fired_at
         expiry_ms = self._cfg.signal_expiry_hours * 3_600_000
 
         # Evict stale pending
-        stale_cutoff = fired_at - int(expiry_ms)
+        stale_cutoff = pair_fired_at - int(expiry_ms)
         self._pending_emitted = {
             k: v for k, v in self._pending_emitted.items() if v > stale_cutoff
         }
 
         # LTF range cache (single pass)
-        hi = bisect.bisect_right(ltf_timestamps, fired_at)
-        ltf_range_cache: dict[int, object] = {}
-        live_ltf_ts: set[int] = set()
+        ltf_range_cache: dict[tuple[int, str], object] = {}
+        live_ltf_keys: set[tuple[int, str]] = set()
 
         for htf_range in htf_ranges:
+            htf_key = (htf_range.timestamp, htf_range.bos_direction.value)
             zone_start = htf_range.broken_at or htf_range.timestamp
             lo = bisect.bisect_left(ltf_timestamps, zone_start)
-            lr = SwingDetector.find_ltf_range(ltf_all[lo:hi], htf_range, ltf_all)
-            ltf_range_cache[htf_range.timestamp] = lr
+            lr = SwingDetector.find_ltf_range(
+                ltf_visible[lo:hi], htf_range, ltf_visible
+            )
+            ltf_range_cache[htf_key] = lr
             if lr:
-                live_ltf_ts.add(lr.timestamp)
+                live_ltf_keys.add((lr.timestamp, lr.direction.value))
 
         self._last_ltf_ranges[pair_key] = {
             ts: lr for ts, lr in ltf_range_cache.items() if lr is not None
@@ -384,7 +397,7 @@ class SignalService:
                 k.symbol == symbol
                 and k.htf_interval == htf_interval
                 and k.ltf_interval == ltf_interval
-                and k.ltf_ts not in live_ltf_ts
+                and (k.ltf_ts, k.direction) not in live_ltf_keys
             )
         }
         for inv_key in invalidated:
@@ -405,11 +418,12 @@ class SignalService:
         new_signals: list[TradeSignal] = []
 
         for htf_range in htf_ranges:
+            htf_key = (htf_range.timestamp, htf_range.bos_direction.value)
             zone_start = htf_range.broken_at or htf_range.timestamp
             lo = bisect.bisect_left(ltf_timestamps, zone_start)
-            ltf_zone = ltf_all[lo:hi]
+            ltf_zone = ltf_visible[lo:hi]
 
-            ltf_range = ltf_range_cache.get(htf_range.timestamp)
+            ltf_range = ltf_range_cache.get(htf_key)
             if not ltf_range:
                 continue
             if structure is not None and not structure.allows(
@@ -484,7 +498,7 @@ class SignalService:
                 rejection=rejection,
                 direction=ltf_range.direction,
                 symbol=symbol,
-                current_ts=fired_at,
+                current_ts=pair_fired_at,
                 htf_interval=htf_interval,
                 ltf_interval=ltf_interval,
             )
@@ -566,6 +580,8 @@ class SignalService:
     # ── Watchlist Update ─────────────────────────────────────────────────────
 
     async def update_watchlist(self, symbol: str) -> None:
+        from config.settings import interval_to_minutes
+
         open_signals = [s for s in list(self._watchlist.values()) if s.symbol == symbol]
         if not open_signals:
             return
@@ -581,13 +597,17 @@ class SignalService:
             ltf_interval: str, signals: list[TradeSignal]
         ) -> None:
             oldest_ts = min(s.created_at for s in signals)
+            ltf_ms = interval_to_minutes(ltf_interval) * 60 * 1000
+            last_closed_open = (now // ltf_ms) * ltf_ms - ltf_ms
+            fetch_until = last_closed_open + ltf_ms
             try:
                 candles = await loop.run_in_executor(
                     None,
                     lambda iv=ltf_interval: self._md.fetch_candles_range(
-                        symbol, iv, oldest_ts
+                        symbol, iv, oldest_ts, fetch_until
                     ),
                 )
+                candles = [c for c in candles if c.timestamp <= last_closed_open]
                 if len(candles) < 2:
                     return
             except Exception as exc:
@@ -598,10 +618,10 @@ class SignalService:
 
             for signal in signals:
                 signal_candles = [
-                    c for c in candles if c.timestamp >= signal.triggered_at
+                    c for c in candles if c.timestamp > (signal.triggered_at or 0)
                 ]
                 for candle in signal_candles:
-                    self._evaluate_signal(signal, candle, now)
+                    self._evaluate_signal(signal, candle, candle.timestamp)
                     if signal.status not in (
                         SignalStatus.TRIGGERED,
                         SignalStatus.TP1_HIT,
@@ -907,7 +927,9 @@ class SignalService:
                 (symbol, htf_interval, ltf_interval), {}
             )
             for htf_range in htf_ranges:
-                lr = ltf_range_map.get(htf_range.timestamp)
+                lr = ltf_range_map.get(
+                    (htf_range.timestamp, htf_range.bos_direction.value)
+                )
                 if not lr:
                     continue
                 armed.append(
@@ -997,7 +1019,10 @@ class SignalService:
         probe.invalidated_at = None
         probe.invalidation_logged_at = None
 
-        self._simulate_lifecycle(probe, candles)
+        replay_from = signal.triggered_at or signal.created_at
+        self._simulate_lifecycle(
+            probe, [c for c in candles if c.timestamp > replay_from]
+        )
 
         return {
             "requestId": request_id,
