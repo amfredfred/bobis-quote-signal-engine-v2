@@ -512,6 +512,10 @@ class SignalService:
             if signal is None:
                 continue
 
+            detected_at = self._cfg.now_ms()
+            signal.detected_at = detected_at
+            signal.emitted_at = detected_at
+
             self._session.register_signal(
                 signal_id=signal.id,
                 symbol=symbol,

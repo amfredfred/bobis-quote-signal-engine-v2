@@ -23,6 +23,21 @@ from domain.entities.enums import (
 from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
 
 
+def _interval_to_ms(interval: str) -> int:
+    s = interval.strip().lower()
+    if s.endswith("min"):
+        return int(s[:-3]) * 60 * 1000
+    if s.endswith("h"):
+        return int(s[:-1]) * 60 * 60 * 1000
+    if s.endswith("day"):
+        return int(s[:-3]) * 24 * 60 * 60 * 1000
+    if s.endswith("week"):
+        return int(s[:-4]) * 7 * 24 * 60 * 60 * 1000
+    if s.endswith("month"):
+        return int(s[:-5]) * 30 * 24 * 60 * 60 * 1000
+    return 0
+
+
 @dataclass
 class TradeSignal:
     """
@@ -61,6 +76,8 @@ class TradeSignal:
     created_at:   int           = 0
     pending_at:   Optional[int] = None
     triggered_at: Optional[int] = None
+    detected_at:  Optional[int] = None
+    emitted_at:   Optional[int] = None
     tp1_hit_at:   Optional[int] = None
     tp2_hit_at:   Optional[int] = None
     sl_hit_at:    Optional[int] = None
@@ -87,6 +104,9 @@ class TradeSignal:
     # ── Serialisation ─────────────────────────────────────────────────────────
 
     def to_dict(self) -> dict:
+        rejection_candle_close_at = self.rejection_candle.timestamp + _interval_to_ms(
+            self.ltf_interval
+        )
         return {
             "id":              self.id,
             "symbol":          self.symbol,
@@ -125,6 +145,7 @@ class TradeSignal:
                 "low":       self.rejection_candle.low,
                 "close":     self.rejection_candle.close,
                 "timestamp": self.rejection_candle.timestamp,
+                "closeAt":   rejection_candle_close_at,
                 "wickRatio": round(self.rejection_candle.wick_ratio, 4),
                 "pattern":   self.rejection_candle.pattern.value,
                 "wickTip":   self.rejection_candle.wick_tip,
@@ -132,6 +153,9 @@ class TradeSignal:
             "createdAt":            self.created_at,
             "pendingAt":            self.pending_at,
             "triggeredAt":          self.triggered_at,
+            "detectedAt":           self.detected_at,
+            "emittedAt":            self.emitted_at,
+            "rejectionCandleCloseAt": rejection_candle_close_at,
             "tp1HitAt":             self.tp1_hit_at,
             "tp2HitAt":             self.tp2_hit_at,
             "slHitAt":              self.sl_hit_at,
@@ -192,6 +216,8 @@ class TradeSignal:
             created_at             = d["createdAt"],
             pending_at             = d.get("pendingAt"),
             triggered_at           = d.get("triggeredAt"),
+            detected_at            = d.get("detectedAt"),
+            emitted_at             = d.get("emittedAt"),
             tp1_hit_at             = d.get("tp1HitAt"),
             tp2_hit_at             = d.get("tp2HitAt"),
             sl_hit_at              = d.get("slHitAt"),

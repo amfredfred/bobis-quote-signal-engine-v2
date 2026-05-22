@@ -205,6 +205,21 @@ def simulate(svc, signal: TradeSignal, candles: list[Candle]) -> TradeSignal:
     return probe
 
 
+def test_signal_payload_separates_candle_and_emit_times():
+    signal = make_signal(created_at=BASE_TS)
+    signal.detected_at = BASE_TS + 301_500
+    signal.emitted_at = BASE_TS + 301_750
+
+    payload = signal.to_dict()
+
+    assert payload["triggeredAt"] == BASE_TS
+    assert payload["rejectionCandle"]["timestamp"] == BASE_TS
+    assert payload["rejectionCandle"]["closeAt"] == BASE_TS + 300_000
+    assert payload["rejectionCandleCloseAt"] == BASE_TS + 300_000
+    assert payload["detectedAt"] == BASE_TS + 301_500
+    assert payload["emittedAt"] == BASE_TS + 301_750
+
+
 def both_agree(svc, signal_factory, candles, *, attr: str = "close_price"):
     """Assert _evaluate_signal and _simulate_lifecycle return the same value."""
     s1 = signal_factory()
