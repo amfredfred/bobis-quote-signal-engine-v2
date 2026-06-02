@@ -10,7 +10,7 @@ $jobs = $symbols | ForEach-Object {
     Start-Job -ScriptBlock {
         param($s, $dir)
         Set-Location $dir                          # ← restore working directory
-        py -m src.app.backtesting.backtest --symbol $s --from-date 2019-01-01 --output "results/2019-2026-FREQUENCY/$s.csv" --spread-pip 25 --risk-percent 1 2>&1 | ForEach-Object { "[$s] $_" }
+        py -m src.app.backtesting.backtest --symbol $s --from-date 2019-01-01 --output "results/2019-2026-FREQUENCY/$s.csv" --spread-pct 5 --risk-percent 1 2>&1 | ForEach-Object { "[$s] $_" }
     } -ArgumentList $sym, $cwd
 }
 

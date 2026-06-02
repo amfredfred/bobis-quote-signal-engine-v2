@@ -85,39 +85,7 @@ interval_to_minutes: callable = lru_cache(maxsize=64)(_interval_to_minutes)
 # ── Account simulation defaults ───────────────────────────────────────────────
 DEFAULT_START_BALANCE: float = 5_000.0
 DEFAULT_RISK_PERCENT: float = 1.0
-DEFAULT_SPREAD_PIP: float = 0.0
-
-# ── Symbol pip sizes (price distance per pip) ─────────────────────────────────
-SYMBOL_PIP_SIZE: dict[str, float] = {
-    "XAUUSD": 0.01,
-    "EURUSD": 0.0001,
-    "GBPUSD": 0.0001,
-    "USDCHF": 0.0001,
-    "AUDUSD": 0.0001,
-    "USDCAD": 0.0001,
-    "NZDUSD": 0.0001,
-    "USDJPY": 0.01,
-    "US100": 1.0,
-    "US30": 1.0,
-    "US500": 0.1,
-    "JP225": 1.0,
-    "UK100": 1.0,
-    "BTCUSD": 1.0,
-}
-
-
-def get_pip_size(symbol: str) -> float:
-    """Return the pip size for symbol. Raises ValueError for unknown symbols."""
-    try:
-        return SYMBOL_PIP_SIZE[symbol]
-    except KeyError:
-        raise ValueError(
-            f"Unknown symbol {symbol!r} — add it to SYMBOL_PIP_SIZE in backtest.py"
-        )
-
-
-def spread_pip_to_price(spread_pip: float, pip_size: float) -> float:
-    return spread_pip * pip_size
+DEFAULT_SPREAD_POINTS: float = 0.0
 
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 GREEN = "\033[92m"
@@ -345,19 +313,14 @@ class BacktestReport:
         cfg: Settings,
         start_balance: float = DEFAULT_START_BALANCE,
         risk_percent: float = DEFAULT_RISK_PERCENT,
-        spread_pip: float = DEFAULT_SPREAD_PIP,
+        spread_points: float = DEFAULT_SPREAD_POINTS,
     ) -> None:
         self.symbol = symbol
         self.results = results
         self.cfg = cfg
         self.start_balance = start_balance
         self.risk_percent = risk_percent
-        self.spread_pip = spread_pip
-        self._spread_price = (
-            spread_pip_to_price(spread_pip, get_pip_size(symbol))
-            if spread_pip > 0
-            else 0.0
-        )
+        self.spread_points = spread_points
         self._registry = AssetRegistry(cfg)
         self.profile = self._registry.get(symbol)  # base (combined summary)
 
@@ -369,7 +332,7 @@ class BacktestReport:
         peak = self.start_balance
         max_dd = 0.0
         max_dd_pct = 0.0
-        spread_price = self._spread_price
+        spread_points = self.spread_points
         EXP = SignalOutcome.EXPIRED
 
         per_trade: list[dict] = []
@@ -377,23 +340,23 @@ class BacktestReport:
             raw_rr = r.realized_rr
             s = r.signal
 
-            # Spread cost in R: deducted from realized R for all executed outcomes.
+            # Spread cost in R = spread_points / risk_pips (both in price units).
             # EXPIRED trades are never entered — no spread is paid.
-            if spread_price > 0 and r.outcome != EXP:
-                executed_rr = raw_rr - (spread_price / s.risk_pips)
+            if spread_points > 0 and r.outcome != EXP:
+                executed_rr = raw_rr - (spread_points / s.risk_pips)
             else:
                 executed_rr = raw_rr
 
             # Executed entry / exit prices (informational)
             raw_entry = s.entry_price
             raw_exit = r.close_price or raw_entry
-            if spread_price > 0 and r.outcome != EXP:
+            if spread_points > 0 and r.outcome != EXP:
                 if s.direction == SignalDirection.LONG:
-                    exec_entry = raw_entry + spread_price
+                    exec_entry = raw_entry + spread_points
                     exec_exit = raw_exit
                 else:
                     exec_entry = raw_entry
-                    exec_exit = raw_exit + spread_price
+                    exec_exit = raw_exit + spread_points
             else:
                 exec_entry = raw_entry
                 exec_exit = raw_exit
@@ -409,8 +372,7 @@ class BacktestReport:
                 **acct,
                 "theoretical_rr": raw_rr,
                 "executed_rr": executed_rr,
-                "spread_pip": self.spread_pip,
-                "spread_price": spread_price,
+                "spread_points": spread_points,
                 "raw_entry_price": raw_entry,
                 "executed_entry_price": exec_entry,
                 "raw_exit_price": raw_exit,
@@ -538,7 +500,7 @@ class BacktestReport:
         if not compact:
             # ── Account performance (primary) ──────────────────────────────
             risk_label = f"{self.risk_percent:g}% risk/trade"
-            spread_label = f" · Spread {self.spread_pip:g} pip" if self.spread_pip > 0 else ""
+            spread_label = f" · Spread {self.spread_points:g} pts" if self.spread_points > 0 else ""
             net_col = GREEN if acct["net_pnl"] >= 0 else RED
             dd_col = RED if acct["max_drawdown"] > 0 else DIM
             print(f" {'ACCOUNT SIMULATION':<32} {DIM}({risk_label}{spread_label}){R}")
@@ -659,8 +621,7 @@ class BacktestReport:
             "drawdown_pct_after",
             "theoretical_rr",
             "executed_rr",
-            "spread_pip",
-            "spread_price",
+            "spread_points",
             "raw_entry_price",
             "executed_entry_price",
             "raw_exit_price",
@@ -692,8 +653,7 @@ class BacktestReport:
             "drawdown_pct_after",
             "theoretical_rr",
             "executed_rr",
-            "spread_pip",
-            "spread_price",
+            "spread_points",
             "raw_entry_price",
             "executed_entry_price",
             "raw_exit_price",
@@ -712,7 +672,7 @@ class BacktestReport:
                 for k, v in summary.items()
             },
             "risk_percent": self.risk_percent,
-            "spread_pip": self.spread_pip,
+            "spread_points": self.spread_points,
             "equity_curve": equity_curve,
             "trades": trades,
         }
@@ -733,7 +693,7 @@ class MultiPairBacktester:
         htf_lookback: Optional[int] = None,
         start_balance: float = DEFAULT_START_BALANCE,
         risk_percent: float = DEFAULT_RISK_PERCENT,
-        spread_pip: float = DEFAULT_SPREAD_PIP,
+        spread_points: float = DEFAULT_SPREAD_POINTS,
     ) -> None:
         # Validate account simulation inputs
         if not math.isfinite(start_balance):
@@ -746,10 +706,10 @@ class MultiPairBacktester:
             raise ValueError(
                 "riskPercent must be greater than 0 and less than or equal to 100"
             )
-        if not math.isfinite(spread_pip):
-            raise ValueError("spreadPip must be a valid number")
-        if spread_pip < 0:
-            raise ValueError("spreadPip must be >= 0")
+        if not math.isfinite(spread_points):
+            raise ValueError("spreadPoints must be a valid number")
+        if spread_points < 0:
+            raise ValueError("spreadPoints must be >= 0")
 
         self.cfg = cfg
         self.symbol = symbol
@@ -759,12 +719,7 @@ class MultiPairBacktester:
         self.htf_lookback = htf_lookback or cfg.htf_lookback
         self.start_balance = start_balance
         self.risk_percent = risk_percent
-        self.spread_pip = spread_pip
-        self._spread_price = (
-            spread_pip_to_price(spread_pip, get_pip_size(symbol))
-            if spread_pip > 0
-            else 0.0
-        )
+        self.spread_points = spread_points
         self._registry = AssetRegistry(cfg)
 
         # Per tf-pair profiles — only max_rr differs; all other attrs are symbol-level.
@@ -866,7 +821,7 @@ class MultiPairBacktester:
         total_steps = n - ltf_lb
         pairs_str = " | ".join(f"{h}/{l}" for h, l in self.pairs)
 
-        spread_header = f"  Spread: {self.spread_pip:g} pip" if self.spread_pip > 0 else ""
+        spread_header = f"  Spread: {self.spread_points:g} pts" if self.spread_points > 0 else ""
         print(f"\n{'='*64}")
         print(f"{BOLD} BACKTEST · {symbol} · {pairs_str}{RESET}")
         print(f" Master LTF : {master_ltf} ({n:,} bars) warm-up={ltf_lb}{spread_header}")
@@ -1111,7 +1066,7 @@ class MultiPairBacktester:
             cfg,
             start_balance=self.start_balance,
             risk_percent=self.risk_percent,
-            spread_pip=self.spread_pip,
+            spread_points=self.spread_points,
         )
         report.print()
         return report
@@ -1331,17 +1286,17 @@ class MultiPairBacktester:
         retrace_marker = f" {YELLOW}↺{RESET}" if r.hit_entry_after_tp1 else ""
 
         raw_rr = r.realized_rr
-        spread_price = self._spread_price
+        spread_points = self.spread_points
         EXP = SignalOutcome.EXPIRED
-        if spread_price > 0 and r.outcome != EXP:
-            executed_rr = raw_rr - (spread_price / s.risk_pips)
+        if spread_points > 0 and r.outcome != EXP:
+            executed_rr = raw_rr - (spread_points / s.risk_pips)
         else:
             executed_rr = raw_rr
 
         def _rr_label(rr: float) -> str:
             return f"+{rr:.2f}R" if rr >= 0 else f"{rr:.2f}R"
 
-        if spread_price > 0 and r.outcome != EXP:
+        if spread_points > 0 and r.outcome != EXP:
             rr_tag = f"RR={_rr_label(raw_rr)}→{_rr_label(executed_rr)}"
         else:
             rr_tag = f"RR={s.risk_reward_ratio:.2f}"
@@ -1489,12 +1444,12 @@ def main() -> None:
         help=f"Risk percent per trade (default: {DEFAULT_RISK_PERCENT}%%)",
     )
     p.add_argument(
-        "--spread-pip",
-        dest="spread_pip",
+        "--spread-points",
+        dest="spread_points",
         type=float,
         default=None,
-        metavar="PIPS",
-        help=f"Spread in pips to deduct from each trade (default: {DEFAULT_SPREAD_PIP})",
+        metavar="POINTS",
+        help=f"Spread in price units (e.g. 1.0 for US100, 0.2 for XAUUSD; default: {DEFAULT_SPREAD_POINTS})",
     )
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
@@ -1588,12 +1543,12 @@ def main() -> None:
         htf_cache = {tf_pairs_to_run[0][0]: load_csv(args.csv_htf)}
         ltf_cache = {tf_pairs_to_run[0][1]: load_csv(args.csv_ltf)}
 
-    # Validate spread_pip before constructing backtester
-    spread_pip = args.spread_pip if args.spread_pip is not None else DEFAULT_SPREAD_PIP
-    if not math.isfinite(spread_pip):
-        p.error("--spread-pip must be a finite number")
-    if spread_pip < 0:
-        p.error("--spread-pip must be >= 0")
+    # Validate spread_points before constructing backtester
+    spread_points = args.spread_points if args.spread_points is not None else DEFAULT_SPREAD_POINTS
+    if not math.isfinite(spread_points):
+        p.error("--spread-points must be a finite number")
+    if spread_points < 0:
+        p.error("--spread-points must be >= 0")
 
     bt = MultiPairBacktester(
         cfg=cfg,
@@ -1612,7 +1567,7 @@ def main() -> None:
             if args.risk_percent is not None
             else DEFAULT_RISK_PERCENT
         ),
-        spread_pip=spread_pip,
+        spread_points=spread_points,
     )
     report = bt.run()
 
