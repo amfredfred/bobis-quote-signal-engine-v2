@@ -108,6 +108,7 @@ def main():
     p.add_argument("--to-date")
     p.add_argument("--start-balance", dest="start_balance", type=float, default=None)
     p.add_argument("--risk-percent", dest="risk_percent", type=float, default=None)
+    p.add_argument("--spread-pip", dest="spread_pip", type=float, default=None)
 
     args = p.parse_args()
 
@@ -120,6 +121,8 @@ def main():
         extra += ["--start-balance", str(args.start_balance)]
     if args.risk_percent is not None:
         extra += ["--risk-percent", str(args.risk_percent)]
+    if args.spread_pip is not None:
+        extra += ["--spread-pip", str(args.spread_pip)]
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

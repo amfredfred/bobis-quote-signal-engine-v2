@@ -85,6 +85,39 @@ interval_to_minutes: callable = lru_cache(maxsize=64)(_interval_to_minutes)
 # ── Account simulation defaults ───────────────────────────────────────────────
 DEFAULT_START_BALANCE: float = 5_000.0
 DEFAULT_RISK_PERCENT: float = 1.0
+DEFAULT_SPREAD_PIP: float = 0.0
+
+# ── Symbol pip sizes (price distance per pip) ─────────────────────────────────
+SYMBOL_PIP_SIZE: dict[str, float] = {
+    "XAUUSD": 0.01,
+    "EURUSD": 0.0001,
+    "GBPUSD": 0.0001,
+    "USDCHF": 0.0001,
+    "AUDUSD": 0.0001,
+    "USDCAD": 0.0001,
+    "NZDUSD": 0.0001,
+    "USDJPY": 0.01,
+    "US100": 1.0,
+    "US30": 1.0,
+    "US500": 0.1,
+    "JP225": 1.0,
+    "UK100": 1.0,
+    "BTCUSD": 1.0,
+}
+
+
+def get_pip_size(symbol: str) -> float:
+    """Return the pip size for symbol. Raises ValueError for unknown symbols."""
+    try:
+        return SYMBOL_PIP_SIZE[symbol]
+    except KeyError:
+        raise ValueError(
+            f"Unknown symbol {symbol!r} — add it to SYMBOL_PIP_SIZE in backtest.py"
+        )
+
+
+def spread_pip_to_price(spread_pip: float, pip_size: float) -> float:
+    return spread_pip * pip_size
 
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 GREEN = "\033[92m"
@@ -312,12 +345,19 @@ class BacktestReport:
         cfg: Settings,
         start_balance: float = DEFAULT_START_BALANCE,
         risk_percent: float = DEFAULT_RISK_PERCENT,
+        spread_pip: float = DEFAULT_SPREAD_PIP,
     ) -> None:
         self.symbol = symbol
         self.results = results
         self.cfg = cfg
         self.start_balance = start_balance
         self.risk_percent = risk_percent
+        self.spread_pip = spread_pip
+        self._spread_price = (
+            spread_pip_to_price(spread_pip, get_pip_size(symbol))
+            if spread_pip > 0
+            else 0.0
+        )
         self._registry = AssetRegistry(cfg)
         self.profile = self._registry.get(symbol)  # base (combined summary)
 
@@ -329,16 +369,53 @@ class BacktestReport:
         peak = self.start_balance
         max_dd = 0.0
         max_dd_pct = 0.0
+        spread_price = self._spread_price
+        EXP = SignalOutcome.EXPIRED
 
         per_trade: list[dict] = []
         for r in results:
+            raw_rr = r.realized_rr
+            s = r.signal
+
+            # Spread cost in R: deducted from realized R for all executed outcomes.
+            # EXPIRED trades are never entered — no spread is paid.
+            if spread_price > 0 and r.outcome != EXP:
+                executed_rr = raw_rr - (spread_price / s.risk_pips)
+            else:
+                executed_rr = raw_rr
+
+            # Executed entry / exit prices (informational)
+            raw_entry = s.entry_price
+            raw_exit = r.close_price or raw_entry
+            if spread_price > 0 and r.outcome != EXP:
+                if s.direction == SignalDirection.LONG:
+                    exec_entry = raw_entry + spread_price
+                    exec_exit = raw_exit
+                else:
+                    exec_entry = raw_entry
+                    exec_exit = raw_exit + spread_price
+            else:
+                exec_entry = raw_entry
+                exec_exit = raw_exit
+
             acct = calculate_trade_accounting(
                 balance_before=balance,
-                result_r=r.realized_rr,
+                result_r=executed_rr,
                 risk_percent=self.risk_percent,
                 peak_balance_before=peak,
             )
-            per_trade.append({"balance_before": balance, **acct})
+            per_trade.append({
+                "balance_before": balance,
+                **acct,
+                "theoretical_rr": raw_rr,
+                "executed_rr": executed_rr,
+                "spread_pip": self.spread_pip,
+                "spread_price": spread_price,
+                "raw_entry_price": raw_entry,
+                "executed_entry_price": exec_entry,
+                "raw_exit_price": raw_exit,
+                "executed_exit_price": exec_exit,
+            })
             balance = acct["balance_after"]
             peak = acct["peak_balance_after"]
             max_dd = max(max_dd, acct["drawdown_after"])
@@ -461,9 +538,10 @@ class BacktestReport:
         if not compact:
             # ── Account performance (primary) ──────────────────────────────
             risk_label = f"{self.risk_percent:g}% risk/trade"
+            spread_label = f" · Spread {self.spread_pip:g} pip" if self.spread_pip > 0 else ""
             net_col = GREEN if acct["net_pnl"] >= 0 else RED
             dd_col = RED if acct["max_drawdown"] > 0 else DIM
-            print(f" {'ACCOUNT SIMULATION':<32} {DIM}({risk_label}){R}")
+            print(f" {'ACCOUNT SIMULATION':<32} {DIM}({risk_label}{spread_label}){R}")
             print(
                 f" {'  Start Balance':<32} "
                 f"{BOLD}{_fmt_currency_plain(acct['start_balance'])}{R}"
@@ -579,6 +657,14 @@ class BacktestReport:
             "peak_balance_after",
             "drawdown_after",
             "drawdown_pct_after",
+            "theoretical_rr",
+            "executed_rr",
+            "spread_pip",
+            "spread_price",
+            "raw_entry_price",
+            "executed_entry_price",
+            "raw_exit_price",
+            "executed_exit_price",
         ]
         base_fields = list(self.results[0].to_dict().keys())
         all_fields = base_fields + acct_fields
@@ -588,7 +674,8 @@ class BacktestReport:
             for r, a in zip(self.results, per_trade):
                 row = r.to_dict()
                 for k in acct_fields:
-                    row[k] = round(a[k], 6)
+                    val = a[k]
+                    row[k] = round(val, 6) if isinstance(val, float) else val
                 w.writerow(row)
         print(f" {GREEN}Saved → {path}{RESET}")
 
@@ -603,12 +690,21 @@ class BacktestReport:
             "peak_balance_after",
             "drawdown_after",
             "drawdown_pct_after",
+            "theoretical_rr",
+            "executed_rr",
+            "spread_pip",
+            "spread_price",
+            "raw_entry_price",
+            "executed_entry_price",
+            "raw_exit_price",
+            "executed_exit_price",
         ]
         trades = []
         for r, a in zip(self.results, per_trade):
             d = r.to_dict()
             for k in acct_fields:
-                d[k] = round(a[k], 6)
+                val = a[k]
+                d[k] = round(val, 6) if isinstance(val, float) else val
             trades.append(d)
         out = {
             "summary": {
@@ -616,6 +712,7 @@ class BacktestReport:
                 for k, v in summary.items()
             },
             "risk_percent": self.risk_percent,
+            "spread_pip": self.spread_pip,
             "equity_curve": equity_curve,
             "trades": trades,
         }
@@ -636,6 +733,7 @@ class MultiPairBacktester:
         htf_lookback: Optional[int] = None,
         start_balance: float = DEFAULT_START_BALANCE,
         risk_percent: float = DEFAULT_RISK_PERCENT,
+        spread_pip: float = DEFAULT_SPREAD_PIP,
     ) -> None:
         # Validate account simulation inputs
         if not math.isfinite(start_balance):
@@ -648,6 +746,10 @@ class MultiPairBacktester:
             raise ValueError(
                 "riskPercent must be greater than 0 and less than or equal to 100"
             )
+        if not math.isfinite(spread_pip):
+            raise ValueError("spreadPip must be a valid number")
+        if spread_pip < 0:
+            raise ValueError("spreadPip must be >= 0")
 
         self.cfg = cfg
         self.symbol = symbol
@@ -657,6 +759,12 @@ class MultiPairBacktester:
         self.htf_lookback = htf_lookback or cfg.htf_lookback
         self.start_balance = start_balance
         self.risk_percent = risk_percent
+        self.spread_pip = spread_pip
+        self._spread_price = (
+            spread_pip_to_price(spread_pip, get_pip_size(symbol))
+            if spread_pip > 0
+            else 0.0
+        )
         self._registry = AssetRegistry(cfg)
 
         # Per tf-pair profiles — only max_rr differs; all other attrs are symbol-level.
@@ -758,9 +866,10 @@ class MultiPairBacktester:
         total_steps = n - ltf_lb
         pairs_str = " | ".join(f"{h}/{l}" for h, l in self.pairs)
 
+        spread_header = f"  Spread: {self.spread_pip:g} pip" if self.spread_pip > 0 else ""
         print(f"\n{'='*64}")
         print(f"{BOLD} BACKTEST · {symbol} · {pairs_str}{RESET}")
-        print(f" Master LTF : {master_ltf} ({n:,} bars) warm-up={ltf_lb}")
+        print(f" Master LTF : {master_ltf} ({n:,} bars) warm-up={ltf_lb}{spread_header}")
         print(f"{'='*64}\n")
 
         dead_zones: set[tuple] = set()
@@ -1002,6 +1111,7 @@ class MultiPairBacktester:
             cfg,
             start_balance=self.start_balance,
             risk_percent=self.risk_percent,
+            spread_pip=self.spread_pip,
         )
         report.print()
         return report
@@ -1220,10 +1330,26 @@ class MultiPairBacktester:
         # FIX: hit_entry_after_tp1 is always set via __init__ — direct access.
         retrace_marker = f" {YELLOW}↺{RESET}" if r.hit_entry_after_tp1 else ""
 
+        raw_rr = r.realized_rr
+        spread_price = self._spread_price
+        EXP = SignalOutcome.EXPIRED
+        if spread_price > 0 and r.outcome != EXP:
+            executed_rr = raw_rr - (spread_price / s.risk_pips)
+        else:
+            executed_rr = raw_rr
+
+        def _rr_label(rr: float) -> str:
+            return f"+{rr:.2f}R" if rr >= 0 else f"{rr:.2f}R"
+
+        if spread_price > 0 and r.outcome != EXP:
+            rr_tag = f"RR={_rr_label(raw_rr)}→{_rr_label(executed_rr)}"
+        else:
+            rr_tag = f"RR={s.risk_reward_ratio:.2f}"
+
         outcome_str = {
-            SignalOutcome.WIN_FULL: f"{GREEN}WIN +{r.realized_rr:.2f}R{RESET}",
-            SignalOutcome.BREAKEVEN: f"{YELLOW}BE +{r.realized_rr:.2f}R{RESET}",
-            SignalOutcome.LOSS: f"{RED}LOSS {r.realized_rr:.2f}R{RESET}",
+            SignalOutcome.WIN_FULL: f"{GREEN}WIN {_rr_label(executed_rr)}{RESET}",
+            SignalOutcome.BREAKEVEN: f"{YELLOW}BE {_rr_label(executed_rr)}{RESET}",
+            SignalOutcome.LOSS: f"{RED}LOSS {_rr_label(executed_rr)}{RESET}",
             SignalOutcome.INVALIDATED: f"{DIM}VOID 0.0R{RESET}",
             SignalOutcome.EXPIRED: f"{DIM}EXPD 0.0R{RESET}",
         }.get(r.outcome, f"{DIM}?{RESET}")
@@ -1233,7 +1359,7 @@ class MultiPairBacktester:
             f" {arrow} {BOLD}{s.direction.value:5s}{RESET} {tf_tag} {et_pattern} "
             f"{CYAN}{self.cfg.dt_ms(s.triggered_at)}{RESET} "
             f"E={s.entry_price:.5f} SL={s.stop_loss:.5f} TP2={s.tp2:.5f} "
-            f"RR={s.risk_reward_ratio:.2f} → {outcome_str}{retrace_marker} "
+            f"{rr_tag} → {outcome_str}{retrace_marker} "
             f"closed {self.cfg.dt_ms(r.close_ts) if r.close_ts else 'OPEN'}"
         )
 
@@ -1362,6 +1488,14 @@ def main() -> None:
         metavar="PCT",
         help=f"Risk percent per trade (default: {DEFAULT_RISK_PERCENT}%%)",
     )
+    p.add_argument(
+        "--spread-pip",
+        dest="spread_pip",
+        type=float,
+        default=None,
+        metavar="PIPS",
+        help=f"Spread in pips to deduct from each trade (default: {DEFAULT_SPREAD_PIP})",
+    )
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
 
@@ -1454,6 +1588,13 @@ def main() -> None:
         htf_cache = {tf_pairs_to_run[0][0]: load_csv(args.csv_htf)}
         ltf_cache = {tf_pairs_to_run[0][1]: load_csv(args.csv_ltf)}
 
+    # Validate spread_pip before constructing backtester
+    spread_pip = args.spread_pip if args.spread_pip is not None else DEFAULT_SPREAD_PIP
+    if not math.isfinite(spread_pip):
+        p.error("--spread-pip must be a finite number")
+    if spread_pip < 0:
+        p.error("--spread-pip must be >= 0")
+
     bt = MultiPairBacktester(
         cfg=cfg,
         symbol=symbol,
@@ -1471,6 +1612,7 @@ def main() -> None:
             if args.risk_percent is not None
             else DEFAULT_RISK_PERCENT
         ),
+        spread_pip=spread_pip,
     )
     report = bt.run()
 
