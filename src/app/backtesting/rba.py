@@ -11,9 +11,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from domain.assets.profiles import SUPPORTED_SYMBOLS, normalize_symbol
+
 ALL_SYMBOLS = [
     "XAUUSD",
-    "US100",
     "JP225",
 ]
 
@@ -128,7 +129,17 @@ def main():
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-    symbols = args.symbols or ALL_SYMBOLS
+    symbols = [normalize_symbol(s) for s in (args.symbols or ALL_SYMBOLS)]
+    unsupported = sorted(set(symbols) - SUPPORTED_SYMBOLS)
+    if unsupported:
+        print(
+            "Skipping unsupported symbol(s): "
+            + ", ".join(unsupported)
+            + ". Allowed: "
+            + ", ".join(sorted(SUPPORTED_SYMBOLS)),
+            file=sys.stderr,
+        )
+        symbols = [s for s in symbols if s in SUPPORTED_SYMBOLS]
 
     if args.only_failed:
         state = Path(FAILED_STATE_FILE)

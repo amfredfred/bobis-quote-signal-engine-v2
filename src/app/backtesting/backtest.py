@@ -71,7 +71,12 @@ from app.engine.decision_engine import DecisionEngine
 from app.engine.market_replay import replay_signal_lifecycle
 from app.engine.parity_trace import ParityTraceWriter, trace_from_signal
 from config.settings import Settings, interval_to_minutes as _interval_to_minutes
-from domain.assets.profiles import AssetRegistry, AssetProfile
+from domain.assets.profiles import (
+    SUPPORTED_SYMBOLS,
+    AssetProfile,
+    AssetRegistry,
+    normalize_symbol,
+)
 from domain.entities.candle import Candle
 from domain.entities.enums import SignalDirection, SignalOutcome
 from domain.entities.trade import TradeSignal
@@ -1569,7 +1574,14 @@ def main() -> None:
         range_end_ts = int(_dt.timestamp() * 1000)
 
     if args.symbol:
-        symbol = args.symbol
+        symbol = normalize_symbol(args.symbol)
+        if symbol not in SUPPORTED_SYMBOLS:
+            p.error(
+                "unsupported symbol: "
+                + symbol
+                + ". Allowed: "
+                + ", ".join(sorted(SUPPORTED_SYMBOLS))
+            )
         unique_htf = list(dict.fromkeys(htf for htf, _ in tf_pairs_to_run))
         unique_ltf = list(dict.fromkeys(ltf for _, ltf in tf_pairs_to_run))
         htf_cache: dict[str, list] = {}

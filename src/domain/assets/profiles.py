@@ -93,18 +93,9 @@ class AssetProfile:
 
 ASSET_CLASS_MAP: dict[str, str] = {
     "XAUUSD": "COMMODITY",
-    "EURUSD": "FOREX",
-    "GBPUSD": "FOREX",
-    "USDJPY": "FOREX",
-    "USDCHF": "FOREX",
-    "AUDUSD": "FOREX",
-    "USDCAD": "FOREX",
-    "NZDUSD": "FOREX",
-    "US500": "INDICES",
-    "US30": "INDICES",
-    "US100": "INDICES",
-    "BTCUSD": "CRYPTO",
+    "JP225": "INDICES",
 }
+SUPPORTED_SYMBOLS = frozenset(ASSET_CLASS_MAP)
 
 # Built once at import — maps stripped form back to canonical:
 #   "EURUSD" → "EUR/USD",  "XAUUSD" → "XAU/USD",  "US500" → "US500"

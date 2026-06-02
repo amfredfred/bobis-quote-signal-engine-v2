@@ -62,28 +62,8 @@ _HTF_BAR_MS = 3_600_000  # 1 hour HTF bar in milliseconds
 # ── Per-symbol market data  (price_lo, price_hi, digits) ─────────────────────
 # Updated ~ March 2026 realistic levels (approximate spot ± small range)
 _SYMBOLS: dict[str, tuple[float, float, int]] = {
-    # Forex majors / crosses
-    # "EUR/USD": (1.1550, 1.1700, 5),  # ~1.16
-    # "GBP/USD": (1.3350, 1.3450, 5),  # ~1.34
-    # "USD/JPY": (157.00, 158.50, 3),  # ~157.8
-    # "USD/CAD": (1.3550, 1.3700, 5),  # ~1.36
-    # "NZD/USD": (0.5850, 0.5950, 5),  # ~0.59
-    # "AUD/USD": (0.6950, 0.7100, 5),  # ~0.703
-    # "EUR/GBP": (0.8620, 0.8700, 5),  # ~0.866
-    # "EUR/JPY": (182.50, 184.00, 3),  # ~183.3
-    # "AUD/JPY": (109.00, 111.50, 3),  # rough cross level ~110
-    # # Metals
-    # "XAU/USD": (2650.0, 2750.0, 2),  # gold much higher than 2024/25
-    # "XAG/USD": (31.00, 33.50, 3),  # silver following gold higher
-    # # Indices (approximate levels — note different naming sometimes used)
-    # "US100": (24600.0, 25200.0, 1),  # Nasdaq 100 ≈ 24,600–24,900 range recently
-    # "JP225": (55200.0, 56500.0, 1),  # Nikkei 225 ≈ 55,600
-    # "US500": (6700.0, 6850.0, 1),  # S&P 500 ≈ 6,740
-    # "UK100": (10250.0, 10400.0, 1),  # FTSE 100 ≈ 10,280–10,300
-    # Crypto (very approximate — crypto is volatile)
-    "AUDUSD": (66500.0, 72500.0, 1),  # Bitcoin ≈ 67–71k zone
-    "EURJPY": (1950.0, 2100.0, 2),  # Ethereum ≈ 1970–2050
-    "SOL/USD": (80.0, 92.0, 2),  # Solana ≈ 83–91
+    "XAUUSD": (2650.0, 2750.0, 2),
+    "JP225": (55200.0, 56500.0, 1),
 }
 _ALL_SYMBOLS = list(_SYMBOLS.keys())
 

@@ -19,6 +19,7 @@ import uuid
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
+from domain.assets.profiles import SUPPORTED_SYMBOLS, normalize_symbol
 from domain.entities.enums import SignalEvent
 
 logger = logging.getLogger(__name__)
@@ -519,12 +520,28 @@ class WebSocketServer:
             return
 
         action  = msg.get("action", "")
-        symbols = [s.upper() for s in msg.get("symbols", []) if isinstance(s, str)]
+        symbols = [
+            normalize_symbol(s)
+            for s in msg.get("symbols", [])
+            if isinstance(s, str)
+        ]
 
         if action == "subscribe":
             if not symbols:
                 await client.send_json({"event": "error", "payload": {"message": "subscribe requires at least one symbol"}})
                 return
+            unsupported = sorted(set(symbols) - SUPPORTED_SYMBOLS)
+            if unsupported:
+                allowed = ", ".join(sorted(SUPPORTED_SYMBOLS))
+                await client.send_json({
+                    "event": "error",
+                    "payload": {
+                        "message": f"Unsupported symbol(s): {', '.join(unsupported)}. Allowed: {allowed}"
+                    },
+                })
+                symbols = [s for s in symbols if s in SUPPORTED_SYMBOLS]
+                if not symbols:
+                    return
             if len(client.symbols) + len(symbols) > MAX_SYMBOLS_PER_CLIENT:
                 await client.send_json({"event": "error", "payload": {"message": f"Max {MAX_SYMBOLS_PER_CLIENT} symbols"}})
                 return

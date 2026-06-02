@@ -89,5 +89,5 @@ session_filter:
 
 logging:
   # Variants: DEBUG, INFO, WARNING, ERROR, CRITICAL.
-  level: ERROR
+  level: info
   dir: logs

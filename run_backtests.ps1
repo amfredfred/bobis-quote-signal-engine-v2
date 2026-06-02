@@ -2,7 +2,7 @@
 
 $null = New-Item -ItemType Directory -Force "results\2025-2026-FREQUENCY"
 
-$symbols = @("XAUUSD","JP225","US100")
+$symbols = @("XAUUSD","JP225")
 $cwd = (Get-Location).Path
 
 $jobs = $symbols | ForEach-Object {
@@ -22,4 +22,4 @@ while ($jobs | Where-Object { $_.State -eq 'Running' }) {
 $jobs | Receive-Job
 $jobs | Remove-Job
 
-Write-Host "`n✅ All 6 backtests complete."
+Write-Host "`nAll 2 backtests complete."
