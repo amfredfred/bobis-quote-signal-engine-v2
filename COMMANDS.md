@@ -149,32 +149,46 @@ backtest --help
 Backtest a symbol using MT5 data:
 
 ```powershell
-backtest --symbol EURUSD --from-date 2024-01-01 --to-date 2024-12-31 --output results\EURUSD.csv
+backtest --symbol XAUUSD --from-date 2025-01-01 --output results\XAUUSD.csv --start-balance 100 --risk-percent 5 --spread-points 5
 ```
 
 Backtest one timeframe pair:
 
 ```powershell
-backtest --symbol EURUSD --tf-pair 1h:5min --from-date 2024-01-01 --output results\EURUSD_1h_5m.csv
+backtest --symbol JP225 --tf-pair 30min:5min --from-date 2025-01-01 --output results\JP225_30m_5m.csv --start-balance 100 --risk-percent 5 --spread-points 3
 ```
 
 Backtest from CSV files:
 
 ```powershell
-backtest --csv-htf data\EURUSD_1h.csv --csv-ltf data\EURUSD_5m.csv --output results\EURUSD.csv
+backtest --csv-htf data\XAUUSD_1h.csv --csv-ltf data\XAUUSD_5m.csv --output results\XAUUSD.csv
 ```
 
 Override basic filters during a backtest:
 
 ```powershell
-backtest --symbol EURUSD --min-rr 1.5 --max-rr 5 --max-sl-mult 3 --from-date 2024-01-01 --output results\EURUSD.csv
+backtest --symbol XAUUSD --min-rr 1 --max-rr 2 --max-sl-mult 3 --from-date 2025-01-01 --output results\XAUUSD.csv --spread-points 5
 ```
 
 Disable optional filters during a backtest:
 
 ```powershell
-backtest --symbol EURUSD --no-breakeven --no-invalidation --no-trend-filter --no-session-filter --output results\EURUSD.csv
+backtest --symbol JP225 --no-breakeven --no-invalidation --no-trend-filter --no-session-filter --output results\JP225.csv
 ```
+
+Run the focused XAUUSD/JP225 RBA basket:
+
+```powershell
+py -m src.app.backtesting.rba --spread-points 3 --from-date 2025-01-01 --start-balance 100 --risk-percent 5
+```
+
+Run RBA with a mixed list. Unsupported symbols are reported and skipped:
+
+```powershell
+py -m src.app.backtesting.rba --symbols XAUUSD US100 JP225 --spread-points 3 --from-date 2025-01-01 --start-balance 100 --risk-percent 5
+```
+
+Spread points are broker-style input values. XAUUSD converts to price units at 0.1 per point, so `--spread-points 5` applies `0.50` on gold. JP225 uses the value directly, so `--spread-points 5` applies `5.0`.
 
 Run the bundled multi-symbol PowerShell backtest script:
 
@@ -255,7 +269,7 @@ wscat -c "ws://localhost:8765?token=change-me"
 Subscribe to symbols after connecting:
 
 ```json
-{ "action": "subscribe", "symbols": ["EURUSD", "XAUUSD"] }
+{ "action": "subscribe", "symbols": ["XAUUSD", "JP225"] }
 ```
 
 Request server status:
@@ -273,7 +287,7 @@ Subscribe to metrics:
 Fetch recent candles:
 
 ```json
-{ "action": "candles", "symbol": "EURUSD", "interval": "1h", "limit": 100 }
+{ "action": "candles", "symbol": "XAUUSD", "interval": "1h", "limit": 100 }
 ```
 
 ## Git

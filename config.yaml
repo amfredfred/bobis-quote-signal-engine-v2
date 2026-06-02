@@ -72,7 +72,7 @@ session_filter:
       # Time format: "HH:MM" in UTC.
       start: "00:00"
       end: "08:00"
-      enabled: false
+      enabled: true
       # Blocked UTC hours, 0-23.
       blocked_hours: []
     london:
@@ -89,5 +89,5 @@ session_filter:
 
 logging:
   # Variants: DEBUG, INFO, WARNING, ERROR, CRITICAL.
-  level: info
+  level: ERROR
   dir: logs
