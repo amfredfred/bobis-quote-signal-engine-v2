@@ -52,14 +52,6 @@ from __future__ import annotations
 import sys
 import os
 
-# Force UTF-8 encoding on Windows
-if sys.platform == "win32":
-    import io
-
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-    os.environ["PYTHONIOENCODING"] = "utf-8"
-
 import argparse
 import bisect
 import csv
@@ -70,6 +62,8 @@ from dataclasses import replace as dc_replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+
+import math
 
 import numpy as np
 
@@ -88,6 +82,10 @@ logger = logging.getLogger(__name__)
 
 interval_to_minutes: callable = lru_cache(maxsize=64)(_interval_to_minutes)
 
+# ── Account simulation defaults ───────────────────────────────────────────────
+DEFAULT_START_BALANCE: float = 5_000.0
+DEFAULT_RISK_PERCENT: float = 1.0
+
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -98,6 +96,52 @@ DIM = "\033[2m"
 RESET = "\033[0m"
 UP = f"{GREEN}▲{RESET}"
 DOWN = f"{RED}▼{RESET}"
+
+
+# ── Accounting helpers ────────────────────────────────────────────────────────
+
+def calculate_trade_accounting(
+    *,
+    balance_before: float,
+    result_r: float,
+    risk_percent: float,
+    peak_balance_before: float,
+) -> dict:
+    risk_amount = balance_before * (risk_percent / 100)
+    pnl = result_r * risk_amount
+    balance_after = balance_before + pnl
+    peak_balance_after = max(peak_balance_before, balance_after)
+    drawdown_after = peak_balance_after - balance_after
+    drawdown_pct_after = (
+        (drawdown_after / peak_balance_after * 100) if peak_balance_after > 0 else 0.0
+    )
+    return {
+        "risk_amount": risk_amount,
+        "pnl": pnl,
+        "balance_after": balance_after,
+        "peak_balance_after": peak_balance_after,
+        "drawdown_after": drawdown_after,
+        "drawdown_pct_after": drawdown_pct_after,
+    }
+
+
+def _fmt_currency(value: float) -> str:
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}${abs(value):,.2f}"
+
+
+def _fmt_currency_plain(value: float) -> str:
+    return f"${value:,.2f}"
+
+
+def _fmt_pct(value: float, sign: bool = False) -> str:
+    if sign:
+        return f"{value:+.2f}%"
+    return f"{value:.2f}%"
+
+
+def _fmt_r(value: float) -> str:
+    return f"{value:+.2f}R"
 
 
 # ── ★ TIER 3: Optional Numba JIT ─────────────────────────────────────────────
@@ -262,13 +306,101 @@ class BacktestResult:
 # ── BacktestReport ────────────────────────────────────────────────────────────
 class BacktestReport:
     def __init__(
-        self, symbol: str, results: list[BacktestResult], cfg: Settings
+        self,
+        symbol: str,
+        results: list[BacktestResult],
+        cfg: Settings,
+        start_balance: float = DEFAULT_START_BALANCE,
+        risk_percent: float = DEFAULT_RISK_PERCENT,
     ) -> None:
         self.symbol = symbol
         self.results = results
         self.cfg = cfg
+        self.start_balance = start_balance
+        self.risk_percent = risk_percent
         self._registry = AssetRegistry(cfg)
         self.profile = self._registry.get(symbol)  # base (combined summary)
+
+    def _compute_accounting(
+        self, results: list[BacktestResult]
+    ) -> tuple[list[dict], dict]:
+        """Compute per-trade accounting and aggregate summary for a result subset."""
+        balance = self.start_balance
+        peak = self.start_balance
+        max_dd = 0.0
+        max_dd_pct = 0.0
+
+        per_trade: list[dict] = []
+        for r in results:
+            acct = calculate_trade_accounting(
+                balance_before=balance,
+                result_r=r.realized_rr,
+                risk_percent=self.risk_percent,
+                peak_balance_before=peak,
+            )
+            per_trade.append({"balance_before": balance, **acct})
+            balance = acct["balance_after"]
+            peak = acct["peak_balance_after"]
+            max_dd = max(max_dd, acct["drawdown_after"])
+            max_dd_pct = max(max_dd_pct, acct["drawdown_pct_after"])
+
+        final = balance
+        net_pnl = final - self.start_balance
+        net_pnl_pct = (net_pnl / self.start_balance * 100) if self.start_balance > 0 else 0.0
+
+        pnls = [a["pnl"] for a in per_trade]
+        wins_pnl = [p for p in pnls if p > 0]
+        losses_pnl = [p for p in pnls if p < 0]
+        gross_profit = sum(wins_pnl)
+        gross_loss = abs(sum(losses_pnl))
+        pf_dollar = (gross_profit / gross_loss) if gross_loss > 0 else None
+
+        summary = {
+            "start_balance": self.start_balance,
+            "final_balance": final,
+            "net_pnl": net_pnl,
+            "net_pnl_pct": net_pnl_pct,
+            "max_drawdown": max_dd,
+            "max_drawdown_pct": max_dd_pct,
+            "gross_profit": gross_profit,
+            "gross_loss": gross_loss,
+            "profit_factor_dollar": pf_dollar,
+            "avg_pnl": sum(pnls) / len(pnls) if pnls else 0.0,
+            "avg_win_pnl": sum(wins_pnl) / len(wins_pnl) if wins_pnl else 0.0,
+            "avg_loss_pnl": sum(losses_pnl) / len(losses_pnl) if losses_pnl else 0.0,
+            "best_trade_pnl": max(pnls) if pnls else 0.0,
+            "worst_trade_pnl": min(pnls) if pnls else 0.0,
+        }
+        return per_trade, summary
+
+    def _build_equity_curve(
+        self, results: list[BacktestResult], per_trade: list[dict]
+    ) -> list[dict]:
+        _fmt = lambda ms: datetime.datetime.fromtimestamp(
+            ms / 1000, tz=datetime.timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S") if ms else ""
+        curve = [
+            {
+                "time": "",
+                "balance": self.start_balance,
+                "pnl": 0.0,
+                "result_r": 0.0,
+                "drawdown": 0.0,
+                "drawdown_pct": 0.0,
+            }
+        ]
+        for r, a in zip(results, per_trade):
+            curve.append(
+                {
+                    "time": _fmt(r.close_ts),
+                    "balance": round(a["balance_after"], 2),
+                    "pnl": round(a["pnl"], 2),
+                    "result_r": round(r.realized_rr, 4),
+                    "drawdown": round(a["drawdown_after"], 2),
+                    "drawdown_pct": round(a["drawdown_pct_after"], 4),
+                }
+            )
+        return curve
 
     def print(self) -> None:
         if not self.results:
@@ -317,6 +449,9 @@ class BacktestReport:
         longs = [x for x in r if x.signal.direction == SignalDirection.LONG]
         shorts = [x for x in r if x.signal.direction == SignalDirection.SHORT]
 
+        # Account simulation
+        per_trade, acct = self._compute_accounting(r)
+
         W, R = BOLD, RESET
         sep = "─" * 64
         print(f"\n{W}{sep}{R}")
@@ -324,6 +459,46 @@ class BacktestReport:
         print(sep)
 
         if not compact:
+            # ── Account performance (primary) ──────────────────────────────
+            risk_label = f"{self.risk_percent:g}% risk/trade"
+            net_col = GREEN if acct["net_pnl"] >= 0 else RED
+            dd_col = RED if acct["max_drawdown"] > 0 else DIM
+            print(f" {'ACCOUNT SIMULATION':<32} {DIM}({risk_label}){R}")
+            print(
+                f" {'  Start Balance':<32} "
+                f"{BOLD}{_fmt_currency_plain(acct['start_balance'])}{R}"
+            )
+            print(
+                f" {'  Final Balance':<32} "
+                f"{net_col}{BOLD}{_fmt_currency_plain(acct['final_balance'])}{R}"
+            )
+            print(
+                f" {'  Net PnL':<32} "
+                f"{net_col}{_fmt_currency(acct['net_pnl'])}{R}"
+            )
+            print(
+                f" {'  Net Return':<32} "
+                f"{net_col}{_fmt_pct(acct['net_pnl_pct'], sign=True)}{R}"
+            )
+            print(
+                f" {'  Max Drawdown':<32} "
+                f"{dd_col}-{_fmt_currency_plain(acct['max_drawdown'])}{R}"
+            )
+            print(
+                f" {'  Max Drawdown %':<32} "
+                f"{dd_col}-{_fmt_pct(acct['max_drawdown_pct'])}{R}"
+            )
+            if acct["gross_loss"] > 0:
+                pf_dollar = acct["profit_factor_dollar"]
+                pf_dollar_str = f"{pf_dollar:.2f}" if pf_dollar is not None else "N/A"
+                pf_col = GREEN if (pf_dollar or 0) >= 1 else RED
+                print(
+                    f" {'  Profit Factor ($)':<32} "
+                    f"{pf_col}{pf_dollar_str}{R}"
+                )
+            print(f" {'─'*42}")
+
+            # ── Trade counts ───────────────────────────────────────────────
             print(f" {'Total signals':<32} {len(r)}")
             print(f" {' LONG / SHORT':<32} {len(longs)} / {len(shorts)}")
             print(f" {'Closed (W+BE+L)':<32} {len(closed)}")
@@ -335,9 +510,14 @@ class BacktestReport:
             )
             print(f" {'─'*42}")
         else:
+            # Compact: one-liner account summary
+            net_col = GREEN if acct["net_pnl"] >= 0 else RED
             print(
                 f" Signals={len(r)} W={len(wins)} BE={len(bes)} L={len(losses)}"
                 f" Inv/Exp={len(invals)}/{len(expd)}"
+                f"  {net_col}Net {_fmt_currency(acct['net_pnl'])}"
+                f" ({_fmt_pct(acct['net_pnl_pct'], sign=True)})"
+                f"  DD -{_fmt_pct(acct['max_drawdown_pct'])}{R}"
             )
 
         print(
@@ -345,7 +525,7 @@ class BacktestReport:
             f"{'%s%.1f%%%s' % (GREEN if win_rate >= 50 else RED, win_rate, R)}"
         )
         print(
-            f" {'Profit factor':<32} "
+            f" {'Profit factor (R)':<32} "
             f"{'%s%.2f%s' % (GREEN if pf >= 1 else RED, pf, R)}"
         )
         print(
@@ -377,25 +557,70 @@ class BacktestReport:
             wr = len(w) / len(cl) * 100 if cl else 0.0
             tr = sum(x.realized_rr for x in subset)
             col = GREEN if tr >= 0 else RED
+            # Independent accounting per direction (same start_balance)
+            _, dir_acct = self._compute_accounting(subset)
+            dir_net_col = GREEN if dir_acct["net_pnl"] >= 0 else RED
             print(
                 f" {dir_label:<8} W={len(w)} BE={len(b)} L={len(l)}"
                 f" WR={wr:.0f}% {col}{tr:+.2f}R{R}"
+                f"  {dir_net_col}{_fmt_currency(dir_acct['net_pnl'])}{R}"
             )
         print(f"{W}{sep}{R}")
 
     def save_csv(self, path: str) -> None:
         if not self.results:
             return
-        fields = list(self.results[0].to_dict().keys())
+        per_trade, _ = self._compute_accounting(self.results)
+        acct_fields = [
+            "balance_before",
+            "risk_amount",
+            "pnl",
+            "balance_after",
+            "peak_balance_after",
+            "drawdown_after",
+            "drawdown_pct_after",
+        ]
+        base_fields = list(self.results[0].to_dict().keys())
+        all_fields = base_fields + acct_fields
         with open(path, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fields)
+            w = csv.DictWriter(f, fieldnames=all_fields)
             w.writeheader()
-            w.writerows(r.to_dict() for r in self.results)
+            for r, a in zip(self.results, per_trade):
+                row = r.to_dict()
+                for k in acct_fields:
+                    row[k] = round(a[k], 6)
+                w.writerow(row)
         print(f" {GREEN}Saved → {path}{RESET}")
 
     def save_json(self, path: str) -> None:
+        per_trade, summary = self._compute_accounting(self.results)
+        equity_curve = self._build_equity_curve(self.results, per_trade)
+        acct_fields = [
+            "balance_before",
+            "risk_amount",
+            "pnl",
+            "balance_after",
+            "peak_balance_after",
+            "drawdown_after",
+            "drawdown_pct_after",
+        ]
+        trades = []
+        for r, a in zip(self.results, per_trade):
+            d = r.to_dict()
+            for k in acct_fields:
+                d[k] = round(a[k], 6)
+            trades.append(d)
+        out = {
+            "summary": {
+                k: round(v, 6) if isinstance(v, float) else v
+                for k, v in summary.items()
+            },
+            "risk_percent": self.risk_percent,
+            "equity_curve": equity_curve,
+            "trades": trades,
+        }
         with open(path, "w") as f:
-            json.dump([r.to_dict() for r in self.results], f, indent=2)
+            json.dump(out, f, indent=2)
         print(f" {GREEN}Saved → {path}{RESET}")
 
 
@@ -409,13 +634,29 @@ class MultiPairBacktester:
         htf_candles: dict[str, list[Candle]],
         ltf_candles: dict[str, list[Candle]],
         htf_lookback: Optional[int] = None,
+        start_balance: float = DEFAULT_START_BALANCE,
+        risk_percent: float = DEFAULT_RISK_PERCENT,
     ) -> None:
+        # Validate account simulation inputs
+        if not math.isfinite(start_balance):
+            raise ValueError("startBalance must be a valid number")
+        if start_balance <= 0:
+            raise ValueError("startBalance must be greater than 0")
+        if not math.isfinite(risk_percent):
+            raise ValueError("riskPercent must be a valid number")
+        if risk_percent <= 0 or risk_percent > 100:
+            raise ValueError(
+                "riskPercent must be greater than 0 and less than or equal to 100"
+            )
+
         self.cfg = cfg
         self.symbol = symbol
         self.pairs = pairs
         self.htf_candles = htf_candles
         self.ltf_candles = ltf_candles
         self.htf_lookback = htf_lookback or cfg.htf_lookback
+        self.start_balance = start_balance
+        self.risk_percent = risk_percent
         self._registry = AssetRegistry(cfg)
 
         # Per tf-pair profiles — only max_rr differs; all other attrs are symbol-level.
@@ -755,7 +996,13 @@ class MultiPairBacktester:
 
         print(f"\r [{'█'*20}] 100.0% signals={len(self.results)}\n")
 
-        report = BacktestReport(symbol, self.results, cfg)
+        report = BacktestReport(
+            symbol,
+            self.results,
+            cfg,
+            start_balance=self.start_balance,
+            risk_percent=self.risk_percent,
+        )
         report.print()
         return report
 
@@ -1067,6 +1314,14 @@ def load_from_api_range(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def main() -> None:
+    # Force UTF-8 on Windows when running as CLI — must run before any print
+    if sys.platform == "win32":
+        import io as _io
+
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+        os.environ["PYTHONIOENCODING"] = "utf-8"
+
     p = argparse.ArgumentParser(description="Backtest the signal engine")
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--symbol")
@@ -1091,6 +1346,22 @@ def main() -> None:
     p.add_argument("--no-session-filter", action="store_true")
     p.add_argument("--from-date", dest="from_date", metavar="YYYY-MM-DD")
     p.add_argument("--to-date", dest="to_date", metavar="YYYY-MM-DD")
+    p.add_argument(
+        "--start-balance",
+        dest="start_balance",
+        type=float,
+        default=None,
+        metavar="AMOUNT",
+        help=f"Starting account balance (default: {DEFAULT_START_BALANCE:,.0f})",
+    )
+    p.add_argument(
+        "--risk-percent",
+        dest="risk_percent",
+        type=float,
+        default=None,
+        metavar="PCT",
+        help=f"Risk percent per trade (default: {DEFAULT_RISK_PERCENT}%%)",
+    )
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
 
@@ -1190,6 +1461,16 @@ def main() -> None:
         htf_candles=htf_cache,
         ltf_candles=ltf_cache,
         htf_lookback=args.htf_lookback,
+        start_balance=(
+            args.start_balance
+            if args.start_balance is not None
+            else DEFAULT_START_BALANCE
+        ),
+        risk_percent=(
+            args.risk_percent
+            if args.risk_percent is not None
+            else DEFAULT_RISK_PERCENT
+        ),
     )
     report = bt.run()
 

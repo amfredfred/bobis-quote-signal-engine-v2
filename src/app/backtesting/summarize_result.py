@@ -92,7 +92,7 @@ for path in csv_files:
             running += float(r["realized_rr"])
             equity.append(round(running, 3))
 
-        # Max Drawdown
+        # Max Drawdown (R-based)
         if equity:
             peak = equity[0]
             max_dd = max(0.0, peak - equity[0])
@@ -104,6 +104,46 @@ for path in csv_files:
                     max_dd = dd
         else:
             max_dd = 0.0
+
+        # Dollar-based account simulation (uses per-trade fields when available)
+        _has_dollar = "balance_after" in (raw[0] if raw else {})
+        if _has_dollar:
+            _bal_series = [float(r["balance_after"]) for r in raw]
+            _start_bal = float(raw[0].get("balance_before", 5000))
+            _final_bal = _bal_series[-1] if _bal_series else _start_bal
+            _net_pnl = _final_bal - _start_bal
+            _net_pnl_pct = (_net_pnl / _start_bal * 100) if _start_bal > 0 else 0.0
+            _equity_dollar = [_start_bal] + _bal_series
+            _peak_d = _start_bal
+            _max_dd_dollar = 0.0
+            _max_dd_dollar_pct = 0.0
+            for _v in _equity_dollar:
+                if _v > _peak_d:
+                    _peak_d = _v
+                _dd = _peak_d - _v
+                _dd_pct = (_dd / _peak_d * 100) if _peak_d > 0 else 0.0
+                if _dd > _max_dd_dollar:
+                    _max_dd_dollar = _dd
+                if _dd_pct > _max_dd_dollar_pct:
+                    _max_dd_dollar_pct = _dd_pct
+            _pnls = [float(r.get("pnl", 0)) for r in raw]
+            _gross_profit = sum(p for p in _pnls if p > 0)
+            _gross_loss = abs(sum(p for p in _pnls if p < 0))
+            _pf_dollar = _gross_profit / _gross_loss if _gross_loss > 0 else None
+            dollar_stats = {
+                "start_balance": round(_start_bal, 2),
+                "final_balance": round(_final_bal, 2),
+                "net_pnl": round(_net_pnl, 2),
+                "net_pnl_pct": round(_net_pnl_pct, 4),
+                "max_drawdown_dollar": round(_max_dd_dollar, 2),
+                "max_drawdown_dollar_pct": round(_max_dd_dollar_pct, 4),
+                "equity_dollar": [round(v, 2) for v in _equity_dollar],
+                "gross_profit": round(_gross_profit, 2),
+                "gross_loss": round(_gross_loss, 2),
+                "profit_factor_dollar": round(_pf_dollar, 4) if _pf_dollar is not None else None,
+            }
+        else:
+            dollar_stats = None
 
         max_win_streak = max_loss_streak = cur_win = cur_loss = 0
         for r in raw:
@@ -505,6 +545,7 @@ for path in csv_files:
                 "avg_be_hold": avg_be_hold,
                 "rolling": rolling,
                 "raw_trades": raw_trades,
+                "dollar_stats": dollar_stats,
             }
         )
 
@@ -693,12 +734,22 @@ for i in range(n_pairs):
     corr_matrix.append(row)
 
 # ── Terminal table ─────────────────────────────────────────────────────────────
+_has_dollar_any = any(d["dollar_stats"] is not None for d in rows_by_pair)
+
 print(f"\n  Results: {results_dir}/  ({len(rows_by_pair)} pairs)\n")
-print(
-    f"  {'PAIR':<12}  {'TRADES':>6}  {'W':>4}  {'BE':>4}  {'L':>4}  "
-    f"{'WR%':>5}  {'BE%':>5}  {'L%':>5}  {'TOTAL_R':>8}  {'EXPECT':>8}  {'PF':>6}  {'MAX_DD':>7}  {'L-STK':>5}  {'RETRACE':>7}"
-)
-print(f"  {'-'*110}")
+if _has_dollar_any:
+    print(
+        f"  {'PAIR':<12}  {'TRADES':>6}  {'W':>4}  {'BE':>4}  {'L':>4}  "
+        f"{'WR%':>5}  {'TOTAL_R':>8}  {'EXPECT':>8}  {'PF':>6}  {'MAX_DD_R':>8}  "
+        f"{'NET_PNL':>10}  {'NET%':>7}  {'DD$':>10}  {'DD%':>6}  {'L-STK':>5}  {'RETRACE':>7}"
+    )
+    print(f"  {'-'*135}")
+else:
+    print(
+        f"  {'PAIR':<12}  {'TRADES':>6}  {'W':>4}  {'BE':>4}  {'L':>4}  "
+        f"{'WR%':>5}  {'BE%':>5}  {'L%':>5}  {'TOTAL_R':>8}  {'EXPECT':>8}  {'PF':>6}  {'MAX_DD':>7}  {'L-STK':>5}  {'RETRACE':>7}"
+    )
+    print(f"  {'-'*110}")
 
 grand_trades = grand_wins = grand_losses = grand_bes = 0
 grand_r = 0.0
@@ -709,12 +760,28 @@ for d in rows_by_pair:
     pf_str = f"{d['pf']:>6.2f}" if d["pf"] is not None else "   inf"
     alert = " ⚠" if d["streak_alert"] else ""
     retrace_str = f"{d['partial_stats']['retrace_rate']:>5.0f}%" if d['partial_stats']['tp1_hits'] > 0 else "   N/A"
-    print(
-        f"  {d['pair']:<12}  {d['trades']:>6}  {d['wins']:>4}  {d['bes']:>4}  {d['losses']:>4}  "
-        f"{d['wr']:>4.0f}%  {d['be_rate']:>4.0f}%  {d['loss_rate']:>4.0f}%  "
-        f"{d['total_r']:>+7.2f}R  {d['exp']:>+7.3f}R  "
-        f"{pf_str}  {d['max_dd']:>6.2f}R  {d['max_loss_streak']:>5}{alert}  {retrace_str}"
-    )
+    if _has_dollar_any and d["dollar_stats"]:
+        ds = d["dollar_stats"]
+        net_sign = "+" if ds["net_pnl"] >= 0 else ""
+        dd_sign = "-" if ds["max_drawdown_dollar"] > 0 else " "
+        print(
+            f"  {d['pair']:<12}  {d['trades']:>6}  {d['wins']:>4}  {d['bes']:>4}  {d['losses']:>4}  "
+            f"{d['wr']:>4.0f}%  "
+            f"{d['total_r']:>+7.2f}R  {d['exp']:>+7.3f}R  "
+            f"{pf_str}  {d['max_dd']:>7.2f}R  "
+            f"{net_sign}${abs(ds['net_pnl']):>8,.2f}  "
+            f"{net_sign}{abs(ds['net_pnl_pct']):>5.2f}%  "
+            f"{dd_sign}${abs(ds['max_drawdown_dollar']):>8,.2f}  "
+            f"{ds['max_drawdown_dollar_pct']:>5.2f}%  "
+            f"{d['max_loss_streak']:>5}{alert}  {retrace_str}"
+        )
+    else:
+        print(
+            f"  {d['pair']:<12}  {d['trades']:>6}  {d['wins']:>4}  {d['bes']:>4}  {d['losses']:>4}  "
+            f"{d['wr']:>4.0f}%  {d['be_rate']:>4.0f}%  {d['loss_rate']:>4.0f}%  "
+            f"{d['total_r']:>+7.2f}R  {d['exp']:>+7.3f}R  "
+            f"{pf_str}  {d['max_dd']:>6.2f}R  {d['max_loss_streak']:>5}{alert}  {retrace_str}"
+        )
     grand_trades += d["trades"]
     grand_r += d["total_r"]
     grand_wins += d["wins"]
@@ -750,12 +817,41 @@ grand_pf = round(sum(_all_win_rr) / sum(_all_loss_rr), 3) if _all_loss_rr else N
 
 grand_pf_str = f"{grand_pf:>6.2f}" if grand_pf is not None else "   inf"
 
-print(f"  {'-'*110}")
-print(
-    f"  {'COMBINED':<12}  {grand_trades:>6}  {grand_wins:>4}  {grand_bes:>4}  {grand_losses:>4}  "
-    f"{grand_wr:>4.0f}%  {grand_be_rate:>4.0f}%  {grand_loss_rate:>4.0f}%  "
-    f"{grand_r:>+7.2f}R  {grand_exp:>+7.3f}R  {grand_pf_str}  {'':>7}  {grand_retrace_rate:>5.0f}%"
-)
+# Grand dollar totals (summed across pairs when available)
+grand_dollar_stats = None
+if _has_dollar_any:
+    _ds_list = [d["dollar_stats"] for d in rows_by_pair if d["dollar_stats"]]
+    if _ds_list:
+        grand_net_pnl = sum(ds["net_pnl"] for ds in _ds_list)
+        grand_max_dd_dollar = max(ds["max_drawdown_dollar"] for ds in _ds_list)
+        grand_max_dd_dollar_pct = max(ds["max_drawdown_dollar_pct"] for ds in _ds_list)
+        grand_dollar_stats = {
+            "net_pnl": grand_net_pnl,
+            "max_drawdown_dollar": grand_max_dd_dollar,
+            "max_drawdown_dollar_pct": grand_max_dd_dollar_pct,
+        }
+
+if _has_dollar_any:
+    print(f"  {'-'*135}")
+    gds = grand_dollar_stats or {}
+    g_net = gds.get("net_pnl", 0.0)
+    g_net_sign = "+" if g_net >= 0 else ""
+    g_dd = gds.get("max_drawdown_dollar", 0.0)
+    g_dd_pct = gds.get("max_drawdown_dollar_pct", 0.0)
+    print(
+        f"  {'COMBINED':<12}  {grand_trades:>6}  {grand_wins:>4}  {grand_bes:>4}  {grand_losses:>4}  "
+        f"{grand_wr:>4.0f}%  "
+        f"{grand_r:>+7.2f}R  {grand_exp:>+7.3f}R  {grand_pf_str}  {'':>8}  "
+        f"{g_net_sign}${abs(g_net):>8,.2f}  {'':>7}  "
+        f"-${g_dd:>8,.2f}  {g_dd_pct:>5.2f}%  {'':>5}  {grand_retrace_rate:>5.0f}%"
+    )
+else:
+    print(f"  {'-'*110}")
+    print(
+        f"  {'COMBINED':<12}  {grand_trades:>6}  {grand_wins:>4}  {grand_bes:>4}  {grand_losses:>4}  "
+        f"{grand_wr:>4.0f}%  {grand_be_rate:>4.0f}%  {grand_loss_rate:>4.0f}%  "
+        f"{grand_r:>+7.2f}R  {grand_exp:>+7.3f}R  {grand_pf_str}  {'':>7}  {grand_retrace_rate:>5.0f}%"
+    )
 print(f"\n  Sorted by: {sort_by}  |  --sort [pair|r|wr|trades|pf|exp]")
 print(f"  Retrace % = % of TP1 hits that revisited entry before TP2\n")
 
@@ -827,6 +923,7 @@ data_json = json.dumps(
             "max_dd": grand_max_dd,
             "retrace_rate": grand_retrace_rate,
             "tp1_hits": grand_tp1_hits,
+            "dollar_stats": grand_dollar_stats,
         },
     },
     default=str,

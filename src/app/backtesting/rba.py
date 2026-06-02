@@ -106,6 +106,8 @@ def main():
     # passthrough
     p.add_argument("--from-date")
     p.add_argument("--to-date")
+    p.add_argument("--start-balance", dest="start_balance", type=float, default=None)
+    p.add_argument("--risk-percent", dest="risk_percent", type=float, default=None)
 
     args = p.parse_args()
 
@@ -114,6 +116,10 @@ def main():
         extra += ["--from-date", args.from_date]
     if args.to_date:
         extra += ["--to-date", args.to_date]
+    if args.start_balance is not None:
+        extra += ["--start-balance", str(args.start_balance)]
+    if args.risk_percent is not None:
+        extra += ["--risk-percent", str(args.risk_percent)]
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

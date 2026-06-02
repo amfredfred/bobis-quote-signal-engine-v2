@@ -28,15 +28,13 @@ signal_quality:
   # Rejection wick ratio from 0.0 to 1.0. Higher means stricter candle rejection.
   min_wick_ratio: 0.51
   max_sl_zone_mult: 3.0
-  min_rr: 0.5
+  min_rr: 1
   # Set max_rr to 0 to disable the ceiling.
   max_rr: 5.0
   # Per-pair max RR caps use "HTF_minutes/LTF_minutes".
   tf_max_rr:
-    "60/5": 5.0
-    "30/5": 5.0
-    "60/1": 5.0
-    "30/1": 5.0
+    "60/5": 1.5
+    "30/5": 1.5
 
 signal_lifetime:
   expiry_hours: 120
@@ -47,22 +45,18 @@ zones:
 features:
   # Boolean variants: true, false.
   use_trend_filter: true
-  use_breakeven: true
+  use_breakeven: false
   use_invalidation: false
   multi_tf_independent_positions: false
   # Variants: candle_pattern, crt, all.
   entry_model: crt
 
 displacement_filter:
-  # Boolean variants: true, false.
   enabled: false
   atr_period: 10
   atr_mult: 1.2
-  # Per-pair displacement multipliers use "HTF_minutes/LTF_minutes".
   tf_mult:
-    "60/1": 0.8
-    "60/5": 0.8
-    "30/1": 1.3
+    "60/5": 1.0
     "30/5": 1.3
 
 circuit_breaker:
