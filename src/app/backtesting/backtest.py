@@ -89,6 +89,19 @@ DEFAULT_START_BALANCE: float = 5_000.0
 DEFAULT_RISK_PERCENT: float = 1.0
 DEFAULT_SPREAD_POINTS: float = 0.0
 
+# CLI spread values are broker-style points. Internally the backtester uses
+# price units, so XAUUSD 3 points becomes 0.3 while indices stay 3.0.
+SPREAD_POINT_SIZE_BY_SYMBOL: dict[str, float] = {
+    "XAUUSD": 0.1,
+    "XAU/USD": 0.1,
+    "GOLD": 0.1,
+}
+
+
+def spread_points_to_price_units(symbol: str, spread_points: float) -> float:
+    point_size = SPREAD_POINT_SIZE_BY_SYMBOL.get(symbol.upper().replace("/", ""), 1.0)
+    return spread_points * point_size
+
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -1607,6 +1620,12 @@ def main() -> None:
         p.error("--spread-points must be a finite number")
     if spread_points < 0:
         p.error("--spread-points must be >= 0")
+    spread_price_units = spread_points_to_price_units(symbol, spread_points)
+    if spread_points != spread_price_units:
+        print(
+            f"Spread {spread_points:g} broker points for {symbol} "
+            f"= {spread_price_units:g} price units"
+        )
 
     bt = MultiPairBacktester(
         cfg=cfg,
@@ -1625,7 +1644,7 @@ def main() -> None:
             if args.risk_percent is not None
             else DEFAULT_RISK_PERCENT
         ),
-        spread_points=spread_points,
+        spread_points=spread_price_units,
         trace_out=args.trace_out,
     )
     report = bt.run()
