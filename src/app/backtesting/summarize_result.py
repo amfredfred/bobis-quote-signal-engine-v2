@@ -49,6 +49,37 @@ if not csv_files:
 # ── Per-pair stats ─────────────────────────────────────────────────────────────
 rows_by_pair: list[dict] = []
 
+TRADE_COLUMNS = [
+    "id", "symbol", "direction", "entry_dt", "close_dt",
+    "entry", "sl", "tp1", "tp2", "rr", "outcome", "realized_rr",
+    "hit_entry_after_tp1", "htf_interval", "ltf_interval", "pattern",
+    "wick_ratio", "htf_high", "htf_low", "tp_level", "ltf_high", "ltf_low",
+    "balance_before", "risk_amount", "pnl", "balance_after",
+    "peak_balance_after", "drawdown_after", "drawdown_pct_after",
+    "theoretical_rr", "executed_rr", "spread_points",
+    "raw_entry_price", "executed_entry_price", "raw_exit_price",
+    "executed_exit_price",
+]
+
+NUMERIC_TRADE_FIELDS = {
+    "entry", "sl", "tp1", "tp2", "rr", "realized_rr", "wick_ratio",
+    "htf_high", "htf_low", "tp_level", "ltf_high", "ltf_low",
+    "balance_before", "risk_amount", "pnl", "balance_after",
+    "peak_balance_after", "drawdown_after", "drawdown_pct_after",
+    "theoretical_rr", "executed_rr", "spread_points",
+    "raw_entry_price", "executed_entry_price", "raw_exit_price",
+    "executed_exit_price",
+}
+
+
+def _maybe_float(value):
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
+
 for path in csv_files:
     symbol = path.stem
     try:
@@ -397,23 +428,28 @@ for path in csv_files:
                 hold_m = round((c - e).total_seconds() / 60, 0)
             except Exception:
                 pass
-            raw_trades.append(
+            trade = dict(r)
+            for col in TRADE_COLUMNS:
+                trade.setdefault(col, "")
+            for col in NUMERIC_TRADE_FIELDS:
+                trade[col] = _maybe_float(trade.get(col))
+            trade["hit_entry_after_tp1"] = (
+                str(trade.get("hit_entry_after_tp1", "False")).lower() == "true"
+            )
+            trade.update(
                 {
                     "i": idx_r,
-                    "entry_dt": r.get("entry_dt", ""),
-                    "close_dt": r.get("close_dt", ""),
-                    "outcome": r["outcome"],
-                    "realized_rr": float(r["realized_rr"]),
-                    "direction": r.get("direction", ""),
-                    "pattern": r.get("pattern", ""),
                     "hold_min": hold_m,
                     "pair": pair,
-                    "symbol": symbol,
-                    "htf_interval": htf_iv,
-                    "ltf_interval": ltf_iv,
+                    "symbol": trade.get("symbol") or symbol,
+                    "htf_interval": trade.get("htf_interval") or htf_iv,
+                    "ltf_interval": trade.get("ltf_interval") or ltf_iv,
                     "tf_pair": f"{htf_iv}/{ltf_iv}" if htf_iv else "",
-                    "hit_entry_after_tp1": r.get("hit_entry_after_tp1", "False") == "True",
+                    "realized_rr": float(trade.get("realized_rr") or 0.0),
                 }
+            )
+            raw_trades.append(
+                trade
             )
 
         rows_by_pair.append(
@@ -862,6 +898,7 @@ if not gen_html:
 data_json = json.dumps(
     {
         "pairs": rows_by_pair,
+        "trade_columns": TRADE_COLUMNS,
         "combined_eq": combined_eq,
         "monthly_cumulative": monthly_cumulative,
         "combined_daily": {
@@ -1345,9 +1382,48 @@ const CD   = RAW.combined_daily;
 const PL   = RAW.pairs_list;
 const CM   = RAW.corr_matrix;
 const TFS  = RAW.tf_pair_stats || {};
+const TRADE_COLUMNS = RAW.trade_columns || [];
 const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const WIN='#0d9e5c',LOSS='#d63b3b',BE='#b07d00',ACC='#4f6ef7',ACC2='#0e8fca',ACC3='#7c5cbf';
 const SUB='#5a6480',DIM='#9aa0b4',BRD='#dde1e9';
+
+function tradeVal(t,col){
+  const v=t[col];
+  return v===null||v===undefined||v===''?'—':v;
+}
+function fmtTradeVal(t,col){
+  const v=tradeVal(t,col);
+  if(v==='—') return v;
+  if(col==='hit_entry_after_tp1') return v===true||String(v).toLowerCase()==='true'?'true':'false';
+  if(['entry','sl','tp1','tp2','htf_high','htf_low','tp_level','ltf_high','ltf_low','raw_entry_price','executed_entry_price','raw_exit_price','executed_exit_price'].includes(col)){
+    const n=Number(v); return Number.isFinite(n)?n.toFixed(5):v;
+  }
+  if(['rr','realized_rr','theoretical_rr','executed_rr','wick_ratio','drawdown_pct_after'].includes(col)){
+    const n=Number(v); return Number.isFinite(n)?n.toFixed(4):v;
+  }
+  if(['balance_before','risk_amount','pnl','balance_after','peak_balance_after','drawdown_after','spread_points'].includes(col)){
+    const n=Number(v); return Number.isFinite(n)?n.toFixed(2):v;
+  }
+  return v;
+}
+function tradeCellStyle(t,col){
+  if(col==='direction') return `color:${t.direction==='LONG'?WIN:LOSS};font-weight:700`;
+  if(col==='outcome') return 'font-weight:700';
+  if(['realized_rr','executed_rr','theoretical_rr','pnl'].includes(col)){
+    const n=Number(t[col]||0); return `color:${n>=0?WIN:LOSS};font-weight:700`;
+  }
+  if(['entry_dt','close_dt','pattern','tf_pair','htf_interval','ltf_interval'].includes(col)) return `color:${SUB}`;
+  return '';
+}
+function money(v){
+  const n=Number(v||0);
+  const sign=n>=0?'+':'-';
+  return `${sign}$${Math.abs(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+}
+function pct(v){
+  const n=Number(v||0);
+  return `${n>=0?'+':''}${n.toFixed(2)}%`;
+}
 
 // ── TZ + SESSION ──────────────────────────────────────────────────────────────
 let TZ_OFFSET = 0;
@@ -1490,6 +1566,7 @@ document.querySelectorAll('.ntab').forEach(t=>t.addEventListener('click',()=>{
       <th data-col="wins">W</th><th data-col="bes">BE</th><th data-col="losses">L</th>
       <th data-col="wr">W%</th><th data-col="be_rate">BE%</th><th data-col="loss_rate">L%</th>
       <th data-col="total_r">Total R</th>
+      <th data-col="net_pnl">Net PnL</th><th data-col="net_pnl_pct">Net %</th><th data-col="max_dd_dollar">DD $</th>
       <th data-col="exp">Expect/T</th><th data-col="pf">PF</th>
       <th data-col="max_dd">Max DD</th><th data-col="best_rr">Best</th>
       <th data-col="worst_rr">Worst</th><th data-col="avg_hold_min">Avg Hold</th>
@@ -1529,6 +1606,10 @@ document.querySelectorAll('.ntab').forEach(t=>t.addEventListener('click',()=>{
   function renderTable(){
     const sorted=[...D].sort((a,b)=>{
       let av=a[sortCol]??0, bv=b[sortCol]??0;
+      if(['net_pnl','net_pnl_pct','max_dd_dollar'].includes(sortCol)){
+        av=a.dollar_stats?.[sortCol==='max_dd_dollar'?'max_drawdown_dollar':sortCol]??0;
+        bv=b.dollar_stats?.[sortCol==='max_dd_dollar'?'max_drawdown_dollar':sortCol]??0;
+      }
       if(typeof av==='string') return sortDir*(av.localeCompare(bv));
       return sortDir*(av-bv);
     });
@@ -1547,6 +1628,9 @@ document.querySelectorAll('.ntab').forEach(t=>t.addEventListener('click',()=>{
         <td><span class="badge y">${(d.be_rate||0).toFixed(0)}%</span></td>
         <td><span class="badge r">${(d.loss_rate||0).toFixed(0)}%</span></td>
         <td>${rspan(d.total_r)}</td>
+        <td style="color:${d.dollar_stats?(d.dollar_stats.net_pnl>=0?WIN:LOSS):SUB};font-weight:700">${d.dollar_stats?money(d.dollar_stats.net_pnl):'—'}</td>
+        <td style="color:${d.dollar_stats?(d.dollar_stats.net_pnl_pct>=0?WIN:LOSS):SUB};font-weight:700">${d.dollar_stats?pct(d.dollar_stats.net_pnl_pct):'—'}</td>
+        <td style="color:${d.dollar_stats?LOSS:SUB};font-weight:600">${d.dollar_stats?'-$'+Number(d.dollar_stats.max_drawdown_dollar||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</td>
         <td>${rspan(d.exp,3)}</td>
         <td style="color:${d.pf==null||d.pf>=1?WIN:LOSS};font-weight:700">${pfStr(d.pf)}</td>
         <td style="color:${LOSS};font-weight:600">-${d.max_dd.toFixed(2)}R</td>
@@ -2337,6 +2421,9 @@ function renderHours(){
   const ALL_TRADES=[];
   D.forEach(d=>(d.raw_trades||[]).forEach(t=>ALL_TRADES.push({...t,pair:t.pair||d.pair})));
   ALL_TRADES.sort((a,b)=>a.entry_dt.localeCompare(b.entry_dt));
+  const logCols=TRADE_COLUMNS.length?TRADE_COLUMNS:[
+    'id','symbol','direction','entry_dt','close_dt','entry','sl','tp1','tp2','rr','outcome','realized_rr'
+  ];
 
   const allPairs=[...new Set(ALL_TRADES.map(t=>t.pair))].sort();
   const allTfPairs=[...new Set(ALL_TRADES.map(t=>t.tf_pair||'').filter(Boolean))].sort();
@@ -2367,18 +2454,7 @@ function renderHours(){
   </div>
   <div class="tbl-wrap">
     <table id="tlog-table">
-      <thead><tr>
-        <th data-col="i">#</th>
-        <th data-col="entry_dt">Entry</th>
-        <th data-col="close_dt">Close</th>
-        <th data-col="pair">Pair</th>
-        <th data-col="tf_pair">TF</th>
-        <th data-col="direction">Dir</th>
-        <th data-col="outcome">Outcome</th>
-        <th data-col="realized_rr">R</th>
-        <th data-col="pattern">Pattern</th>
-        <th data-col="hold_min">Hold</th>
-      </tr></thead>
+      <thead><tr>${logCols.map(c=>`<th data-col="${c}">${c}</th>`).join('')}<th data-col="hold_min">hold_min</th></tr></thead>
       <tbody id="tlog-body"></tbody>
     </table>
   </div>`;
@@ -2421,17 +2497,13 @@ function renderHours(){
     const tb=document.getElementById('tlog-body'); tb.innerHTML='';
     sorted.forEach((t,idx)=>{
       const tr=document.createElement('tr');
-      tr.innerHTML=`
-        <td style="color:${SUB}">${idx+1}</td>
-        <td>${t.entry_dt||'—'}</td>
-        <td style="color:${SUB}">${t.close_dt||'—'}</td>
-        <td style="font-weight:700">${t.pair}</td>
-        <td style="font-family:monospace;font-size:11px;color:${ACC}">${t.tf_pair||'—'}</td>
-        <td style="color:${t.direction==='LONG'?WIN:LOSS};font-weight:700">${t.direction==='LONG'?'↑ L':'↓ S'}</td>
-        <td><span class="badge ${t.outcome==='WIN_FULL'?'g':t.outcome==='LOSS'?'r':'y'}">${t.outcome==='WIN_FULL'?'WIN':t.outcome==='LOSS'?'LOSS':'BE'}</span></td>
-        <td style="color:${t.realized_rr>=0?WIN:LOSS};font-weight:700">${t.realized_rr>=0?'+':''}${t.realized_rr.toFixed(2)}R</td>
-        <td style="color:${SUB}">${t.pattern||'—'}</td>
-        <td style="color:${SUB}">${holdStr(t.hold_min)}</td>`;
+      tr.innerHTML=logCols.map(col=>{
+        const val=fmtTradeVal(t,col);
+        if(col==='outcome'){
+          return `<td><span class="badge ${t.outcome==='WIN_FULL'?'g':t.outcome==='LOSS'?'r':'y'}">${val}</span></td>`;
+        }
+        return `<td style="${tradeCellStyle(t,col)}">${val}</td>`;
+      }).join('') + `<td style="color:${SUB}">${holdStr(t.hold_min)}</td>`;
       tb.appendChild(tr);
     });
     document.getElementById('tlog-count').textContent=`${filtered.length} of ${ALL_TRADES.length} trades`;
@@ -2454,8 +2526,8 @@ function renderHours(){
   });
 
   document.getElementById('export-btn').addEventListener('click',()=>{
-    const rows=[['#','Pair','Direction','Outcome','R','Entry','Close','Pattern','Hold_min']];
-    filtered.forEach((t,i)=>rows.push([i+1,t.pair,t.direction,t.outcome,t.realized_rr.toFixed(2),t.entry_dt,t.close_dt,t.pattern||'',t.hold_min||'']));
+    const rows=[[...logCols,'hold_min']];
+    filtered.forEach(t=>rows.push([...logCols.map(c=>tradeVal(t,c)),t.hold_min||'']));
     const csv=rows.map(r=>r.map(v=>JSON.stringify(v)).join(',')).join('\\n');
     const blob=new Blob([csv],{type:'text/csv'});
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
@@ -2929,6 +3001,9 @@ function renderDetail(idx){
 
   const kpis=[
     [(d.total_r>=0?'+':'')+d.total_r.toFixed(2)+'R','Total R',col],
+    [d.dollar_stats?money(d.dollar_stats.net_pnl):'—','Net PnL',d.dollar_stats&&d.dollar_stats.net_pnl>=0?WIN:LOSS],
+    [d.dollar_stats?pct(d.dollar_stats.net_pnl_pct):'—','Net Return',d.dollar_stats&&d.dollar_stats.net_pnl_pct>=0?WIN:LOSS],
+    [d.dollar_stats?'-$'+Number(d.dollar_stats.max_drawdown_dollar||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'—','Max DD $',LOSS],
     [d.wr.toFixed(1)+'%','Win Rate',d.wr>=50?WIN:LOSS],
     [(d.be_rate||0).toFixed(1)+'%','BE Rate',BE],
     [(d.loss_rate||0).toFixed(1)+'%','Loss Rate',LOSS],
@@ -2941,6 +3016,19 @@ function renderDetail(idx){
     ['+'+d.best_rr.toFixed(2)+'R','Best Trade',WIN],
     [d.worst_rr.toFixed(2)+'R','Worst Trade',LOSS],
   ].map(([v,l,c])=>`<div class="dkpi"><div class="v" style="color:${c}">${v}</div><div class="l">${l}</div></div>`).join('');
+
+  const detailCols=TRADE_COLUMNS.length?TRADE_COLUMNS:[
+    'id','symbol','direction','entry_dt','close_dt','entry','sl','tp1','tp2','rr','outcome','realized_rr'
+  ];
+  const detailTradeRows=(d.raw_trades||[]).map(t=>`
+    <tr>${detailCols.map(col=>{
+      const val=fmtTradeVal(t,col);
+      if(col==='outcome'){
+        return `<td><span class="badge ${t.outcome==='WIN_FULL'?'g':t.outcome==='LOSS'?'r':'y'}">${val}</span></td>`;
+      }
+      return `<td style="${tradeCellStyle(t,col)}">${val}</td>`;
+    }).join('')}<td style="color:${SUB}">${holdStr(t.hold_min)}</td></tr>
+  `).join('');
 
   el.innerHTML=`
   <div class="sh">Pair Detail</div>
@@ -2995,6 +3083,13 @@ function renderDetail(idx){
       <div class="month-row" style="font-size:11px;color:var(--sub);font-weight:700;letter-spacing:.1em;text-transform:uppercase;background:var(--card2);border-bottom:2px solid var(--brd);grid-template-columns:90px 110px 50px 70px 1fr 60px 1fr">
         <div>Month</div><div>Net R</div><div></div><div>Trades</div><div>W% / BE% / L%</div><div>Score</div><div></div>
       </div>${mHtml}
+    </div>
+    <div class="sh">Trades With Accounting</div>
+    <div class="tbl-wrap" style="margin-bottom:20px">
+      <table>
+        <thead><tr>${detailCols.map(c=>`<th>${c}</th>`).join('')}<th>hold_min</th></tr></thead>
+        <tbody>${detailTradeRows}</tbody>
+      </table>
     </div>
     <div class="sh">Notes</div>
     <div class="cbox">
