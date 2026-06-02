@@ -67,6 +67,9 @@ import math
 
 import numpy as np
 
+from app.engine.decision_engine import DecisionEngine
+from app.engine.market_replay import replay_signal_lifecycle
+from app.engine.parity_trace import ParityTraceWriter, trace_from_signal
 from config.settings import Settings, interval_to_minutes as _interval_to_minutes
 from domain.assets.profiles import AssetRegistry, AssetProfile
 from domain.entities.candle import Candle
@@ -74,7 +77,6 @@ from domain.entities.enums import SignalDirection, SignalOutcome
 from domain.entities.trade import TradeSignal
 from domain.market.structure import MarketStructure
 from domain.market.swings import SwingDetector, detect_displacement
-from domain.signals.builder import build_signal
 from domain.signals.entry import find_entry  # shared entry dispatcher
 from infrastructure.data_providers.market_data import MarketDataClient
 
@@ -340,14 +342,13 @@ class BacktestReport:
             raw_rr = r.realized_rr
             s = r.signal
 
-            # Spread cost in R = spread_points / risk_pips (both in price units).
             # EXPIRED trades are never entered — no spread is paid.
             if spread_points > 0 and r.outcome != EXP:
                 executed_rr = raw_rr - (spread_points / s.risk_pips)
             else:
                 executed_rr = raw_rr
 
-            # Executed entry / exit prices (informational)
+            # Executed entry / exit prices (informational): spread in price = risk * pct
             raw_entry = s.entry_price
             raw_exit = r.close_price or raw_entry
             if spread_points > 0 and r.outcome != EXP:
@@ -500,7 +501,7 @@ class BacktestReport:
         if not compact:
             # ── Account performance (primary) ──────────────────────────────
             risk_label = f"{self.risk_percent:g}% risk/trade"
-            spread_label = f" · Spread {self.spread_points:g} pts" if self.spread_points > 0 else ""
+            spread_label = f" · Spread {self.spread_points:g} points" if self.spread_points > 0 else ""
             net_col = GREEN if acct["net_pnl"] >= 0 else RED
             dd_col = RED if acct["max_drawdown"] > 0 else DIM
             print(f" {'ACCOUNT SIMULATION':<32} {DIM}({risk_label}{spread_label}){R}")
@@ -694,6 +695,7 @@ class MultiPairBacktester:
         start_balance: float = DEFAULT_START_BALANCE,
         risk_percent: float = DEFAULT_RISK_PERCENT,
         spread_points: float = DEFAULT_SPREAD_POINTS,
+        trace_out: Optional[str] = None,
     ) -> None:
         # Validate account simulation inputs
         if not math.isfinite(start_balance):
@@ -720,7 +722,10 @@ class MultiPairBacktester:
         self.start_balance = start_balance
         self.risk_percent = risk_percent
         self.spread_points = spread_points
+        self.trace_out = trace_out
+        self._trace_writer: Optional[ParityTraceWriter] = None
         self._registry = AssetRegistry(cfg)
+        self._decision_engine = DecisionEngine()
 
         # Per tf-pair profiles — only max_rr differs; all other attrs are symbol-level.
         self._pair_profiles: dict[tuple[str, str], AssetProfile] = {
@@ -821,7 +826,7 @@ class MultiPairBacktester:
         total_steps = n - ltf_lb
         pairs_str = " | ".join(f"{h}/{l}" for h, l in self.pairs)
 
-        spread_header = f"  Spread: {self.spread_points:g} pts" if self.spread_points > 0 else ""
+        spread_header = f"  Spread: {self.spread_points:g} points" if self.spread_points > 0 else ""
         print(f"\n{'='*64}")
         print(f"{BOLD} BACKTEST · {symbol} · {pairs_str}{RESET}")
         print(f" Master LTF : {master_ltf} ({n:,} bars) warm-up={ltf_lb}{spread_header}")
@@ -852,7 +857,6 @@ class MultiPairBacktester:
         _find_htf = SwingDetector.find_htf_ranges
         _find_ltf = SwingDetector.find_ltf_range
         _detect_struct = MarketStructure.detect
-        _build_signal = build_signal
         _simulate = self._simulate
         _print_result = self._print_result
 
@@ -860,6 +864,8 @@ class MultiPairBacktester:
         _entry_model = cfg.entry_model
         _min_wick_ratio = cfg.min_wick_ratio
 
+        trace_ctx = ParityTraceWriter(self.trace_out)
+        self._trace_writer = trace_ctx.__enter__()
         for ltf_i in range(ltf_lb, n):
             step = ltf_i - ltf_lb
             if step % 200 == 0:
@@ -1022,7 +1028,7 @@ class MultiPairBacktester:
 
                     # FIX: include direction in signal_id to match signal_service
                     # and prevent collisions when LONG/SHORT share a rejection timestamp.
-                    signal = _build_signal(
+                    decision = self._decision_engine.evaluate_setup(
                         symbol=symbol,
                         htf_interval=htf_interval,
                         ltf_interval=ltf_interval,
@@ -1035,6 +1041,7 @@ class MultiPairBacktester:
                         ),
                         profile=_pair_profiles[(htf_interval, ltf_interval)],
                     )
+                    signal = decision.signal
                     if signal is None:
                         continue
 
@@ -1055,10 +1062,26 @@ class MultiPairBacktester:
                         signal.created_at + expiry_ms
                     )
                     self.results.append(result)
+                    if self._trace_writer:
+                        self._trace_writer.write(
+                            trace_from_signal(
+                                mode="backtest",
+                                signal=result.signal,
+                                cfg=cfg,
+                                decision_reason=decision.decision_reason,
+                                blocked_reason=decision.blocked_reason,
+                                spread_pct=self.spread_points,
+                                account_balance=self.start_balance,
+                                risk_percent=self.risk_percent,
+                                outcome=result.outcome,
+                            )
+                        )
                     _print_result(result)
                     break  # one signal per LTF tick per HTF zone scan
 
         print(f"\r [{'█'*20}] 100.0% signals={len(self.results)}\n")
+        trace_ctx.__exit__(None, None, None)
+        self._trace_writer = None
 
         report = BacktestReport(
             symbol,
@@ -1087,6 +1110,32 @@ class MultiPairBacktester:
         """
         if len(future_np) == 0:
             return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
+
+        future = [
+            Candle(
+                int(row["timestamp"]),
+                float(row["open"]),
+                float(row["high"]),
+                float(row["low"]),
+                float(row["close"]),
+                float(row["volume"]),
+            )
+            for row in future_np
+        ]
+        profile = self._registry.get(
+            signal.symbol, signal.htf_interval, signal.ltf_interval
+        )
+        replayed = replay_signal_lifecycle(signal, future, profile)
+        if replayed.outcome is None:
+            return BacktestResult(replayed, SignalOutcome.EXPIRED, 0.0, None, None)
+        return BacktestResult(
+            replayed,
+            replayed.outcome,
+            replayed.realized_rr or 0.0,
+            replayed.closed_at,
+            replayed.close_price,
+            hit_entry_after_tp1=False,
+        )
 
         # ★ TIER 4: Hoisted scalars — no attribute dereference in hot path
         is_short = signal.direction == SignalDirection.SHORT
@@ -1449,7 +1498,12 @@ def main() -> None:
         type=float,
         default=None,
         metavar="POINTS",
-        help=f"Spread in price units (e.g. 1.0 for US100, 0.2 for XAUUSD; default: {DEFAULT_SPREAD_POINTS})",
+        help=f"Spread in price units (default: {DEFAULT_SPREAD_POINTS})",
+    )
+    p.add_argument(
+        "--trace-out",
+        dest="trace_out",
+        help="Write deterministic backtest parity trace JSONL to this path",
     )
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
@@ -1544,7 +1598,11 @@ def main() -> None:
         ltf_cache = {tf_pairs_to_run[0][1]: load_csv(args.csv_ltf)}
 
     # Validate spread_points before constructing backtester
-    spread_points = args.spread_points if args.spread_points is not None else DEFAULT_SPREAD_POINTS
+    spread_points = (
+        args.spread_points
+        if args.spread_points is not None
+        else DEFAULT_SPREAD_POINTS
+    )
     if not math.isfinite(spread_points):
         p.error("--spread-points must be a finite number")
     if spread_points < 0:
@@ -1568,6 +1626,7 @@ def main() -> None:
             else DEFAULT_RISK_PERCENT
         ),
         spread_points=spread_points,
+        trace_out=args.trace_out,
     )
     report = bt.run()
 

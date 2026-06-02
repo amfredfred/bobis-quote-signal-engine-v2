@@ -10,8 +10,8 @@ Orchestrates:
   6. Event emission
 
 Architecture:
-• _step_signal_state() is the single source of truth for lifecycle logic.
-• Live evaluation and simulation paths share identical behavior.
+• app.engine.market_replay is the single source of truth for lifecycle logic.
+• Live evaluation, query replay, and backtest paths share identical behavior.
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ from datetime import datetime as _dt
 from datetime import timezone
 from typing import Callable, Optional, Protocol
 
+from app.engine.decision_engine import DecisionEngine
+from app.engine.market_replay import StepOutcome, step_signal_state
 from domain.assets.profiles import AssetProfile, AssetRegistry
 from domain.entities.candle import Candle
 from domain.entities.enums import (
@@ -42,7 +44,6 @@ from domain.entities.session import ClosedSignalRecord
 from domain.entities.trade import TradeSignal
 from domain.market.structure import MarketStructure
 from domain.market.swings import SwingDetector, detect_displacement
-from domain.signals.builder import build_signal
 from domain.signals.correlation import correlation_conflict
 from domain.signals.entry import find_entry
 
@@ -135,13 +136,6 @@ class _PendingKey:
     direction: str
 
 
-@dataclass(frozen=True)
-class _StepOutcome:
-    terminal: bool
-    emit_tp1: bool = False
-    emit_inv_log: bool = False
-
-
 # ── Module Helpers ───────────────────────────────────────────────────────────
 
 _STATUS_TO_CLOSE_EVENT: dict[SignalStatus, SignalEvent] = {
@@ -181,6 +175,7 @@ class SignalService:
         self._last_ltf_ranges: dict[tuple, dict[tuple[int, str], object]] = {}
         self._current_fired: dict[str, int] = {}
         self._pending_emitted: dict[_PendingKey, int] = {}
+        self._decision_engine = DecisionEngine()
 
     # ── Initialization ───────────────────────────────────────────────────────
 
@@ -513,7 +508,7 @@ class SignalService:
             if signal_id in self._watchlist:
                 continue
 
-            signal = build_signal(
+            decision = self._decision_engine.evaluate_setup(
                 symbol=symbol,
                 htf_interval=htf_interval,
                 ltf_interval=ltf_interval,
@@ -523,7 +518,9 @@ class SignalService:
                 signal_id=signal_id,
                 profile=profile,
             )
+            signal = decision.signal
             if signal is None:
+                logger.debug("[%s] Blocked: %s", pair_label, decision.blocked_reason)
                 continue
 
             detected_at = self._cfg.now_ms()
@@ -638,149 +635,9 @@ class SignalService:
     @staticmethod
     def _step_signal_state(
         signal: TradeSignal, candle: Candle, profile: AssetProfile, now: int
-    ) -> _StepOutcome:
-        """Single source of truth — matches backtest kernel exactly."""
-        is_short = signal.direction == SignalDirection.SHORT
-        expiry_ms = int(profile.signal_expiry_hours * 3_600_000)
-
-        # Expiry
-        if now - signal.created_at > expiry_ms:
-            if signal.status == SignalStatus.TRIGGERED:
-                signal.outcome = SignalOutcome.EXPIRED
-                signal.realized_rr = 0.0
-                signal.close_price = candle.close
-            elif signal.status == SignalStatus.TP1_HIT:
-                if profile.use_breakeven:
-                    signal.outcome = SignalOutcome.BREAKEVEN
-                    signal.realized_rr = (
-                        signal.risk_reward_ratio * profile.tp1_multiplier
-                    )
-                    signal.close_price = signal.entry_price
-                else:
-                    signal.outcome = SignalOutcome.EXPIRED
-                    signal.realized_rr = 0.0
-                    signal.close_price = candle.close
-            signal.status = SignalStatus.EXPIRED
-            signal.expired_at = now
-            signal.closed_at = now
-            return _StepOutcome(terminal=True)
-
-        # Per-bar flags
-        sl_hit = (
-            (candle.high >= signal.stop_loss)
-            if is_short
-            else (candle.low <= signal.stop_loss)
-        )
-        tp1_chk = (
-            (candle.low <= signal.tp1) if is_short else (candle.high >= signal.tp1)
-        )
-        tp2_hit = (
-            (candle.low <= signal.tp2) if is_short else (candle.high >= signal.tp2)
-        )
-        inv_now = (
-            (candle.close > signal.ltf_range.range_high)
-            if is_short
-            else (candle.close < signal.ltf_range.range_low)
-        )
-
-        emit_inv_log = False
-        emit_tp1 = False
-
-        if signal.status == SignalStatus.TRIGGERED:
-            if tp1_chk and tp2_hit:  # FIX #25
-                signal.status = SignalStatus.TP2_HIT
-                signal.outcome = SignalOutcome.WIN_FULL
-                signal.realized_rr = signal.risk_reward_ratio
-                signal.tp1_hit_at = now
-                signal.tp2_hit_at = now
-                signal.closed_at = now
-                signal.close_price = signal.tp2
-                return _StepOutcome(terminal=True)
-
-            if inv_now and profile.use_invalidation:
-                signal.invalidated_at = now
-                signal.status = SignalStatus.INVALIDATED
-                signal.outcome = SignalOutcome.LOSS
-                signal.realized_rr = -(
-                    abs(signal.entry_price - candle.close) / signal.risk_pips
-                )
-                signal.closed_at = now
-                signal.close_price = candle.close
-                return _StepOutcome(terminal=True)
-
-            if inv_now and not profile.use_invalidation:
-                if signal.invalidation_logged_at is None:
-                    signal.invalidation_logged_at = now
-                    emit_inv_log = True
-
-            if sl_hit:
-                signal.status = SignalStatus.SL_HIT
-                signal.outcome = SignalOutcome.LOSS
-                signal.realized_rr = -1.0
-                signal.sl_hit_at = now
-                signal.closed_at = now
-                signal.close_price = signal.stop_loss
-                return _StepOutcome(terminal=True, emit_inv_log=emit_inv_log)
-
-            if tp1_chk:
-                signal.status = SignalStatus.TP1_HIT
-                signal.tp1_hit_at = now
-                emit_tp1 = True
-
-        if signal.status == SignalStatus.TP1_HIT:
-            if tp2_hit:  # TP2 before INV
-                signal.status = SignalStatus.TP2_HIT
-                signal.outcome = SignalOutcome.WIN_FULL
-                signal.realized_rr = signal.risk_reward_ratio
-                signal.tp2_hit_at = now
-                signal.closed_at = now
-                signal.close_price = signal.tp2
-                return _StepOutcome(terminal=True, emit_tp1=emit_tp1)
-
-            if inv_now and profile.use_invalidation:
-                signal.invalidated_at = now
-                signal.status = SignalStatus.INVALIDATED
-                signal.closed_at = now
-                if profile.use_breakeven:
-                    signal.outcome = SignalOutcome.BREAKEVEN
-                    signal.realized_rr = (
-                        signal.risk_reward_ratio * profile.tp1_multiplier
-                    )
-                    signal.close_price = signal.entry_price
-                else:
-                    signal.outcome = SignalOutcome.LOSS
-                    signal.realized_rr = -(
-                        abs(signal.entry_price - candle.close) / signal.risk_pips
-                    )
-                    signal.close_price = candle.close
-                return _StepOutcome(terminal=True, emit_tp1=emit_tp1)
-
-            if inv_now and not profile.use_invalidation:
-                if signal.invalidation_logged_at is None:
-                    signal.invalidation_logged_at = now
-                    emit_inv_log = True
-
-            if sl_hit:
-                signal.sl_hit_at = now
-                signal.closed_at = now
-                signal.status = SignalStatus.SL_HIT
-                if profile.use_breakeven:
-                    signal.outcome = SignalOutcome.BREAKEVEN
-                    signal.realized_rr = (
-                        signal.risk_reward_ratio * profile.tp1_multiplier
-                    )
-                    signal.close_price = signal.entry_price
-                else:
-                    signal.outcome = SignalOutcome.LOSS
-                    signal.realized_rr = -1.0
-                    signal.close_price = signal.stop_loss
-                return _StepOutcome(
-                    terminal=True, emit_tp1=emit_tp1, emit_inv_log=emit_inv_log
-                )
-
-        return _StepOutcome(
-            terminal=False, emit_tp1=emit_tp1, emit_inv_log=emit_inv_log
-        )
+    ) -> StepOutcome:
+        """Compatibility wrapper around the canonical shared lifecycle."""
+        return step_signal_state(signal, candle, profile, now)
 
     def _evaluate_signal(self, signal: TradeSignal, candle: Candle, now: int) -> None:
         profile = self._registry.get(
@@ -968,7 +825,7 @@ class SignalService:
             probe.symbol, probe.htf_interval, probe.ltf_interval
         )
         for candle in candles:
-            step = self._step_signal_state(probe, candle, profile, candle.timestamp)
+            step = step_signal_state(probe, candle, profile, candle.timestamp)
             if step.terminal:
                 return
 

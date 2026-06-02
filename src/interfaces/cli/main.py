@@ -24,6 +24,7 @@ the mode-switching guards in _ltf_tick are all gone.
 from __future__ import annotations
 
 import asyncio
+import argparse
 import logging
 import logging.handlers
 import signal as os_signal
@@ -36,6 +37,8 @@ from infrastructure.persistence.signal_store import SignalStore
 from infrastructure.persistence.session_store import SessionStore
 from infrastructure.observability.metrics import MetricsCollector
 from domain.assets.profiles import AssetRegistry
+from domain.entities.trade import TradeSignal
+from app.engine.parity_trace import ParityTraceWriter, trace_from_signal
 from app.session.coordinator import SessionCoordinator
 from app.services.signal_service import SignalService
 from interfaces.ws.scheduler import SignalScheduler
@@ -82,8 +85,10 @@ logger = logging.getLogger("signal_engine.main")
 class SignalEngine:
     """Top-level orchestrator. Owns all components and their lifecycle."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, live_trace_out: str | None = None) -> None:
         self._cfg = settings
+        self._trace_ctx = ParityTraceWriter(live_trace_out)
+        self._trace_writer = self._trace_ctx.__enter__()
 
         # ── Infrastructure ────────────────────────────────────────────────────
         self._md = MarketDataClient.from_settings(settings)
@@ -125,6 +130,20 @@ class SignalEngine:
             logger.error("[%s] Tick error: %s", symbol, exc, exc_info=True)
 
     def _on_signal_event(self, event: SignalEvent, payload: dict) -> None:
+        if self._trace_writer and payload.get("signal"):
+            try:
+                signal = TradeSignal.from_dict(payload["signal"])
+                self._trace_writer.write(
+                    trace_from_signal(
+                        mode="live",
+                        signal=signal,
+                        cfg=self._cfg,
+                        spread_pct=0.0,
+                        outcome=signal.outcome,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Failed to write live parity trace: %s", exc)
         self._ws.broadcast(event, payload)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -157,17 +176,28 @@ class SignalEngine:
         self._scheduler.shutdown()
         await self._ws.stop()
         self._md.close()
+        self._trace_ctx.__exit__(None, None, None)
         logger.info("Signal Engine stopped")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the live signal engine")
+    parser.add_argument(
+        "--live-trace-out",
+        help="Write deterministic live parity trace JSONL to this path",
+    )
+    return parser.parse_args()
+
+
 async def _main() -> None:
+    args = _parse_args()
     settings = Settings.from_env()
     _setup_logging(settings.log_level, settings.log_dir)
 
-    engine = SignalEngine(settings)
+    engine = SignalEngine(settings, live_trace_out=args.live_trace_out)
     await engine.start()
 
     loop = asyncio.get_running_loop()
