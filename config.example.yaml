@@ -1,32 +1,40 @@
 websocket:
+  # Bind host. Common variants: 0.0.0.0 (all interfaces), 127.0.0.1 (local only).
   host: 0.0.0.0
   port: 8765
   max_clients: 10
 
 mt5:
+  # Optional path to terminal64.exe. Leave empty to use the default installed MT5 terminal.
   terminal_path: "c:\\Program Files\\FBS MetaTrader 5\\terminal64.exe"
   timeout_ms: 60000
+  # Variants: false (normal install), true (portable terminal install).
   portable: false
+  # MT5 Python returns bar timestamps in UTC. Broker/server chart time is not applied here.
 
 timeframes:
+  # Supported intervals: 1min, 2min, 3min, 4min, 5min, 6min, 10min, 12min,
+  # 15min, 20min, 30min, 1h, 2h, 3h, 4h, 6h, 8h, 12h, 1day, 1week, 1month.
+  # Each pair must have htf > ltf.
   pairs:
     - htf: 30min
       ltf: 5min
     - htf: 1h
-      ltf: 5min
+      ltf: 10min
   htf_lookback: 240
   htf_outputsize: 1000
 
 signal_quality:
+  # Rejection wick ratio from 0.0 to 1.0. Higher means stricter candle rejection.
   min_wick_ratio: 0.51
   max_sl_zone_mult: 3.0
-  min_rr: 1.0
+  min_rr: 1
+  # Set max_rr to 0 to disable the ceiling.
   max_rr: 5.0
+  # Per-pair max RR caps use "HTF_minutes/LTF_minutes".
   tf_max_rr:
-    "60/5": 5.0
-    "30/5": 5.0
-    "60/1": 5.0
-    "30/1": 5.0
+    "60/10": 3
+    "30/5": 3
 
 signal_lifetime:
   expiry_hours: 120
@@ -35,10 +43,12 @@ zones:
   max_htf_zones_per_dir: 2
 
 features:
+  # Boolean variants: true, false.
   use_trend_filter: true
-  use_breakeven: false
+  use_breakeven: true
   use_invalidation: false
   multi_tf_independent_positions: false
+  # Variants: candle_pattern, crt, all.
   entry_model: crt
 
 displacement_filter:
@@ -46,9 +56,7 @@ displacement_filter:
   atr_period: 10
   atr_mult: 1.2
   tf_mult:
-    "60/1": 0.8
-    "60/5": 0.8
-    "30/1": 1.3
+    "60/5": 1.0
     "30/5": 1.3
 
 circuit_breaker:
@@ -56,12 +64,16 @@ circuit_breaker:
   pause_after_streak_h: 12
 
 session_filter:
+  # Session windows are evaluated in UTC.
   enabled: true
+  # Session keys may be tokyo, london, new_york, or another custom name.
   sessions:
     tokyo:
+      # Time format: "HH:MM" in UTC.
       start: "00:00"
       end: "08:00"
-      enabled: false
+      enabled: true
+      # Blocked UTC hours, 0-23.
       blocked_hours: []
     london:
       start: "08:00"
@@ -70,10 +82,12 @@ session_filter:
       blocked_hours: []
     new_york:
       start: "16:00"
+      # "00:00" means the session crosses midnight.
       end: "00:00"
       enabled: true
       blocked_hours: []
 
 logging:
-  level: DEBUG
+  # Variants: DEBUG, INFO, WARNING, ERROR, CRITICAL.
+  level: ERROR
   dir: logs
