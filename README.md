@@ -6,6 +6,11 @@
 
 Signal Engine is a real-time trading signal service. It reads candles directly from a local MetaTrader 5 terminal, detects high-timeframe structure and low-timeframe rejection setups, then broadcasts structured signal events to WebSocket clients.
 
+The configured trading universe is focused on two symbols:
+
+- `XAUUSD`
+- `JP225`
+
 ## Contents
 
 1. [Overview](#overview)
@@ -177,15 +182,17 @@ Client actions:
 Example subscribe:
 
 ```json
-{ "action": "subscribe", "symbols": ["EURUSD", "XAUUSD"] }
+{ "action": "subscribe", "symbols": ["XAUUSD", "JP225"] }
 ```
+
+If a request includes unsupported symbols, the server reports them and proceeds with the allowed symbols.
 
 Example candle request:
 
 ```json
 {
   "action": "candles",
-  "symbol": "EURUSD",
+  "symbol": "XAUUSD",
   "interval": "1h",
   "limit": 200,
   "reqId": "optional-id"
@@ -250,9 +257,12 @@ Backtesting lives in `src/app/backtesting/` and can read from MT5 or CSV files.
 Examples:
 
 ```powershell
-backtest --symbol EURUSD --from-date 2024-01-01 --to-date 2024-12-31 --output results\EURUSD.csv
-backtest --csv-htf data\EURUSD_1h.csv --csv-ltf data\EURUSD_5m.csv --output results\EURUSD.csv
+backtest --symbol XAUUSD --from-date 2025-01-01 --output results\XAUUSD.csv --start-balance 100 --risk-percent 5 --spread-points 5
+backtest --symbol JP225 --from-date 2025-01-01 --output results\JP225.csv --start-balance 100 --risk-percent 5 --spread-points 3
+py -m src.app.backtesting.rba --spread-points 3 --from-date 2025-01-01 --start-balance 100 --risk-percent 5
 .\run_backtests.ps1
 ```
+
+Spread input is broker-style points. For `XAUUSD`, `--spread-points 5` applies `0.50` price units. For `JP225`, `--spread-points 5` applies `5.0` price units.
 
 See [COMMANDS.md](COMMANDS.md) for the full command list.
