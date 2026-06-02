@@ -20,7 +20,7 @@ timeframes:
     - htf: 30min
       ltf: 5min
     - htf: 1h
-      ltf: 5min
+      ltf: 10min
   htf_lookback: 240
   htf_outputsize: 1000
 
@@ -33,8 +33,8 @@ signal_quality:
   max_rr: 5.0
   # Per-pair max RR caps use "HTF_minutes/LTF_minutes".
   tf_max_rr:
-    "60/5": 2
-    "30/5": 2
+    "60/10": 3
+    "30/5": 3
 
 signal_lifetime:
   expiry_hours: 120

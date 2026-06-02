@@ -6,10 +6,9 @@
 
 Signal Engine is a real-time trading signal service. It reads candles directly from a local MetaTrader 5 terminal, detects high-timeframe structure and low-timeframe rejection setups, then broadcasts structured signal events to WebSocket clients.
 
-The configured trading universe is focused on two symbols:
+The configured trading universe is focused on gold:
 
 - `XAUUSD`
-- `JP225`
 
 ## Contents
 
@@ -182,7 +181,7 @@ Client actions:
 Example subscribe:
 
 ```json
-{ "action": "subscribe", "symbols": ["XAUUSD", "JP225"] }
+{ "action": "subscribe", "symbols": ["XAUUSD"] }
 ```
 
 If a request includes unsupported symbols, the server reports them and proceeds with the allowed symbols.
@@ -258,11 +257,10 @@ Examples:
 
 ```powershell
 backtest --symbol XAUUSD --from-date 2025-01-01 --output results\XAUUSD.csv --start-balance 100 --risk-percent 5 --spread-points 5
-backtest --symbol JP225 --from-date 2025-01-01 --output results\JP225.csv --start-balance 100 --risk-percent 5 --spread-points 3
-py -m src.app.backtesting.rba --spread-points 3 --from-date 2025-01-01 --start-balance 100 --risk-percent 5
+py -m src.app.backtesting.rba --spread-points 3.5 --from-date 2025-01-01 --start-balance 100 --risk-percent 5
 .\run_backtests.ps1
 ```
 
-Spread input is broker-style points. For `XAUUSD`, `--spread-points 5` applies `0.50` price units. For `JP225`, `--spread-points 5` applies `5.0` price units.
+Spread input is broker-style points. For `XAUUSD`, `--spread-points 5` applies `0.50` price units.
 
 See [COMMANDS.md](COMMANDS.md) for the full command list.

@@ -63,7 +63,6 @@ _HTF_BAR_MS = 3_600_000  # 1 hour HTF bar in milliseconds
 # Updated ~ March 2026 realistic levels (approximate spot ± small range)
 _SYMBOLS: dict[str, tuple[float, float, int]] = {
     "XAUUSD": (2650.0, 2750.0, 2),
-    "JP225": (55200.0, 56500.0, 1),
 }
 _ALL_SYMBOLS = list(_SYMBOLS.keys())
 

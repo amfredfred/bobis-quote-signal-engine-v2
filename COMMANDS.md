@@ -155,7 +155,7 @@ backtest --symbol XAUUSD --from-date 2025-01-01 --output results\XAUUSD.csv --st
 Backtest one timeframe pair:
 
 ```powershell
-backtest --symbol JP225 --tf-pair 30min:5min --from-date 2025-01-01 --output results\JP225_30m_5m.csv --start-balance 100 --risk-percent 5 --spread-points 3
+backtest --symbol XAUUSD --tf-pair 30min:5min --from-date 2025-01-01 --output results\XAUUSD_30m_5m.csv --start-balance 100 --risk-percent 5 --spread-points 3.5
 ```
 
 Backtest from CSV files:
@@ -173,22 +173,22 @@ backtest --symbol XAUUSD --min-rr 1 --max-rr 2 --max-sl-mult 3 --from-date 2025-
 Disable optional filters during a backtest:
 
 ```powershell
-backtest --symbol JP225 --no-breakeven --no-invalidation --no-trend-filter --no-session-filter --output results\JP225.csv
+backtest --symbol XAUUSD --no-breakeven --no-invalidation --no-trend-filter --no-session-filter --output results\XAUUSD.csv
 ```
 
-Run the focused XAUUSD/JP225 RBA basket:
+Run the focused XAUUSD RBA basket:
 
 ```powershell
-py -m src.app.backtesting.rba --spread-points 3 --from-date 2025-01-01 --start-balance 100 --risk-percent 5
+py -m src.app.backtesting.rba --spread-points 3.5 --from-date 2025-01-01 --start-balance 100 --risk-percent 5
 ```
 
 Run RBA with a mixed list. Unsupported symbols are reported and skipped:
 
 ```powershell
-py -m src.app.backtesting.rba --symbols XAUUSD US100 JP225 --spread-points 3 --from-date 2025-01-01 --start-balance 100 --risk-percent 5
+py -m src.app.backtesting.rba --symbols XAUUSD US100 --spread-points 3.5 --from-date 2025-01-01 --start-balance 100 --risk-percent 5
 ```
 
-Spread points are broker-style input values. XAUUSD converts to price units at 0.1 per point, so `--spread-points 5` applies `0.50` on gold. JP225 uses the value directly, so `--spread-points 5` applies `5.0`.
+Spread points are broker-style input values. XAUUSD converts to price units at 0.1 per point, so `--spread-points 5` applies `0.50` on gold.
 
 Run the bundled multi-symbol PowerShell backtest script:
 
@@ -269,7 +269,7 @@ wscat -c "ws://localhost:8765?token=change-me"
 Subscribe to symbols after connecting:
 
 ```json
-{ "action": "subscribe", "symbols": ["XAUUSD", "JP225"] }
+{ "action": "subscribe", "symbols": ["XAUUSD"] }
 ```
 
 Request server status:

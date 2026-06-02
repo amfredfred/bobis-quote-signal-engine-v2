@@ -30,8 +30,8 @@ def test_cli_spread_points_convert_gold_to_price_units():
     assert spread_points_to_price_units("XAUUSD", 3.0) == pytest.approx(0.3)
 
 
-def test_cli_spread_points_leave_indices_as_price_units():
-    assert spread_points_to_price_units("JP225", 3.0) == pytest.approx(3.0)
+def test_cli_spread_points_leave_unknown_symbols_as_price_units():
+    assert spread_points_to_price_units("UNKNOWN", 3.0) == pytest.approx(3.0)
 
 
 # ── Spread formula: executed_rr = raw_rr - (spread_points / risk_pips) ────────

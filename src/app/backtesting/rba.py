@@ -15,7 +15,6 @@ from domain.assets.profiles import SUPPORTED_SYMBOLS, normalize_symbol
 
 ALL_SYMBOLS = [
     "XAUUSD",
-    "JP225",
 ]
 
 FAILED_STATE_FILE = ".backtest_failed.json"
