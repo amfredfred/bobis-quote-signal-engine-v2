@@ -28,7 +28,7 @@ signal_quality:
   # Rejection wick ratio from 0.0 to 1.0. Higher means stricter candle rejection.
   min_wick_ratio: 0.51
   max_sl_zone_mult: 3.0
-  min_rr: 1.5
+  min_rr: 1
   # Set max_rr to 0 to disable the ceiling.
   max_rr: 5.0
   # Per-pair max RR caps use "HTF_minutes/LTF_minutes".
