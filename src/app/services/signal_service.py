@@ -288,8 +288,7 @@ class SignalService:
         profile = self._registry.get(symbol, htf_interval, ltf_interval)
         htf_interval_ms = interval_to_minutes(htf_interval) * 60 * 1000
         ltf_interval_ms = interval_to_minutes(ltf_interval) * 60 * 1000
-        min_ltf_ms = min(interval_to_minutes(ltf) for _, ltf in self._cfg.tf_pairs) * 60 * 1000
-        analysis_close = fired_at + min_ltf_ms
+        analysis_close = fired_at
         pair_fired_at = (analysis_close // ltf_interval_ms) * ltf_interval_ms - ltf_interval_ms
 
         # HTF
@@ -478,6 +477,16 @@ class SignalService:
             if not rej_result:
                 continue
             rejection, _ = rej_result
+            max_emit_lag_ms = max(self._cfg.ws_candle_buffer_ms * 2, 90_000)
+            rejection_closed_at = rejection.timestamp + ltf_interval_ms
+            if fired_at - rejection_closed_at > max_emit_lag_ms:
+                logger.info(
+                    "[%s] Skipping stale rejection %s lag=%.1fs",
+                    pair_label,
+                    self._cfg.dt_ms(rejection.timestamp),
+                    (fired_at - rejection_closed_at) / 1000,
+                )
+                continue
 
             # Correlation & dedup
             corr_conflict_flag, corr_reason = correlation_conflict(
