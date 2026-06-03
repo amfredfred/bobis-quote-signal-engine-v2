@@ -22,7 +22,8 @@ M5 = 5 * 60 * 1000
 def test_scheduler_passes_analysis_close_without_double_subtract() -> None:
     cfg = _SchedulerCfg(now=BASE + M5 + 1_000)
     service = _Service()
-    fake_engine = type("FakeEngine", (), {"_cfg": cfg, "_service": service})()
+    md = _MarketDataClock(now=BASE + M5 + 1_000)
+    fake_engine = type("FakeEngine", (), {"_cfg": cfg, "_md": md, "_service": service})()
     expected_analysis_close = (cfg.now_ms() // M5) * M5
 
     asyncio.run(SignalEngine._on_candle_close(fake_engine, "XAUUSD"))
@@ -87,6 +88,14 @@ class _Service:
 
     async def update_watchlist(self, symbol: str):
         self.update_calls.append(symbol)
+
+
+class _MarketDataClock:
+    def __init__(self, now: int) -> None:
+        self._now = now
+
+    def now_ms(self, symbol: str) -> int:
+        return self._now
 
 
 class _PrintCfg:

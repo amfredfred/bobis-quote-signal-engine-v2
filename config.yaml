@@ -10,7 +10,8 @@ mt5:
   timeout_ms: 60000
   # Variants: false (normal install), true (portable terminal install).
   portable: false
-  # MT5 Python returns bar timestamps in UTC. Broker/server chart time is not applied here.
+  # MT5 broker/server chart time is auto-calibrated from a live tick.
+  # Internal signal timestamps stay UTC; logs/backtest output display broker time.
 
 timeframes:
   # Supported intervals: 1min, 2min, 3min, 4min, 5min, 6min, 10min, 12min,

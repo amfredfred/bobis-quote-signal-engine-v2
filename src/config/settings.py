@@ -273,6 +273,7 @@ class Settings:
     mt5_server: str = ""
     mt5_timeout_ms: int = 60_000
     mt5_portable: bool = False
+    broker_time_offset_ms: int = 0
 
     # ── Deployment / trading guardrails ───────────────────────────────────────
     apex_env: str = "paper"
@@ -488,13 +489,14 @@ class Settings:
     # ── Utilities ─────────────────────────────────────────────────────────────
 
     def now_ms(self) -> int:
-        """Current time as a UTC millisecond timestamp."""
+        """Current real UTC timestamp in milliseconds."""
         return int(datetime.datetime.now(tz=datetime.timezone.utc).timestamp() * 1000)
 
     def ms_to_str(self, ms: int) -> str:
-        return datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        display_ms = ms + self.broker_time_offset_ms
+        return datetime.datetime.fromtimestamp(
+            display_ms / 1000, tz=datetime.timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
 
     def dt_ms(self, ts_ms: int) -> str:
         return self.ms_to_str(ts_ms)

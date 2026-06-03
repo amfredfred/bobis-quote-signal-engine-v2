@@ -1,9 +1,9 @@
-"""
-infrastructure/data_providers/market_data.py - direct MetaTrader 5 data client.
+"""Direct MetaTrader 5 data client.
 
-The engine reads OHLC candles from the local MetaTrader 5 terminal through the
-official Python package. MT5 Python returns bar timestamps in UTC, so the engine
-keeps them as UTC milliseconds.
+The engine keeps internal timestamps as real UTC epoch milliseconds. Some MT5
+brokers expose rate/tick timestamps in broker/server time encoded as epoch
+seconds, so this adapter calibrates that offset from a live tick and normalizes
+broker timestamps before returning candles or scheduler time.
 """
 
 from __future__ import annotations
@@ -87,15 +87,13 @@ def _row_value(row, key: str, default=0):
         return getattr(row, key, default)
 
 
-def _parse_rates(rates) -> list[Candle]:
+def _parse_rates(rates, broker_time_offset_ms: int = 0) -> list[Candle]:
     if rates is None:
         raise MarketDataError(f"MT5 returned no rates ({_last_error()})")
 
     candles: list[Candle] = []
     for row in rates:
-        # MT5 Python rate timestamps are UTC epoch seconds. Broker chart/server
-        # time is a terminal display concern and must not be subtracted here.
-        timestamp = int(_row_value(row, "time")) * 1000
+        timestamp = int(_row_value(row, "time")) * 1000 - broker_time_offset_ms
         candles.append(
             Candle(
                 timestamp=timestamp,
@@ -131,6 +129,7 @@ class MarketDataClient:
         timeout_ms: int = 60_000,
         portable: bool = False,
         metrics_fn=None,
+        settings=None,
     ) -> None:
         if mt5 is None:
             raise MarketDataError(
@@ -139,6 +138,8 @@ class MarketDataClient:
             )
 
         self._metrics_fn = metrics_fn
+        self._settings = settings
+        self._broker_time_offset_ms_by_symbol: dict[str, int] = {}
         self._shutdown_on_close = False
 
         kwargs = {"timeout": timeout_ms, "portable": portable}
@@ -174,6 +175,7 @@ class MarketDataClient:
             timeout_ms=settings.mt5_timeout_ms,
             portable=settings.mt5_portable,
             metrics_fn=metrics_fn,
+            settings=settings,
         )
 
     def _normalize_symbol(self, symbol: str) -> str:
@@ -189,6 +191,44 @@ class MarketDataClient:
                 f"MT5 symbol {mt5_symbol!r} is not visible and could not be selected"
             )
         return mt5_symbol
+
+    def _broker_time_offset_ms(self, symbol: str) -> int:
+        mt5_symbol = self._ensure_symbol(symbol)
+        tick = mt5.symbol_info_tick(mt5_symbol)
+        if tick is not None:
+            if getattr(tick, "time_msc", 0):
+                tick_ms = int(tick.time_msc)
+            elif getattr(tick, "time", 0):
+                tick_ms = int(tick.time) * 1000
+            else:
+                tick_ms = 0
+            if tick_ms:
+                raw_offset = tick_ms - _now_ms()
+                offset = round(raw_offset / 3_600_000) * 3_600_000
+                self._broker_time_offset_ms_by_symbol[mt5_symbol] = offset
+                if self._settings is not None:
+                    object.__setattr__(self._settings, "broker_time_offset_ms", offset)
+                return offset
+
+        cached = self._broker_time_offset_ms_by_symbol.get(mt5_symbol)
+        if cached is not None:
+            return cached
+
+        logger.warning("[%s] MT5 broker clock unavailable; assuming UTC offset 0", symbol)
+        return 0
+
+    def now_ms(self, symbol: str) -> int:
+        """Current real UTC timestamp derived from MT5 tick time for symbol."""
+        mt5_symbol = self._ensure_symbol(symbol)
+        tick = mt5.symbol_info_tick(mt5_symbol)
+        if tick is not None:
+            if getattr(tick, "time_msc", 0):
+                return int(tick.time_msc) - self._broker_time_offset_ms(symbol)
+            if getattr(tick, "time", 0):
+                return int(tick.time) * 1000 - self._broker_time_offset_ms(symbol)
+
+        logger.warning("[%s] MT5 tick clock unavailable; falling back to system UTC", symbol)
+        return _now_ms()
 
     def _record_metrics(
         self,
@@ -213,11 +253,12 @@ class MarketDataClient:
     ) -> list[Candle]:
         mt5_interval = _to_mt5_interval(interval)
         mt5_symbol = self._ensure_symbol(symbol)
+        broker_time_offset_ms = self._broker_time_offset_ms(symbol)
         called_at = _now_ms()
         started = time.perf_counter()
         try:
             rates = mt5.copy_rates_from_pos(mt5_symbol, mt5_interval, 0, outputsize)
-            candles = _parse_rates(rates)
+            candles = _parse_rates(rates, broker_time_offset_ms)
             self._record_metrics(symbol, interval, called_at, started, True)
             logger.debug("[%s %s] fetch_candles: %d candles", symbol, interval, len(candles))
             return candles
@@ -235,6 +276,7 @@ class MarketDataClient:
     ) -> list[Candle]:
         mt5_interval = _to_mt5_interval(interval)
         mt5_symbol = self._ensure_symbol(symbol)
+        broker_time_offset_ms = self._broker_time_offset_ms(symbol)
         end_ts = end_ts or _now_ms()
         called_at = _now_ms()
         started = time.perf_counter()
@@ -242,10 +284,10 @@ class MarketDataClient:
             rates = mt5.copy_rates_range(
                 mt5_symbol,
                 mt5_interval,
-                _utc_dt(start_ts),
-                _utc_dt(end_ts),
+                _utc_dt(start_ts + broker_time_offset_ms),
+                _utc_dt(end_ts + broker_time_offset_ms),
             )
-            candles = _parse_rates(rates)
+            candles = _parse_rates(rates, broker_time_offset_ms)
             self._record_metrics(symbol, interval, called_at, started, True)
             logger.debug(
                 "[%s %s] fetch_candles_range: %d candles",

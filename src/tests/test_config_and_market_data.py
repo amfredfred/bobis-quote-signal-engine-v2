@@ -45,10 +45,16 @@ def test_settings_rejects_inverted_timeframe_pairs():
         Settings(tf_pairs=(("5min", "1h"),))
 
 
-def test_parse_rates_keeps_mt5_utc_epoch_seconds():
+def test_settings_formats_timestamps_in_broker_time():
+    settings = Settings(broker_time_offset_ms=10_800_000)
+
+    assert settings.dt_ms(1_700_000_000_000) == "2023-11-15 01:13:20"
+
+
+def test_parse_rates_normalizes_broker_epoch_seconds_to_utc():
     rates = [
         {
-            "time": 1_700_000_000,
+            "time": 1_700_010_800,
             "open": 1.1,
             "high": 1.2,
             "low": 1.0,
@@ -57,7 +63,7 @@ def test_parse_rates_keeps_mt5_utc_epoch_seconds():
         }
     ]
 
-    candles = _parse_rates(rates)
+    candles = _parse_rates(rates, broker_time_offset_ms=10_800_000)
 
     assert candles[0].timestamp == 1_700_000_000_000
     assert candles[0].volume == 12.0

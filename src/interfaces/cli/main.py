@@ -121,7 +121,7 @@ class SignalEngine:
     async def _on_candle_close(self, symbol: str) -> None:
         try:
             min_ltf = min(interval_to_minutes(ltf) for _, ltf in self._cfg.tf_pairs)
-            now_ms = self._cfg.now_ms()
+            now_ms = self._md.now_ms(symbol)
             ltf_ms = min_ltf * 60 * 1000
             analysis_close = (now_ms // ltf_ms) * ltf_ms
             logger.info(
