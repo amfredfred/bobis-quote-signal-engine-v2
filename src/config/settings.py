@@ -194,6 +194,35 @@ def _parse_time(value: Any, default: datetime.time) -> datetime.time:
     return datetime.time(int(hour), int(minute or 0))
 
 
+def _parse_weekday(value: Any, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, int):
+        weekday = value
+    else:
+        raw = str(value).strip().lower()
+        names = {
+            "mon": 0,
+            "monday": 0,
+            "tue": 1,
+            "tuesday": 1,
+            "wed": 2,
+            "wednesday": 2,
+            "thu": 3,
+            "thursday": 3,
+            "fri": 4,
+            "friday": 4,
+            "sat": 5,
+            "saturday": 5,
+            "sun": 6,
+            "sunday": 6,
+        }
+        weekday = names.get(raw, int(raw) if raw.isdigit() else default)
+    if weekday < 0 or weekday > 6:
+        raise ValueError(f"weekday must be 0-6, got {weekday}")
+    return weekday
+
+
 def _sessions_from_config(raw: Any) -> dict[str, dict]:
     sessions = _default_sessions()
     if not isinstance(raw, dict):
@@ -274,6 +303,11 @@ class Settings:
     mt5_timeout_ms: int = 60_000
     mt5_portable: bool = False
     broker_time_offset_ms: int = 0
+    weekend_sleep_enabled: bool = True
+    weekend_close_weekday: int = 5
+    weekend_close_time: datetime.time = datetime.time(0, 0)
+    weekend_reopen_weekday: int = 0
+    weekend_reopen_time: datetime.time = datetime.time(0, 0)
 
     # ── Deployment / trading guardrails ───────────────────────────────────────
     apex_env: str = "paper"
@@ -451,6 +485,24 @@ class Settings:
             mt5_server=os.getenv("MT5_SERVER", ""),
             mt5_timeout_ms=int(_get(cfg, "mt5.timeout_ms", 60_000)),
             mt5_portable=_as_bool(_get(cfg, "mt5.portable", False)),
+            broker_time_offset_ms=int(
+                float(_get(cfg, "mt5.broker_time_offset_hours", 0.0)) * 3_600_000
+            ),
+            weekend_sleep_enabled=_as_bool(_get(cfg, "market.weekend_sleep.enabled", True)),
+            weekend_close_weekday=_parse_weekday(
+                _get(cfg, "market.weekend_sleep.close_weekday", "saturday"), 5
+            ),
+            weekend_close_time=_parse_time(
+                _get(cfg, "market.weekend_sleep.close_time", "00:00"),
+                datetime.time(0, 0),
+            ),
+            weekend_reopen_weekday=_parse_weekday(
+                _get(cfg, "market.weekend_sleep.reopen_weekday", "monday"), 0
+            ),
+            weekend_reopen_time=_parse_time(
+                _get(cfg, "market.weekend_sleep.reopen_time", "00:00"),
+                datetime.time(0, 0),
+            ),
             apex_env=os.getenv("APEX_ENV", "paper").strip().lower(),
             apex_live_confirm=os.getenv("APEX_LIVE_CONFIRM", ""),
             apex_disable_trading=_bool_env("APEX_DISABLE_TRADING", False),

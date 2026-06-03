@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import os
 import re
 import sys
@@ -13,6 +14,7 @@ from domain.entities.enums import BosDirection, CandlePattern, SignalDirection, 
 from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
 from domain.signals.builder import build_signal
 from interfaces.cli.main import SignalEngine
+from interfaces.ws.scheduler import SignalScheduler
 
 
 BASE = 1_700_000_000_000
@@ -30,6 +32,30 @@ def test_scheduler_passes_analysis_close_without_double_subtract() -> None:
 
     assert service.analyze_calls == [("XAUUSD", expected_analysis_close)]
     assert service.update_calls == ["XAUUSD"]
+
+
+def test_scheduler_weekend_sleep_delays_until_broker_monday_open() -> None:
+    cfg = _SchedulerCfg(
+        now=_utc_ms("2026-06-06 12:00:00"),
+        broker_time_offset_ms=3 * 60 * 60 * 1000,
+    )
+    scheduler = object.__new__(SignalScheduler)
+    scheduler._cfg = cfg
+
+    delay_ms = SignalScheduler._weekend_sleep_delay_ms(scheduler)
+
+    assert delay_ms == (33 * 60 * 60 * 1000) + cfg.ws_candle_buffer_ms
+
+
+def test_scheduler_weekend_sleep_allows_weekday_market_time() -> None:
+    cfg = _SchedulerCfg(
+        now=_utc_ms("2026-06-03 16:00:00"),
+        broker_time_offset_ms=3 * 60 * 60 * 1000,
+    )
+    scheduler = object.__new__(SignalScheduler)
+    scheduler._cfg = cfg
+
+    assert SignalScheduler._weekend_sleep_delay_ms(scheduler) is None
 
 
 def test_builder_sets_triggered_at_to_actionable_candle_close() -> None:
@@ -67,9 +93,16 @@ def test_backtest_print_separates_setup_actionable_entry_and_never_closed_open(c
 
 class _SchedulerCfg:
     tf_pairs = (("5min", "5min"),)
+    ws_candle_buffer_ms = 1_500
+    weekend_sleep_enabled = True
+    weekend_close_weekday = 5
+    weekend_close_time = datetime.time(0, 0)
+    weekend_reopen_weekday = 0
+    weekend_reopen_time = datetime.time(0, 0)
 
-    def __init__(self, now: int) -> None:
+    def __init__(self, now: int, broker_time_offset_ms: int = 0) -> None:
         self._now = now
+        self.broker_time_offset_ms = broker_time_offset_ms
 
     def now_ms(self) -> int:
         return self._now
@@ -105,6 +138,13 @@ class _PrintCfg:
         return datetime.datetime.fromtimestamp(
             ms / 1000, tz=datetime.timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _utc_ms(value: str) -> int:
+    dt = datetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(
+        tzinfo=datetime.timezone.utc
+    )
+    return int(dt.timestamp() * 1000)
 
 
 def _signal():

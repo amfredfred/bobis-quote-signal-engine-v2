@@ -104,10 +104,66 @@ class SignalScheduler:
         next_s = (now_s // iv_s + 1) * iv_s
         return (next_s * 1000 - now_ms) + self._cfg.ws_candle_buffer_ms
 
+    def _broker_seconds_of_week(self, now_ms: int | None = None) -> int:
+        now_ms = self._cfg.now_ms() if now_ms is None else now_ms
+        broker_ms = now_ms + int(getattr(self._cfg, "broker_time_offset_ms", 0))
+        broker_dt = datetime.datetime.fromtimestamp(
+            broker_ms / 1000, tz=datetime.timezone.utc
+        )
+        return (
+            broker_dt.weekday() * 86_400
+            + broker_dt.hour * 3_600
+            + broker_dt.minute * 60
+            + broker_dt.second
+        )
+
+    def _configured_seconds_of_week(self, weekday_attr: str, time_attr: str) -> int:
+        day = int(getattr(self._cfg, weekday_attr))
+        value = getattr(self._cfg, time_attr)
+        return day * 86_400 + value.hour * 3_600 + value.minute * 60 + value.second
+
+    def _weekend_sleep_delay_ms(self, now_ms: int | None = None) -> int | None:
+        if not getattr(self._cfg, "weekend_sleep_enabled", True):
+            return None
+
+        week_s = 7 * 86_400
+        now_s = self._broker_seconds_of_week(now_ms)
+        close_s = self._configured_seconds_of_week(
+            "weekend_close_weekday", "weekend_close_time"
+        )
+        reopen_s = self._configured_seconds_of_week(
+            "weekend_reopen_weekday", "weekend_reopen_time"
+        )
+
+        if close_s == reopen_s:
+            return None
+        if close_s < reopen_s:
+            is_closed = close_s <= now_s < reopen_s
+            seconds_until_reopen = reopen_s - now_s
+        else:
+            is_closed = now_s >= close_s or now_s < reopen_s
+            seconds_until_reopen = (
+                reopen_s - now_s if now_s < reopen_s else week_s - now_s + reopen_s
+            )
+
+        if not is_closed:
+            return None
+        return seconds_until_reopen * 1000 + self._cfg.ws_candle_buffer_ms
+
     def _schedule_next(self, symbol: str) -> None:
         from config.settings import interval_to_minutes
-        interval = min(interval_to_minutes(ltf) for _, ltf in self._cfg.tf_pairs)
-        delay_s  = self._ms_until_next_boundary(interval) / 1000
+
+        weekend_delay_ms = self._weekend_sleep_delay_ms()
+        if weekend_delay_ms is not None:
+            delay_s = weekend_delay_ms / 1000
+            logger.info(
+                "[Scheduler] %s market closed for weekend; sleeping %.1fh",
+                symbol,
+                delay_s / 3600,
+            )
+        else:
+            interval = min(interval_to_minutes(ltf) for _, ltf in self._cfg.tf_pairs)
+            delay_s  = self._ms_until_next_boundary(interval) / 1000
         timer    = threading.Timer(delay_s, self._run, args=(symbol,))
         timer.daemon = True
         timer.start()
@@ -119,13 +175,21 @@ class SignalScheduler:
             schedule.timer.cancel()
 
     def _run(self, symbol: str) -> None:
-        fired_at = self._cfg.now_ms()
         with self._lock:
             if symbol not in self._schedules:
                 return
             schedule = self._schedules[symbol]
             if schedule.is_running:
                 logger.warning("[Scheduler] %s still running — skipping tick", symbol)
+                return
+            weekend_delay_ms = self._weekend_sleep_delay_ms()
+            if weekend_delay_ms is not None:
+                logger.info(
+                    "[Scheduler] %s market closed for weekend; next wake in %.1fh",
+                    symbol,
+                    weekend_delay_ms / 3_600_000,
+                )
+                self._schedule_next(symbol)
                 return
             schedule.is_running = True
 

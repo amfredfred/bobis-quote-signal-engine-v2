@@ -10,7 +10,21 @@ mt5:
   timeout_ms: 60000
   # Variants: false (normal install), true (portable terminal install).
   portable: false
-  # MT5 Python returns bar timestamps in UTC. Broker/server chart time is not applied here.
+  # FBS-Demo chart/server time is UTC+3. Live MT5 ticks auto-calibrate this,
+  # but the configured value lets weekend sleep work after a cold restart.
+  broker_time_offset_hours: 3
+  # MT5 broker/server chart time is auto-calibrated from a live tick.
+  # Internal signal timestamps stay UTC; logs/backtest output display broker time.
+
+market:
+  weekend_sleep:
+    enabled: true
+    # Evaluated in broker/chart time. Saturday 00:00 -> Monday 00:00 avoids
+    # unnecessary MT5 calls while the market is closed.
+    close_weekday: saturday
+    close_time: "00:00"
+    reopen_weekday: monday
+    reopen_time: "00:00"
 
 timeframes:
   # Supported intervals: 1min, 2min, 3min, 4min, 5min, 6min, 10min, 12min,
