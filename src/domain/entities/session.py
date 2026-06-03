@@ -11,8 +11,7 @@ references SignalEvent and belongs to the domain contract.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
-from typing import Optional
+from dataclasses import dataclass, asdict
 
 from domain.entities.enums import SignalEvent
 

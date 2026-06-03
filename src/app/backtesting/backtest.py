@@ -201,7 +201,6 @@ try:
         """
         n = len(ts)
         tp1_prev = False
-        tp1_hit_index = -1
         hit_entry_after_tp1 = False
 
         for i in range(n):
@@ -250,7 +249,6 @@ try:
             # Update AFTER checks — preserves "strictly prior" semantics
             if tp1_now and not tp1_prev:
                 tp1_prev = True
-                tp1_hit_index = i
 
         return 0, n, 0.0, 0.0, False
 

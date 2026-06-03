@@ -25,7 +25,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from domain.entities.enums import SignalDirection, SignalOutcome, CLOSED_OUTCOMES, WIN_OUTCOMES
+from domain.entities.enums import SignalDirection
 from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
 from domain.entities.session import ClosedSignalRecord
 

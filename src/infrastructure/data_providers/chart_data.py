@@ -6,8 +6,6 @@ Ported from data/chart_data.py with updated imports.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from domain.entities.candle import Candle
 from domain.entities.enums import SignalDirection
 from domain.entities.trade import TradeSignal

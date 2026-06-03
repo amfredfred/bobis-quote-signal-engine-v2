@@ -18,9 +18,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.backtesting.backtest import (
     DEFAULT_SPREAD_POINTS,
-    calculate_trade_accounting,
-    BacktestReport,
-    MultiPairBacktester,
     spread_points_to_price_units,
 )
 from domain.entities.enums import SignalDirection, SignalOutcome

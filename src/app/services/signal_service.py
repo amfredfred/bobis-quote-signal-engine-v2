@@ -21,8 +21,6 @@ import bisect
 import copy
 import logging
 from dataclasses import dataclass
-from datetime import datetime as _dt
-from datetime import timezone
 from typing import Callable, Optional, Protocol
 
 from app.engine.decision_engine import DecisionEngine
@@ -32,7 +30,6 @@ from domain.entities.candle import Candle
 from domain.entities.enums import (
     SignalDirection,
     SignalEvent,
-    SignalOutcome,
     SignalStatus,
 )
 from domain.entities.payloads import (
@@ -759,12 +756,6 @@ class SignalService:
             self._store.delete_open(signal.id)
         except Exception as exc:
             logger.warning("Failed to delete open signal %s: %s", signal.id, exc)
-
-        session_day = (
-            _dt.fromtimestamp(signal.closed_at / 1000, tz=timezone.utc)
-            .date()
-            .isoformat()
-        )
 
         rec = ClosedSignalRecord(
             signal_id=signal.id,

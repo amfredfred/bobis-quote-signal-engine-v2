@@ -17,7 +17,6 @@ from app.backtesting.backtest import (
     DEFAULT_START_BALANCE,
     DEFAULT_RISK_PERCENT,
     calculate_trade_accounting,
-    MultiPairBacktester,
 )
 
 

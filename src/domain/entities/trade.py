@@ -10,7 +10,7 @@ No config imports — tz/formatting concerns stay in the application layer.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from domain.entities.enums import (
