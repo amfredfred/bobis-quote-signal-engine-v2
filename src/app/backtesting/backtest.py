@@ -302,6 +302,12 @@ class BacktestResult:
             "id": s.id,
             "symbol": s.symbol,
             "direction": s.direction.value,
+            "setup_dt": _fmt(s.setup_candle_open_at or s.rejection_candle.timestamp),
+            "actionable_dt": _fmt(
+                s.setup_candle_close_at
+                or s.rejection_candle.timestamp
+                + _interval_to_minutes(s.ltf_interval) * 60 * 1000
+            ),
             "entry_dt": _fmt(s.triggered_at),
             "close_dt": _fmt(self.close_ts) if self.close_ts else "",
             "entry": round(s.entry_price, 5),
@@ -1094,6 +1100,8 @@ class MultiPairBacktester:
                     signal = decision.signal
                     if signal is None:
                         continue
+                    signal.setup_candle_open_at = rejection.timestamp
+                    signal.setup_candle_close_at = rejection.timestamp + ltf_interval_ms
 
                     cur_ltf_i = ltf_hi_idx - 1
                     future_np = self.ltf_candles_np[ltf_interval][cur_ltf_i + 1 :]
@@ -1408,13 +1416,27 @@ class MultiPairBacktester:
             SignalOutcome.EXPIRED: f"{DIM}EXPD 0.0R{RESET}",
         }.get(r.outcome, f"{DIM}?{RESET}")
 
+        setup_ts = s.setup_candle_open_at or s.rejection_candle.timestamp
+        actionable_ts = (
+            s.setup_candle_close_at
+            or s.rejection_candle.timestamp
+            + _interval_to_minutes(s.ltf_interval) * 60 * 1000
+        )
+        close_label = (
+            self.cfg.dt_ms(r.close_ts)
+            if r.close_ts
+            else ("EXPIRED" if r.outcome == EXP else "OPEN")
+        )
+
         print(f"\r{' '*80}\r", end="")
         print(
             f" {arrow} {BOLD}{s.direction.value:5s}{RESET} {tf_tag} {et_pattern} "
-            f"{CYAN}{self.cfg.dt_ms(s.triggered_at)}{RESET} "
+            f"S={CYAN}{self.cfg.dt_ms(setup_ts)}{RESET} "
+            f"A={CYAN}{self.cfg.dt_ms(actionable_ts)}{RESET} "
+            f"E@{CYAN}{self.cfg.dt_ms(s.triggered_at)}{RESET} "
             f"E={s.entry_price:.5f} SL={s.stop_loss:.5f} TP2={s.tp2:.5f} "
             f"{rr_tag} → {outcome_str}{retrace_marker} "
-            f"closed {self.cfg.dt_ms(r.close_ts) if r.close_ts else 'OPEN'}"
+            f"closed {close_label}"
         )
 
 

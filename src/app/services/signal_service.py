@@ -289,7 +289,31 @@ class SignalService:
         htf_interval_ms = interval_to_minutes(htf_interval) * 60 * 1000
         ltf_interval_ms = interval_to_minutes(ltf_interval) * 60 * 1000
         analysis_close = fired_at
+
+        # analysis_close is the close boundary of the newest fully closed LTF candle.
+        # Example on M5: at 10:35:01, analysis_close=10:35:00 and
+        # pair_fired_at=10:30:00, the open timestamp of the latest closed candle.
         pair_fired_at = (analysis_close // ltf_interval_ms) * ltf_interval_ms - ltf_interval_ms
+        real_now = self._cfg.now_ms()
+        expected_latest_closed_open = (
+            (real_now // ltf_interval_ms) * ltf_interval_ms - ltf_interval_ms
+        )
+        drift_ms = expected_latest_closed_open - pair_fired_at
+        logger.info(
+            "[%s] Signal analysis timing analysis_close=%s pair_fired_at=%s ltf_interval_ms=%s",
+            pair_label,
+            self._cfg.dt_ms(analysis_close),
+            self._cfg.dt_ms(pair_fired_at),
+            ltf_interval_ms,
+        )
+        if drift_ms > 0:
+            logger.warning(
+                "[%s] Signal analysis lag detected expected_latest_closed_open=%s actual_pair_fired_at=%s drift_ms=%s",
+                pair_label,
+                self._cfg.dt_ms(expected_latest_closed_open),
+                self._cfg.dt_ms(pair_fired_at),
+                drift_ms,
+            )
 
         # HTF
         htf_full = await loop.run_in_executor(
@@ -323,6 +347,21 @@ class SignalService:
         if len(ltf_visible) < 10:
             logger.warning("[%s] Insufficient LTF data", pair_label)
             return []
+        logger.info(
+            "[%s] Signal scan",
+            pair_label,
+            extra={
+                "real_now": real_now,
+                "fired_at": fired_at,
+                "analysis_close": analysis_close,
+                "pair_fired_at": pair_fired_at,
+                "latest_closed_candle_open": pair_fired_at,
+                "evaluated_candle_close": pair_fired_at + ltf_interval_ms,
+                "latest_visible_ltf_open": ltf_visible[-1].timestamp,
+                "latest_visible_ltf_close": ltf_visible[-1].timestamp + ltf_interval_ms,
+                "scan_lag_ms": real_now - (pair_fired_at + ltf_interval_ms),
+            },
+        )
 
         # Trend bias
         structure = None
@@ -477,14 +516,19 @@ class SignalService:
             if not rej_result:
                 continue
             rejection, _ = rej_result
-            max_emit_lag_ms = max(self._cfg.ws_candle_buffer_ms * 2, 90_000)
+            real_now = self._cfg.now_ms()
+            max_emit_lag_ms = self._cfg.max_emit_lag_ms
             rejection_closed_at = rejection.timestamp + ltf_interval_ms
-            if fired_at - rejection_closed_at > max_emit_lag_ms:
+            emit_lag_ms = real_now - rejection_closed_at
+            if emit_lag_ms > max_emit_lag_ms:
                 logger.info(
-                    "[%s] Skipping stale rejection %s lag=%.1fs",
+                    "[%s] Skipping stale rejection rejection_open=%s rejection_close=%s real_now=%s lag=%.1fs max_lag=%.1fs",
                     pair_label,
                     self._cfg.dt_ms(rejection.timestamp),
-                    (fired_at - rejection_closed_at) / 1000,
+                    self._cfg.dt_ms(rejection_closed_at),
+                    self._cfg.dt_ms(real_now),
+                    emit_lag_ms / 1000,
+                    max_emit_lag_ms / 1000,
                 )
                 continue
 
@@ -533,8 +577,11 @@ class SignalService:
                 continue
 
             detected_at = self._cfg.now_ms()
+            signal.setup_candle_open_at = rejection.timestamp
+            signal.setup_candle_close_at = rejection.timestamp + ltf_interval_ms
             signal.detected_at = detected_at
             signal.emitted_at = detected_at
+            emit_lag_ms = detected_at - signal.setup_candle_close_at
 
             self._session.register_signal(
                 signal_id=signal.id,
@@ -566,6 +613,21 @@ class SignalService:
                 signal.stop_loss,
                 signal.tp2,
                 signal.risk_reward_ratio,
+            )
+
+            logger.info(
+                "[%s] Signal emit",
+                pair_label,
+                extra={
+                    "signal_id": signal.id,
+                    "symbol": signal.symbol,
+                    "direction": signal.direction.value,
+                    "setup_candle_open_at": signal.setup_candle_open_at,
+                    "setup_candle_close_at": signal.setup_candle_close_at,
+                    "detected_at": signal.detected_at,
+                    "emitted_at": signal.emitted_at,
+                    "emit_lag_ms": emit_lag_ms,
+                },
             )
 
             self._emit(SignalEvent.SIGNAL_TRIGGERED, signal.to_dict())

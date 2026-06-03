@@ -334,6 +334,7 @@ class Settings:
     max_sl_zone_mult: float = 2.0
     min_rr: float = 1.5
     max_rr: float = 9.0  # 0 = disabled
+    max_emit_lag_ms: int = 90_000
 
     # Per-pair RR cap: "HTF_min/LTF_min" → max_rr, e.g. {"5/1": 2.5, "60/5": 8.0}
     # Falls back to max_rr when a pair has no explicit entry.
@@ -459,6 +460,7 @@ class Settings:
             max_sl_zone_mult=float(_get(cfg, "signal_quality.max_sl_zone_mult", 2.0)),
             min_rr=float(_get(cfg, "signal_quality.min_rr", 1.5)),
             max_rr=float(_get(cfg, "signal_quality.max_rr", 9.0)),
+            max_emit_lag_ms=int(_get(cfg, "signals.max_emit_lag_ms", 90_000)),
             tf_max_rr=_parse_pair_map(_get(cfg, "signal_quality.tf_max_rr")),
             signal_expiry_hours=float(_get(cfg, "signal_lifetime.expiry_hours", 120)),
             max_htf_zones_per_dir=int(_get(cfg, "zones.max_htf_zones_per_dir", 3)),

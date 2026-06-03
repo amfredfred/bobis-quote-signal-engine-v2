@@ -76,6 +76,8 @@ class TradeSignal:
     created_at:   int           = 0
     pending_at:   Optional[int] = None
     triggered_at: Optional[int] = None
+    setup_candle_open_at:  Optional[int] = None
+    setup_candle_close_at: Optional[int] = None
     detected_at:  Optional[int] = None
     emitted_at:   Optional[int] = None
     tp1_hit_at:   Optional[int] = None
@@ -104,9 +106,11 @@ class TradeSignal:
     # ── Serialisation ─────────────────────────────────────────────────────────
 
     def to_dict(self) -> dict:
-        rejection_candle_close_at = self.rejection_candle.timestamp + _interval_to_ms(
-            self.ltf_interval
+        rejection_candle_close_at = (
+            self.setup_candle_close_at
+            or self.rejection_candle.timestamp + _interval_to_ms(self.ltf_interval)
         )
+        setup_candle_open_at = self.setup_candle_open_at or self.rejection_candle.timestamp
         return {
             "id":              self.id,
             "symbol":          self.symbol,
@@ -153,6 +157,8 @@ class TradeSignal:
             "createdAt":            self.created_at,
             "pendingAt":            self.pending_at,
             "triggeredAt":          self.triggered_at,
+            "setupCandleOpenAt":     setup_candle_open_at,
+            "setupCandleCloseAt":    rejection_candle_close_at,
             "detectedAt":           self.detected_at,
             "emittedAt":            self.emitted_at,
             "rejectionCandleCloseAt": rejection_candle_close_at,
@@ -216,6 +222,8 @@ class TradeSignal:
             created_at             = d["createdAt"],
             pending_at             = d.get("pendingAt"),
             triggered_at           = d.get("triggeredAt"),
+            setup_candle_open_at    = d.get("setupCandleOpenAt"),
+            setup_candle_close_at   = d.get("setupCandleCloseAt") or d.get("rejectionCandleCloseAt"),
             detected_at            = d.get("detectedAt"),
             emitted_at             = d.get("emittedAt"),
             tp1_hit_at             = d.get("tp1HitAt"),

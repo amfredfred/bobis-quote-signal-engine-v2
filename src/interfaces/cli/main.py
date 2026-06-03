@@ -123,8 +123,15 @@ class SignalEngine:
             min_ltf = min(interval_to_minutes(ltf) for _, ltf in self._cfg.tf_pairs)
             now_ms = self._cfg.now_ms()
             ltf_ms = min_ltf * 60 * 1000
-            fired_at = (now_ms // ltf_ms) * ltf_ms - ltf_ms
-            await self._service.analyze(symbol, fired_at=fired_at)
+            analysis_close = (now_ms // ltf_ms) * ltf_ms
+            logger.info(
+                "[%s] Candle-close tick now=%s analysis_close=%s ltf_ms=%s",
+                symbol,
+                self._cfg.dt_ms(now_ms),
+                self._cfg.dt_ms(analysis_close),
+                ltf_ms,
+            )
+            await self._service.analyze(symbol, fired_at=analysis_close)
             await self._service.update_watchlist(symbol)
         except Exception as exc:
             logger.error("[%s] Tick error: %s", symbol, exc, exc_info=True)

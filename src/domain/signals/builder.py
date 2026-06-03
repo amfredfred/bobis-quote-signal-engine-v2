@@ -18,6 +18,21 @@ from domain.entities.trade import TradeSignal
 logger = logging.getLogger(__name__)
 
 
+def _interval_to_ms(interval: str) -> int:
+    s = interval.strip().lower()
+    if s.endswith("min"):
+        return int(s[:-3]) * 60 * 1000
+    if s.endswith("h"):
+        return int(s[:-1]) * 60 * 60 * 1000
+    if s.endswith("day"):
+        return int(s[:-3]) * 24 * 60 * 60 * 1000
+    if s.endswith("week"):
+        return int(s[:-4]) * 7 * 24 * 60 * 60 * 1000
+    if s.endswith("month"):
+        return int(s[:-5]) * 30 * 24 * 60 * 60 * 1000
+    return 0
+
+
 def build_signal(
     *,
     symbol:       str,
@@ -112,6 +127,8 @@ def build_signal(
         return None
 
     tp1 = entry + (tp2 - entry) * profile.tp1_multiplier
+    setup_candle_open_at = rejection.timestamp
+    setup_candle_close_at = rejection.timestamp + _interval_to_ms(ltf_interval)
 
     return TradeSignal(
         id               = signal_id,
@@ -129,6 +146,8 @@ def build_signal(
         risk_pips         = risk,
         htf_interval     = htf_interval,
         ltf_interval     = ltf_interval,
-        created_at       = rejection.timestamp,
-        triggered_at     = rejection.timestamp,
+        created_at       = setup_candle_open_at,
+        triggered_at     = setup_candle_close_at,
+        setup_candle_open_at  = setup_candle_open_at,
+        setup_candle_close_at = setup_candle_close_at,
     )

@@ -39,6 +39,9 @@ signal_quality:
 signal_lifetime:
   expiry_hours: 120
 
+signals:
+  max_emit_lag_ms: 90000
+
 zones:
   max_htf_zones_per_dir: 2
 
