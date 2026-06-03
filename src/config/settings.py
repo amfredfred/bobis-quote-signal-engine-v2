@@ -383,9 +383,9 @@ class Settings:
     def __post_init__(self) -> None:
         for htf, ltf in self.tf_pairs:
             htf_m, ltf_m = interval_to_minutes(htf), interval_to_minutes(ltf)
-            if htf_m <= ltf_m:
+            if htf_m < ltf_m:
                 raise ValueError(
-                    f"tf_pairs: htf ({htf}={htf_m}min) must be larger than "
+                    f"tf_pairs: htf ({htf}={htf_m}min) must be at least as large as "
                     f"ltf ({ltf}={ltf_m}min)."
                 )
         valid_models = {"candle_pattern", "crt", "all"}

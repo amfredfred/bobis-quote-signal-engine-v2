@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from config.settings import Settings
@@ -30,6 +32,17 @@ timeframes:
 
     assert settings.entry_model == "crt"
     assert settings.tf_pairs == (("1h", "5min"),)
+
+
+def test_settings_allows_equal_timeframe_pairs():
+    settings = Settings(tf_pairs=(("1h", "1h"),))
+
+    assert settings.tf_pairs == (("1h", "1h"),)
+
+
+def test_settings_rejects_inverted_timeframe_pairs():
+    with pytest.raises(ValueError, match="must be at least as large"):
+        Settings(tf_pairs=(("5min", "1h"),))
 
 
 def test_parse_rates_keeps_mt5_utc_epoch_seconds():

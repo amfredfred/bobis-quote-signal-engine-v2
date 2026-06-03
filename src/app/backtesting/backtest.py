@@ -601,8 +601,8 @@ class BacktestReport:
 
         if not compact:
             print(f" {'─'*42}")
-            max_rr = "∞" if profile.max_rr == 0 else profile.max_rr
-            print(f" {' R:R window':<32} [{profile.min_rr}, {max_rr}]")
+            min_rr, max_rr = self._rr_window_for_results(r, profile)
+            print(f" {' R:R window':<32} [{min_rr}, {max_rr}]")
             print(f" {' Wick ratio':<32} [{self.cfg.min_wick_ratio}, ∞]")
         print(f" {'─'*42}")
 
@@ -625,6 +625,38 @@ class BacktestReport:
                 f"  {dir_net_col}{_fmt_currency(dir_acct['net_pnl'])}{R}"
             )
         print(f"{W}{sep}{R}")
+
+    def _rr_window_for_results(
+        self, r: list[BacktestResult], fallback: AssetProfile
+    ) -> tuple[float | str, float | str]:
+        """Return the effective RR display window for the result's TF pairs."""
+        pairs = sorted(
+            {
+                (x.signal.htf_interval, x.signal.ltf_interval)
+                for x in r
+                if x.signal.htf_interval and x.signal.ltf_interval
+            }
+        )
+        if not pairs:
+            max_rr = "∞" if fallback.max_rr == 0 else fallback.max_rr
+            return fallback.min_rr, max_rr
+
+        profiles = [self._registry.get(self.symbol, htf, ltf) for htf, ltf in pairs]
+        min_values = sorted({p.min_rr for p in profiles})
+        max_values = sorted({p.max_rr for p in profiles})
+
+        min_rr: float | str = (
+            min_values[0]
+            if len(min_values) == 1
+            else f"{min_values[0]}-{min_values[-1]}"
+        )
+        if any(v == 0 for v in max_values):
+            max_rr: float | str = "∞"
+        elif len(max_values) == 1:
+            max_rr = max_values[0]
+        else:
+            max_rr = f"{max_values[0]}-{max_values[-1]}"
+        return min_rr, max_rr
 
     def save_csv(self, path: str) -> None:
         if not self.results:
