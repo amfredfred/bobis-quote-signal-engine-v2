@@ -31,6 +31,8 @@ timeframes:
   # 15min, 20min, 30min, 1h, 2h, 3h, 4h, 6h, 8h, 12h, 1day, 1week, 1month.
   # Same-timeframe CRT lanes are preferred; mixed HTF:LTF pairs are disabled.
   pairs:
+    - htf: 1min
+      ltf: 1min
     - htf: 5min
       ltf: 5min
     - htf: 30min
@@ -47,6 +49,7 @@ signal_quality:
   max_rr: 5.0
   # Per-pair max RR caps use "HTF_minutes/LTF_minutes".
   tf_max_rr:
+    "1/1": 2.5
     "5/5": 2.5
     "30/30": 2
 
@@ -68,7 +71,7 @@ features:
   entry_model: crt
 
 trade_management:
-  tp1_trigger_pct: 50.0
+  tp1_trigger_pct: 10
   tp1_close_pct: 0.0
   move_sl_to_be_on_tp1: true
   # Per-pair overrides use "HTF_minutes/LTF_minutes".
