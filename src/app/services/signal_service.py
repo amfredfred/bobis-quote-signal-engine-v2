@@ -41,7 +41,6 @@ from domain.entities.session import ClosedSignalRecord
 from domain.entities.trade import TradeSignal
 from domain.market.structure import MarketStructure
 from domain.market.swings import SwingDetector, detect_displacement
-from domain.signals.correlation import correlation_conflict
 from domain.signals.entry import find_entry
 
 logger = logging.getLogger(__name__)
@@ -602,16 +601,6 @@ class SignalService:
                     emit_lag_ms / 1000,
                     max_emit_lag_ms / 1000,
                 )
-                continue
-
-            # Correlation & dedup
-            corr_conflict_flag, corr_reason = correlation_conflict(
-                symbol, ltf_range.direction, self.get_active_signals()
-            )
-            if corr_conflict_flag:
-                if self._metrics:
-                    self._metrics.increment("signals.correlation_blocked")
-                logger.info("[%s] ✗ Correlation block: %s", pair_label, corr_reason)
                 continue
 
             allowed, reason = self._session.should_emit(

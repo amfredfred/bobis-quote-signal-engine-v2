@@ -695,9 +695,6 @@ class MetricsCollector:
                 "signals_triggered": counters.get("signals.triggered", 0),
                 "signals_stale_skipped": counters.get("signals.stale_skipped", 0),
                 "signals_dedup_blocked": counters.get("signals.dedup_blocked", 0),
-                "signals_correlation_blocked": counters.get(
-                    "signals.correlation_blocked", 0
-                ),
                 "signals_decision_blocked": counters.get("signals.decision_blocked", 0),
                 "signals_no_ltf_range": counters.get("signals.no_ltf_range", 0),
                 "signals_no_rejection": counters.get("signals.no_rejection", 0),
