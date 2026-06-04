@@ -302,6 +302,19 @@ class SignalService:
         htf_interval_ms = interval_to_minutes(htf_interval) * 60 * 1000
         ltf_interval_ms = interval_to_minutes(ltf_interval) * 60 * 1000
         analysis_close = fired_at
+        pair_metric = f"scanner.{symbol}.{htf_interval}_{ltf_interval}"
+
+        if analysis_close % ltf_interval_ms != 0:
+            if self._metrics:
+                self._metrics.increment("scanner.pair_skipped.awaiting_ltf_close")
+                self._metrics.increment(f"{pair_metric}.skipped.awaiting_ltf_close")
+            logger.debug(
+                "[%s] Skipping pair until next LTF close analysis_close=%s ltf_interval_ms=%s",
+                pair_label,
+                self._cfg.dt_ms(analysis_close),
+                ltf_interval_ms,
+            )
+            return []
 
         # analysis_close is the close boundary of the newest fully closed LTF candle.
         # Example on M5: at 10:35:01, analysis_close=10:35:00 and
@@ -314,7 +327,6 @@ class SignalService:
             (real_now // ltf_interval_ms) * ltf_interval_ms - ltf_interval_ms
         )
         drift_ms = expected_latest_closed_open - pair_fired_at
-        pair_metric = f"scanner.{symbol}.{htf_interval}_{ltf_interval}"
         logger.info(
             "[%s] Signal analysis timing analysis_close=%s pair_fired_at=%s ltf_interval_ms=%s",
             pair_label,
