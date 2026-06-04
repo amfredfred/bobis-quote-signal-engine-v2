@@ -57,7 +57,8 @@ TP1 = 1.10500  # 50 % to TP2
 TP2 = 1.11000  # 100 pips above entry
 RISK = ENTRY - SL
 RR = (TP2 - ENTRY) / RISK  # 1.0
-TP1_MULT = 0.5
+TP1_TRIGGER_PCT = 50.0
+TP1_CLOSE_PCT = 0.0
 
 BASE_TS = 1_700_000_000_000
 BAR_MS = 60_000
@@ -158,10 +159,11 @@ def make_service(
     from app.services.signal_service import SignalService
 
     profile = MagicMock()
-    profile.use_breakeven = use_breakeven
+    profile.move_sl_to_be_on_tp1 = use_breakeven
     profile.use_invalidation = use_invalidation
     profile.signal_expiry_hours = signal_expiry_hours
-    profile.tp1_multiplier = TP1_MULT
+    profile.tp1_trigger_pct = TP1_TRIGGER_PCT
+    profile.tp1_close_pct = TP1_CLOSE_PCT
 
     registry = MagicMock()
     registry.get.return_value = profile
@@ -349,7 +351,7 @@ class TestSLHitAfterTP1Breakeven:
 
         assert signal.outcome == SignalOutcome.BREAKEVEN
         assert signal.close_price == ENTRY
-        assert signal.realized_rr == pytest.approx(RR * TP1_MULT)
+        assert signal.realized_rr == pytest.approx(0.0)
 
     def test_simulate_outcome(self):
         svc, _ = make_service(use_breakeven=True)
@@ -759,7 +761,7 @@ class TestExpiryAfterTP1Breakeven:
 
         assert signal.outcome == SignalOutcome.BREAKEVEN
         assert signal.close_price == ENTRY
-        assert signal.realized_rr == pytest.approx(RR * TP1_MULT)
+        assert signal.realized_rr == pytest.approx(0.0)
 
     def test_simulate_breakeven(self):
         svc, _ = make_service(
@@ -772,7 +774,7 @@ class TestExpiryAfterTP1Breakeven:
         )
         assert probe.outcome == SignalOutcome.BREAKEVEN
         assert probe.close_price == ENTRY
-        assert probe.realized_rr == pytest.approx(RR * TP1_MULT)
+        assert probe.realized_rr == pytest.approx(0.0)
 
     def test_no_breakeven_returns_expired(self):
         """use_breakeven=False: expiry after TP1 → EXPIRED 0.0R."""

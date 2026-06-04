@@ -54,6 +54,7 @@ import os
 
 import argparse
 import bisect
+import copy
 import csv
 import datetime
 import json
@@ -83,6 +84,7 @@ from domain.entities.trade import TradeSignal
 from domain.market.structure import MarketStructure
 from domain.market.swings import SwingDetector, detect_displacement
 from domain.signals.entry import find_entry  # shared entry dispatcher
+from domain.trade_management import tp1_booked_rr, tp2_weighted_rr
 from infrastructure.data_providers.market_data import MarketDataClient
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,7 @@ interval_to_minutes: callable = lru_cache(maxsize=64)(_interval_to_minutes)
 DEFAULT_START_BALANCE: float = 5_000.0
 DEFAULT_RISK_PERCENT: float = 1.0
 DEFAULT_SPREAD_POINTS: float = 0.0
+DEFAULT_TRAILING_GIVEBACK_PCT: float = 0.0
 
 # CLI spread values are broker-style points. Internally the backtester uses
 # price units, so XAUUSD 3 points becomes 0.3 while indices stay 3.0.
@@ -271,6 +274,9 @@ class BacktestResult:
         "close_ts",
         "close_price",
         "hit_entry_after_tp1",
+        "trail_mfe_price",
+        "trailed_sl",
+        "trailing_giveback_pct",
     )
 
     def __init__(
@@ -281,6 +287,9 @@ class BacktestResult:
         close_ts: Optional[int],
         close_px: Optional[float],
         hit_entry_after_tp1: bool = False,
+        trail_mfe_price: Optional[float] = None,
+        trailed_sl: Optional[float] = None,
+        trailing_giveback_pct: float = DEFAULT_TRAILING_GIVEBACK_PCT,
     ) -> None:
         self.signal = signal
         self.outcome = outcome
@@ -289,6 +298,9 @@ class BacktestResult:
         self.close_price = close_px
         # FIX: first-class constructor param — never set post-construction.
         self.hit_entry_after_tp1 = hit_entry_after_tp1
+        self.trail_mfe_price = trail_mfe_price
+        self.trailed_sl = trailed_sl
+        self.trailing_giveback_pct = trailing_giveback_pct
 
     def to_dict(self) -> dict:
         s = self.signal
@@ -316,6 +328,13 @@ class BacktestResult:
             "outcome": self.outcome.value,
             "realized_rr": round(self.realized_rr, 3),
             "hit_entry_after_tp1": self.hit_entry_after_tp1,
+            "trail_mfe_price": (
+                round(self.trail_mfe_price, 5)
+                if self.trail_mfe_price is not None
+                else ""
+            ),
+            "trailed_sl": round(self.trailed_sl, 5) if self.trailed_sl is not None else "",
+            "trailing_giveback_pct": self.trailing_giveback_pct,
             "htf_interval": s.htf_interval,
             "ltf_interval": s.ltf_interval,
             "pattern": s.rejection_candle.pattern.value,
@@ -338,6 +357,7 @@ class BacktestReport:
         start_balance: float = DEFAULT_START_BALANCE,
         risk_percent: float = DEFAULT_RISK_PERCENT,
         spread_points: float = DEFAULT_SPREAD_POINTS,
+        trailing_giveback_pct: float = DEFAULT_TRAILING_GIVEBACK_PCT,
     ) -> None:
         self.symbol = symbol
         self.results = results
@@ -345,6 +365,7 @@ class BacktestReport:
         self.start_balance = start_balance
         self.risk_percent = risk_percent
         self.spread_points = spread_points
+        self.trailing_giveback_pct = trailing_giveback_pct
         self._registry = AssetRegistry(cfg)
         self.profile = self._registry.get(symbol)  # base (combined summary)
 
@@ -728,6 +749,7 @@ class BacktestReport:
             },
             "risk_percent": self.risk_percent,
             "spread_points": self.spread_points,
+            "trailing_giveback_pct": self.trailing_giveback_pct,
             "equity_curve": equity_curve,
             "trades": trades,
         }
@@ -749,6 +771,7 @@ class MultiPairBacktester:
         start_balance: float = DEFAULT_START_BALANCE,
         risk_percent: float = DEFAULT_RISK_PERCENT,
         spread_points: float = DEFAULT_SPREAD_POINTS,
+        trailing_giveback_pct: float = DEFAULT_TRAILING_GIVEBACK_PCT,
         trace_out: Optional[str] = None,
     ) -> None:
         # Validate account simulation inputs
@@ -766,6 +789,12 @@ class MultiPairBacktester:
             raise ValueError("spreadPoints must be a valid number")
         if spread_points < 0:
             raise ValueError("spreadPoints must be >= 0")
+        if not math.isfinite(trailing_giveback_pct):
+            raise ValueError("trailingGivebackPct must be a valid number")
+        if trailing_giveback_pct < 0:
+            raise ValueError("trailingGivebackPct must be >= 0")
+        if trailing_giveback_pct >= 100:
+            raise ValueError("trailingGivebackPct must be < 100")
 
         self.cfg = cfg
         self.symbol = symbol
@@ -776,6 +805,7 @@ class MultiPairBacktester:
         self.start_balance = start_balance
         self.risk_percent = risk_percent
         self.spread_points = spread_points
+        self.trailing_giveback_pct = trailing_giveback_pct
         self.trace_out = trace_out
         self._trace_writer: Optional[ParityTraceWriter] = None
         self._registry = AssetRegistry(cfg)
@@ -823,10 +853,14 @@ class MultiPairBacktester:
 
         # ★ TIER 4: Profile scalars hoisted to instance (no per-call dereference)
         profile = self.profile
-        self._use_be: bool = profile.use_breakeven
+        self._use_be: bool = profile.move_sl_to_be_on_tp1
         self._use_inv: bool = profile.use_invalidation
         self._expiry_ms: int = int(profile.signal_expiry_hours * 3_600_000)
-        self._tp1_mult: float = profile.tp1_multiplier
+        self._tp1_protected_rr: float = tp1_booked_rr(
+            full_rr=1.0,
+            tp1_trigger_pct=profile.tp1_trigger_pct,
+            tp1_close_pct=profile.tp1_close_pct,
+        )
 
         # Pre-computed constants per pair
         self._stale_ms: dict[tuple[str, str], int] = {
@@ -881,9 +915,17 @@ class MultiPairBacktester:
         pairs_str = " | ".join(f"{h}/{l}" for h, l in self.pairs)
 
         spread_header = f"  Spread: {self.spread_points:g} points" if self.spread_points > 0 else ""
+        trail_header = (
+            f"  Giveback trail: {self.trailing_giveback_pct:g}%"
+            if self.trailing_giveback_pct > 0
+            else ""
+        )
         print(f"\n{'='*64}")
         print(f"{BOLD} BACKTEST · {symbol} · {pairs_str}{RESET}")
-        print(f" Master LTF : {master_ltf} ({n:,} bars) warm-up={ltf_lb}{spread_header}")
+        print(
+            f" Master LTF : {master_ltf} ({n:,} bars) warm-up={ltf_lb}"
+            f"{spread_header}{trail_header}"
+        )
         print(f"{'='*64}\n")
 
         dead_zones: set[tuple] = set()
@@ -1146,6 +1188,7 @@ class MultiPairBacktester:
             start_balance=self.start_balance,
             risk_percent=self.risk_percent,
             spread_points=self.spread_points,
+            trailing_giveback_pct=self.trailing_giveback_pct,
         )
         report.print()
         return report
@@ -1181,6 +1224,9 @@ class MultiPairBacktester:
         profile = self._registry.get(
             signal.symbol, signal.htf_interval, signal.ltf_interval
         )
+        if self.trailing_giveback_pct > 0:
+            return self._simulate_with_giveback_trailing(signal, future, profile)
+
         replayed = replay_signal_lifecycle(signal, future, profile)
         if replayed.outcome is None:
             return BacktestResult(replayed, SignalOutcome.EXPIRED, 0.0, None, None)
@@ -1207,7 +1253,7 @@ class MultiPairBacktester:
         expiry_cutoff = np.int64(birth + self._expiry_ms)
         rr = signal.risk_reward_ratio
         risk_pips = signal.risk_pips
-        tp1_mult = self._tp1_mult
+        tp1_protected_rr = self._tp1_protected_rr
 
         ts = future_np["timestamp"]
 
@@ -1239,7 +1285,7 @@ class MultiPairBacktester:
                     expiry_cutoff,
                     rr,
                     risk_pips,
-                    tp1_mult,
+                    tp1_protected_rr,
                 )
             )
             if code == 0:
@@ -1341,7 +1387,7 @@ class MultiPairBacktester:
                 return BacktestResult(
                     signal,
                     SignalOutcome.BREAKEVEN,
-                    rr * tp1_mult,
+                    rr * tp1_protected_rr,
                     close_ts,
                     entry,
                     hit_entry_after_tp1=hit_entry_after_tp1,
@@ -1365,7 +1411,7 @@ class MultiPairBacktester:
             return BacktestResult(
                 signal,
                 SignalOutcome.BREAKEVEN,
-                rr * tp1_mult,
+                rr * tp1_protected_rr,
                 close_ts,
                 entry,
                 hit_entry_after_tp1=hit_entry_after_tp1,
@@ -1381,6 +1427,231 @@ class MultiPairBacktester:
         )
 
     # ── console output ────────────────────────────────────────────────────────
+    def _simulate_with_giveback_trailing(
+        self,
+        signal: TradeSignal,
+        future: list[Candle],
+        profile: AssetProfile,
+    ) -> BacktestResult:
+        """Backtest-only TP1/BE plus MFE giveback trailing.
+
+        Intrabar ordering is unknowable from OHLC candles. Existing exits are
+        resolved before a candle's extreme can advance the trailing stop, so a
+        new MFE can only affect later candles.
+        """
+        if not future:
+            return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
+
+        probe = copy.deepcopy(signal)
+        is_short = probe.direction == SignalDirection.SHORT
+        entry = float(probe.entry_price)
+        original_sl = float(probe.stop_loss)
+        current_sl = original_sl
+        trail_mfe_price: float | None = None
+        trailed_sl: float | None = None
+        tp1_seen = False
+        hit_entry_after_tp1 = False
+        expiry_cutoff = int(probe.created_at + profile.signal_expiry_hours * 3_600_000)
+
+        for candle in future:
+            if candle.timestamp > expiry_cutoff:
+                if tp1_seen and profile.move_sl_to_be_on_tp1:
+                    return self._trailing_result(
+                        probe,
+                        SignalOutcome.BREAKEVEN,
+                        self._tp1_booked_rr(probe, profile),
+                        candle.timestamp,
+                        entry,
+                        hit_entry_after_tp1,
+                        trail_mfe_price,
+                        trailed_sl,
+                    )
+                return self._trailing_result(
+                    probe,
+                    SignalOutcome.EXPIRED,
+                    0.0,
+                    candle.timestamp,
+                    candle.close,
+                    hit_entry_after_tp1,
+                    trail_mfe_price,
+                    trailed_sl,
+                )
+
+            tp1_now = candle.low <= probe.tp1 if is_short else candle.high >= probe.tp1
+            tp2_now = candle.low <= probe.tp2 if is_short else candle.high >= probe.tp2
+            inv_now = (
+                candle.close > probe.ltf_range.range_high
+                if is_short
+                else candle.close < probe.ltf_range.range_low
+            )
+            effective_sl = current_sl if tp1_seen and profile.move_sl_to_be_on_tp1 else original_sl
+            sl_now = candle.high >= effective_sl if is_short else candle.low <= effective_sl
+            entry_now = candle.high >= entry if is_short else candle.low <= entry
+
+            if tp1_seen and entry_now:
+                hit_entry_after_tp1 = True
+
+            if (tp1_seen or tp1_now) and tp2_now:
+                return self._trailing_result(
+                    probe,
+                    SignalOutcome.WIN_FULL,
+                    probe.risk_reward_ratio,
+                    candle.timestamp,
+                    probe.tp2,
+                    hit_entry_after_tp1,
+                    trail_mfe_price,
+                    trailed_sl,
+                    tp2_hit=True,
+                )
+
+            if inv_now and profile.use_invalidation:
+                if tp1_seen and profile.move_sl_to_be_on_tp1:
+                    return self._trailing_result(
+                        probe,
+                        SignalOutcome.BREAKEVEN,
+                        self._tp1_booked_rr(probe, profile),
+                        candle.timestamp,
+                        entry,
+                        hit_entry_after_tp1,
+                        trail_mfe_price,
+                        trailed_sl,
+                    )
+                inv_rr = -(abs(entry - candle.close) / probe.risk_pips)
+                return self._trailing_result(
+                    probe,
+                    SignalOutcome.LOSS,
+                    inv_rr,
+                    candle.timestamp,
+                    candle.close,
+                    hit_entry_after_tp1,
+                    trail_mfe_price,
+                    trailed_sl,
+                )
+
+            if sl_now:
+                if tp1_seen and profile.move_sl_to_be_on_tp1:
+                    close_px = effective_sl
+                    return self._trailing_result(
+                        probe,
+                        SignalOutcome.BREAKEVEN,
+                        max(
+                            self._tp1_booked_rr(probe, profile),
+                            self._rr_at_price(probe, close_px),
+                        ),
+                        candle.timestamp,
+                        close_px,
+                        hit_entry_after_tp1,
+                        trail_mfe_price,
+                        trailed_sl,
+                    )
+                return self._trailing_result(
+                    probe,
+                    SignalOutcome.LOSS,
+                    -1.0,
+                    candle.timestamp,
+                    original_sl,
+                    hit_entry_after_tp1,
+                    trail_mfe_price,
+                    trailed_sl,
+                )
+
+            if tp1_now and not tp1_seen:
+                tp1_seen = True
+                probe.tp1_hit_at = candle.timestamp
+                current_sl = entry if profile.move_sl_to_be_on_tp1 else original_sl
+
+            if tp1_seen and profile.move_sl_to_be_on_tp1:
+                current_sl, trail_mfe_price, trailed_sl = self._advance_giveback_sl(
+                    probe,
+                    candle,
+                    current_sl,
+                    trail_mfe_price,
+                    trailed_sl,
+                )
+
+        return BacktestResult(
+            probe,
+            SignalOutcome.EXPIRED,
+            0.0,
+            None,
+            None,
+            hit_entry_after_tp1=hit_entry_after_tp1,
+            trail_mfe_price=trail_mfe_price,
+            trailed_sl=trailed_sl,
+            trailing_giveback_pct=self.trailing_giveback_pct,
+        )
+
+    def _advance_giveback_sl(
+        self,
+        signal: TradeSignal,
+        candle: Candle,
+        current_sl: float,
+        trail_mfe_price: float | None,
+        trailed_sl: float | None,
+    ) -> tuple[float, float | None, float | None]:
+        entry = float(signal.entry_price)
+        pct = self.trailing_giveback_pct
+        if signal.direction == SignalDirection.LONG:
+            best_price = max(float(trail_mfe_price or candle.high), candle.high)
+            favorable_move = best_price - entry
+            if favorable_move <= 0:
+                return current_sl, best_price, trailed_sl
+            proposed_sl = entry + favorable_move * (1.0 - pct / 100.0)
+            if proposed_sl > current_sl and proposed_sl < candle.close:
+                return proposed_sl, best_price, proposed_sl
+            return current_sl, best_price, trailed_sl
+
+        best_price = min(float(trail_mfe_price or candle.low), candle.low)
+        favorable_move = entry - best_price
+        if favorable_move <= 0:
+            return current_sl, best_price, trailed_sl
+        proposed_sl = entry - favorable_move * (1.0 - pct / 100.0)
+        if proposed_sl < current_sl and proposed_sl > candle.close:
+            return proposed_sl, best_price, proposed_sl
+        return current_sl, best_price, trailed_sl
+
+    def _trailing_result(
+        self,
+        signal: TradeSignal,
+        outcome: SignalOutcome,
+        realized_rr: float,
+        close_ts: int,
+        close_px: float,
+        hit_entry_after_tp1: bool,
+        trail_mfe_price: float | None,
+        trailed_sl: float | None,
+        tp2_hit: bool = False,
+    ) -> BacktestResult:
+        signal.outcome = outcome
+        signal.realized_rr = realized_rr
+        signal.close_price = close_px
+        signal.closed_at = close_ts
+        if tp2_hit:
+            signal.tp2_hit_at = close_ts
+        return BacktestResult(
+            signal,
+            outcome,
+            realized_rr,
+            close_ts,
+            close_px,
+            hit_entry_after_tp1=hit_entry_after_tp1,
+            trail_mfe_price=trail_mfe_price,
+            trailed_sl=trailed_sl,
+            trailing_giveback_pct=self.trailing_giveback_pct,
+        )
+
+    def _tp1_booked_rr(self, signal: TradeSignal, profile: AssetProfile) -> float:
+        return tp1_booked_rr(
+            full_rr=signal.risk_reward_ratio,
+            tp1_trigger_pct=profile.tp1_trigger_pct,
+            tp1_close_pct=profile.tp1_close_pct,
+        )
+
+    def _rr_at_price(self, signal: TradeSignal, price: float) -> float:
+        if signal.direction == SignalDirection.LONG:
+            return (price - signal.entry_price) / signal.risk_pips
+        return (signal.entry_price - price) / signal.risk_pips
+
     def _print_result(self, r: BacktestResult) -> None:
         s = r.signal
         arrow = DOWN if s.direction == SignalDirection.SHORT else UP
@@ -1571,6 +1842,14 @@ def main() -> None:
         help=f"Spread in price units (default: {DEFAULT_SPREAD_POINTS})",
     )
     p.add_argument(
+        "--trailing-giveback-pct",
+        dest="trailing_giveback_pct",
+        type=float,
+        default=None,
+        metavar="PCT",
+        help="Backtest-only MFE giveback trailing after TP1/BE; 0 disables",
+    )
+    p.add_argument(
         "--trace-out",
         dest="trace_out",
         help="Write deterministic backtest parity trace JSONL to this path",
@@ -1581,7 +1860,7 @@ def main() -> None:
     cfg = Settings.from_env()
     overrides: dict = {}
     if args.no_breakeven:
-        overrides["use_breakeven"] = False
+        overrides["move_sl_to_be_on_tp1"] = False
     if args.no_invalidation:
         overrides["use_invalidation"] = False
     if args.no_trend_filter:
@@ -1690,6 +1969,17 @@ def main() -> None:
             f"Spread {spread_points:g} broker points for {symbol} "
             f"= {spread_price_units:g} price units"
         )
+    trailing_giveback_pct = (
+        args.trailing_giveback_pct
+        if args.trailing_giveback_pct is not None
+        else DEFAULT_TRAILING_GIVEBACK_PCT
+    )
+    if not math.isfinite(trailing_giveback_pct):
+        p.error("--trailing-giveback-pct must be a finite number")
+    if trailing_giveback_pct < 0:
+        p.error("--trailing-giveback-pct must be >= 0")
+    if trailing_giveback_pct >= 100:
+        p.error("--trailing-giveback-pct must be < 100")
 
     bt = MultiPairBacktester(
         cfg=cfg,
@@ -1709,6 +1999,7 @@ def main() -> None:
             else DEFAULT_RISK_PERCENT
         ),
         spread_points=spread_price_units,
+        trailing_giveback_pct=trailing_giveback_pct,
         trace_out=args.trace_out,
     )
     report = bt.run()

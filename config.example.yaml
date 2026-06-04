@@ -62,11 +62,23 @@ zones:
 features:
   # Boolean variants: true, false.
   use_trend_filter: true
-  use_breakeven: true
   use_invalidation: false
   multi_tf_independent_positions: false
   # Variants: candle_pattern, crt, all.
   entry_model: crt
+
+trade_management:
+  tp1_trigger_pct: 50.0
+  tp1_close_pct: 0.0
+  move_sl_to_be_on_tp1: true
+  # Per-pair overrides use "HTF_minutes/LTF_minutes".
+  tf_overrides:
+    "1/1":
+      tp1_trigger_pct: 5.0
+    "5/5":
+      tp1_trigger_pct: 5.0
+    "30/30":
+      tp1_trigger_pct: 7.5
 
 displacement_filter:
   enabled: false

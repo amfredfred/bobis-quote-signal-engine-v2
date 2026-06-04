@@ -12,7 +12,6 @@ dependencies without risk of accidental mutation.
 Derived properties (never exposed as env vars):
   stale_rejection_hours — min_ltf_minutes / 30 × 6 (adaptive to TF pair)
   pivot_bars            — always 1
-  tp1_multiplier        — always 0.5
   stop_buffer_pct       — always was 0.00001, now 0.00002 (2 pips) to reduce rejections and improve backtest realism
   ws_candle_buffer_ms   — always 1 500 ms
 """
@@ -76,6 +75,39 @@ def _parse_pair_map(raw: Any) -> dict:
         pair, cap = part.rsplit(":", 1)
         result[pair.strip()] = float(cap.strip())
     return result
+
+
+def _parse_trade_management_tf_overrides(raw: Any) -> dict:
+    """Parse per-timeframe trade-management overrides.
+
+    YAML form:
+      "5/5":
+        tp1_trigger_pct: 5.0
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("trade_management.tf_overrides must be a mapping.")
+
+    allowed = {"tp1_trigger_pct", "tp1_close_pct", "move_sl_to_be_on_tp1"}
+    parsed: dict[str, dict[str, Any]] = {}
+    for pair, values in raw.items():
+        if not isinstance(values, dict):
+            raise ValueError(
+                f"trade_management.tf_overrides.{pair} must be a mapping."
+            )
+        override: dict[str, Any] = {}
+        for key, value in values.items():
+            if key not in allowed:
+                raise ValueError(
+                    f"trade_management.tf_overrides.{pair}.{key} is not supported."
+                )
+            if key == "move_sl_to_be_on_tp1":
+                override[key] = _as_bool(value)
+            else:
+                override[key] = float(value)
+        parsed[str(pair)] = override
+    return parsed
 
 
 def _int_set(value: Any, default: set[int] | None = None) -> set[int]:
@@ -254,8 +286,6 @@ def _sessions_from_config(raw: Any) -> dict[str, dict]:
 
 _STOP_BUFFER_PCT: float = 0.00001
 # 1 pip buffer — never needs tuning
-_TP1_MULTIPLIER: float = 0.5
-# partial close at 50% to TP2
 _STOP_PLACEMENT: str = "wick"
 # wick placement = High RRR // swing is more consistent and easier to explain to users
 _WS_CANDLE_BUFFER_MS: int = 1_100
@@ -353,10 +383,6 @@ class Settings:
         return _STOP_PLACEMENT
 
     @property
-    def tp1_multiplier(self) -> float:
-        return _TP1_MULTIPLIER
-
-    @property
     def ws_candle_buffer_ms(self) -> int:
         return _WS_CANDLE_BUFFER_MS
 
@@ -383,7 +409,10 @@ class Settings:
 
     # ── Feature flags ─────────────────────────────────────────────────────────
     use_trend_filter: bool = True
-    use_breakeven: bool = True
+    tp1_trigger_pct: float = 50.0
+    tp1_close_pct: float = 0.0
+    move_sl_to_be_on_tp1: bool = True
+    trade_management_tf_overrides: dict = field(default_factory=dict)
     use_invalidation: bool = False
     multi_tf_independent_positions: bool = True
     entry_model: str = "candle_pattern"  # candle_pattern | crt | all
@@ -435,6 +464,21 @@ class Settings:
             raise ValueError(
                 "APEX_ENV=live requires APEX_LIVE_CONFIRM=YES_I_ACCEPT_RISK."
             )
+        if self.tp1_trigger_pct <= 0.0 or self.tp1_trigger_pct >= 100.0:
+            raise ValueError("trade_management.tp1_trigger_pct must be > 0 and < 100.")
+        if self.tp1_close_pct < 0.0 or self.tp1_close_pct > 100.0:
+            raise ValueError("trade_management.tp1_close_pct must be between 0 and 100.")
+        for key, override in self.trade_management_tf_overrides.items():
+            trigger = override.get("tp1_trigger_pct")
+            if trigger is not None and (trigger <= 0.0 or trigger >= 100.0):
+                raise ValueError(
+                    f"trade_management.tf_overrides.{key}.tp1_trigger_pct must be > 0 and < 100."
+                )
+            close_pct = override.get("tp1_close_pct")
+            if close_pct is not None and (close_pct < 0.0 or close_pct > 100.0):
+                raise ValueError(
+                    f"trade_management.tf_overrides.{key}.tp1_close_pct must be between 0 and 100."
+                )
         if not self.ws_secret:
             import logging as _logging
 
@@ -518,7 +562,18 @@ class Settings:
             signal_expiry_hours=float(_get(cfg, "signal_lifetime.expiry_hours", 120)),
             max_htf_zones_per_dir=int(_get(cfg, "zones.max_htf_zones_per_dir", 3)),
             use_trend_filter=_as_bool(_get(cfg, "features.use_trend_filter", True)),
-            use_breakeven=_as_bool(_get(cfg, "features.use_breakeven", True)),
+            tp1_trigger_pct=float(_get(cfg, "trade_management.tp1_trigger_pct", 50.0)),
+            tp1_close_pct=float(_get(cfg, "trade_management.tp1_close_pct", 0.0)),
+            move_sl_to_be_on_tp1=_as_bool(
+                _get(
+                    cfg,
+                    "trade_management.move_sl_to_be_on_tp1",
+                    _get(cfg, "features.use_breakeven", True),
+                )
+            ),
+            trade_management_tf_overrides=_parse_trade_management_tf_overrides(
+                _get(cfg, "trade_management.tf_overrides")
+            ),
             use_invalidation=_as_bool(_get(cfg, "features.use_invalidation", False)),
             multi_tf_independent_positions=_as_bool(
                 _get(cfg, "features.multi_tf_independent_positions", True)

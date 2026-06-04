@@ -42,8 +42,10 @@ class _ConfigProtocol(Protocol):
     stop_placement_method: str
     stop_buffer_pct: float
     max_sl_zone_mult: float
-    tp1_multiplier: float
-    use_breakeven: bool
+    tp1_trigger_pct: float
+    tp1_close_pct: float
+    move_sl_to_be_on_tp1: bool
+    trade_management_tf_overrides: dict
     use_invalidation: bool
     signal_expiry_hours: float
     use_trend_filter: bool
@@ -74,10 +76,11 @@ class AssetProfile:
     stop_placement: str
     stop_buffer_pct: float
     max_sl_zone_mult: float
-    tp1_multiplier: float
+    tp1_trigger_pct: float
+    tp1_close_pct: float
 
     # Trade management
-    use_breakeven: bool
+    move_sl_to_be_on_tp1: bool
     use_invalidation: bool
     signal_expiry_hours: float
 
@@ -269,8 +272,9 @@ class AssetRegistry:
             "stop_placement": cfg.stop_placement_method,
             "stop_buffer_pct": cfg.stop_buffer_pct,
             "max_sl_zone_mult": cfg.max_sl_zone_mult,
-            "tp1_multiplier": cfg.tp1_multiplier,
-            "use_breakeven": cfg.use_breakeven,
+            "tp1_trigger_pct": cfg.tp1_trigger_pct,
+            "tp1_close_pct": cfg.tp1_close_pct,
+            "move_sl_to_be_on_tp1": cfg.move_sl_to_be_on_tp1,
             "use_invalidation": cfg.use_invalidation,
             "signal_expiry_hours": cfg.signal_expiry_hours,
             "use_trend_filter": cfg.use_trend_filter,
@@ -286,10 +290,13 @@ class AssetRegistry:
         # 4. Replace generic sessions with asset-class specific sessions
         base["sessions"] = _CLASS_SESSIONS.get(class_key, cfg.sessions)
 
-        # 5. Timeframe-aware max_rr (overrides class/symbol max_rr when tf known)
+        # 5. Timeframe-aware max_rr and TP management.
         if htf_interval and ltf_interval:
             base["max_rr"] = self._resolve_tf_max_rr(
                 htf_interval, ltf_interval, base["max_rr"]
+            )
+            base.update(
+                self._resolve_tf_trade_management(htf_interval, ltf_interval)
             )
 
         return AssetProfile(**base)
@@ -301,3 +308,11 @@ class AssetRegistry:
 
         key = f"{interval_to_minutes(htf_interval)}/{interval_to_minutes(ltf_interval)}"
         return float(self._cfg.tf_max_rr.get(key, fallback))
+
+    def _resolve_tf_trade_management(
+        self, htf_interval: str, ltf_interval: str
+    ) -> dict[str, Any]:
+        from config.settings import interval_to_minutes
+
+        key = f"{interval_to_minutes(htf_interval)}/{interval_to_minutes(ltf_interval)}"
+        return dict(self._cfg.trade_management_tf_overrides.get(key, {}))

@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from config.settings import Settings
+from domain.assets.profiles import AssetRegistry
 from infrastructure.data_providers.market_data import _parse_rates
 
 
@@ -38,6 +39,25 @@ def test_settings_allows_equal_timeframe_pairs():
     settings = Settings(tf_pairs=(("1h", "1h"),))
 
     assert settings.tf_pairs == (("1h", "1h"),)
+
+
+def test_asset_profile_applies_timeframe_trade_management_overrides():
+    settings = Settings(
+        tp1_trigger_pct=10.0,
+        tp1_close_pct=0.0,
+        trade_management_tf_overrides={
+            "1/1": {"tp1_trigger_pct": 5.0},
+            "30/30": {"tp1_trigger_pct": 7.5, "tp1_close_pct": 25.0},
+        },
+    )
+
+    registry = AssetRegistry(settings)
+
+    assert registry.get("XAUUSD", "1min", "1min").tp1_trigger_pct == 5.0
+    thirty = registry.get("XAUUSD", "30min", "30min")
+    assert thirty.tp1_trigger_pct == 7.5
+    assert thirty.tp1_close_pct == 25.0
+    assert registry.get("XAUUSD", "5min", "5min").tp1_trigger_pct == 10.0
 
 
 def test_settings_rejects_inverted_timeframe_pairs():

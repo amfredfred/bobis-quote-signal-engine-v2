@@ -11,6 +11,7 @@ from domain.assets.profiles import AssetProfile
 from domain.entities.candle import Candle
 from domain.entities.enums import SignalDirection, SignalOutcome, SignalStatus
 from domain.entities.trade import TradeSignal
+from domain.trade_management import tp1_booked_rr, tp2_weighted_rr
 
 
 @dataclass(frozen=True)
@@ -67,9 +68,13 @@ def step_signal_state(
             signal.realized_rr = 0.0
             signal.close_price = candle.close
         elif signal.status == SignalStatus.TP1_HIT:
-            if profile.use_breakeven:
+            if profile.move_sl_to_be_on_tp1:
                 signal.outcome = SignalOutcome.BREAKEVEN
-                signal.realized_rr = signal.risk_reward_ratio * profile.tp1_multiplier
+                signal.realized_rr = tp1_booked_rr(
+                    full_rr=signal.risk_reward_ratio,
+                    tp1_trigger_pct=profile.tp1_trigger_pct,
+                    tp1_close_pct=profile.tp1_close_pct,
+                )
                 signal.close_price = signal.entry_price
             else:
                 signal.outcome = SignalOutcome.EXPIRED
@@ -100,7 +105,11 @@ def step_signal_state(
         if tp1_chk and tp2_hit:
             signal.status = SignalStatus.TP2_HIT
             signal.outcome = SignalOutcome.WIN_FULL
-            signal.realized_rr = signal.risk_reward_ratio
+            signal.realized_rr = tp2_weighted_rr(
+                full_rr=signal.risk_reward_ratio,
+                tp1_trigger_pct=profile.tp1_trigger_pct,
+                tp1_close_pct=profile.tp1_close_pct,
+            )
             signal.tp1_hit_at = now
             signal.tp2_hit_at = now
             signal.closed_at = now
@@ -138,7 +147,11 @@ def step_signal_state(
         if tp2_hit:
             signal.status = SignalStatus.TP2_HIT
             signal.outcome = SignalOutcome.WIN_FULL
-            signal.realized_rr = signal.risk_reward_ratio
+            signal.realized_rr = tp2_weighted_rr(
+                full_rr=signal.risk_reward_ratio,
+                tp1_trigger_pct=profile.tp1_trigger_pct,
+                tp1_close_pct=profile.tp1_close_pct,
+            )
             signal.tp2_hit_at = now
             signal.closed_at = now
             signal.close_price = signal.tp2
@@ -148,9 +161,13 @@ def step_signal_state(
             signal.invalidated_at = now
             signal.status = SignalStatus.INVALIDATED
             signal.closed_at = now
-            if profile.use_breakeven:
+            if profile.move_sl_to_be_on_tp1:
                 signal.outcome = SignalOutcome.BREAKEVEN
-                signal.realized_rr = signal.risk_reward_ratio * profile.tp1_multiplier
+                signal.realized_rr = tp1_booked_rr(
+                    full_rr=signal.risk_reward_ratio,
+                    tp1_trigger_pct=profile.tp1_trigger_pct,
+                    tp1_close_pct=profile.tp1_close_pct,
+                )
                 signal.close_price = signal.entry_price
             else:
                 signal.outcome = SignalOutcome.LOSS
@@ -166,9 +183,13 @@ def step_signal_state(
             signal.sl_hit_at = now
             signal.closed_at = now
             signal.status = SignalStatus.SL_HIT
-            if profile.use_breakeven:
+            if profile.move_sl_to_be_on_tp1:
                 signal.outcome = SignalOutcome.BREAKEVEN
-                signal.realized_rr = signal.risk_reward_ratio * profile.tp1_multiplier
+                signal.realized_rr = tp1_booked_rr(
+                    full_rr=signal.risk_reward_ratio,
+                    tp1_trigger_pct=profile.tp1_trigger_pct,
+                    tp1_close_pct=profile.tp1_close_pct,
+                )
                 signal.close_price = signal.entry_price
             else:
                 signal.outcome = SignalOutcome.LOSS
@@ -189,4 +210,3 @@ def replay_signal_lifecycle(
         if step.terminal:
             break
     return probe
-

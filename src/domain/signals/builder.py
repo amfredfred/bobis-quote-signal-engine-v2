@@ -14,6 +14,7 @@ from domain.assets.profiles import AssetProfile, in_session
 from domain.entities.enums import SignalDirection, SignalStatus
 from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
 from domain.entities.trade import TradeSignal
+from domain.trade_management import tp1_level
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,12 @@ def build_signal(
         )
         return None
 
-    tp1 = entry + (tp2 - entry) * profile.tp1_multiplier
+    tp1 = tp1_level(
+        direction=direction,
+        entry_price=entry,
+        tp2=tp2,
+        tp1_trigger_pct=profile.tp1_trigger_pct,
+    )
     setup_candle_open_at = rejection.timestamp
     setup_candle_close_at = rejection.timestamp + _interval_to_ms(ltf_interval)
 

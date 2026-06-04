@@ -106,7 +106,9 @@ class TestMultiPairBacktesterValidation:
         cfg.min_wick_ratio = 0.65
         cfg.entry_model = "candle_pattern"
         cfg.use_trend_filter = False
-        cfg.use_breakeven = True
+        cfg.move_sl_to_be_on_tp1 = True
+        cfg.tp1_trigger_pct = 50.0
+        cfg.tp1_close_pct = 0.0
         cfg.use_invalidation = False
         cfg.multi_tf_independent_positions = False
         cfg.signal_expiry_hours = 120.0
@@ -119,10 +121,11 @@ class TestMultiPairBacktesterValidation:
         cfg.rejection_stale_hours = MagicMock(return_value=0.5)
         # AssetRegistry lookup
         profile = MagicMock()
-        profile.use_breakeven = True
+        profile.move_sl_to_be_on_tp1 = True
         profile.use_invalidation = False
         profile.signal_expiry_hours = 120.0
-        profile.tp1_multiplier = 0.5
+        profile.tp1_trigger_pct = 50.0
+        profile.tp1_close_pct = 0.0
         profile.use_trend_filter = False
         profile.multi_tf_independent_positions = False
         profile.max_rr = 9.0
@@ -145,10 +148,11 @@ class TestMultiPairBacktesterValidation:
         from unittest.mock import patch, MagicMock
 
         profile = MagicMock()
-        profile.use_breakeven = True
+        profile.move_sl_to_be_on_tp1 = True
         profile.use_invalidation = False
         profile.signal_expiry_hours = 120.0
-        profile.tp1_multiplier = 0.5
+        profile.tp1_trigger_pct = 50.0
+        profile.tp1_close_pct = 0.0
         profile.use_trend_filter = False
         profile.multi_tf_independent_positions = False
         profile.max_rr = 9.0
