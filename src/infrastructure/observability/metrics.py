@@ -700,7 +700,7 @@ class MetricsCollector:
                 "signals_no_rejection": counters.get("signals.no_rejection", 0),
                 "mt5_calls": counters.get("mt5.calls", 0),
                 "mt5_errors": counters.get("mt5.errors", 0),
-                "last_emit_lag_ms": gauges.get("latency.emit_lag_ms", 0),
+                "last_emit_lag_ms": gauges.get("latency.last_signal_emit_lag_ms", 0),
                 "last_scan_lag_ms": gauges.get("scanner.scan_lag_ms", 0),
                 "last_analysis_ms": gauges.get("scanner.analysis_ms", 0),
                 "active_signals": gauges.get("signals.active_count", len(active_sig)),

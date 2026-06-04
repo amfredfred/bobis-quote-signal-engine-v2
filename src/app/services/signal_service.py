@@ -592,9 +592,9 @@ class SignalService:
             rejection_closed_at = rejection.timestamp + ltf_interval_ms
             emit_lag_ms = real_now - rejection_closed_at
             if self._metrics:
-                self._metrics.set_gauge("latency.emit_lag_ms", emit_lag_ms)
+                self._metrics.set_gauge("latency.candidate_emit_lag_ms", emit_lag_ms)
                 self._metrics.set_gauge(
-                    f"latency.{symbol}.{htf_interval}_{ltf_interval}.emit_lag_ms",
+                    f"latency.{symbol}.{htf_interval}_{ltf_interval}.candidate_emit_lag_ms",
                     emit_lag_ms,
                 )
             if emit_lag_ms > max_emit_lag_ms:
@@ -671,6 +671,7 @@ class SignalService:
             emit_lag_ms = detected_at - signal.setup_candle_close_at
             if self._metrics:
                 self._metrics.set_gauge("latency.emit_lag_ms", emit_lag_ms)
+                self._metrics.set_gauge("latency.last_signal_emit_lag_ms", emit_lag_ms)
                 self._metrics.set_gauge(
                     "signals.last_signal_rr", signal.risk_reward_ratio
                 )
