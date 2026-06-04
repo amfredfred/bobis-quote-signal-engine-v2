@@ -47,6 +47,7 @@ from domain.entities.enums import (
 )
 from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
 from domain.entities.trade import TradeSignal
+from domain.signals.dedup import DedupState, should_emit
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -100,6 +101,52 @@ def _rejection() -> RejectionCandle:
         wick_ratio=0.72,
         pattern=CandlePattern.HAMMER,
     )
+
+
+def test_dedup_state_isolates_same_timestamps_by_timeframe_pair():
+    htf = _htf_range()
+    ltf = _ltf_range()
+    rejection = _rejection()
+    state = DedupState()
+
+    state.register(
+        symbol="XAUUSD",
+        direction=SignalDirection.LONG,
+        htf_range=htf,
+        ltf_range=ltf,
+        rejection=rejection,
+        htf_interval="5min",
+        ltf_interval="5min",
+        multi_tf_independent=True,
+    )
+
+    blocked_same_pair = should_emit(
+        state,
+        htf_range=htf,
+        ltf_range=ltf,
+        rejection=rejection,
+        direction=SignalDirection.LONG,
+        symbol="XAUUSD",
+        current_ts=BASE_TS,
+        stale_hours=1.0,
+        htf_interval="5min",
+        ltf_interval="5min",
+    )
+    allowed_other_pair = should_emit(
+        state,
+        htf_range=htf,
+        ltf_range=ltf,
+        rejection=rejection,
+        direction=SignalDirection.LONG,
+        symbol="XAUUSD",
+        current_ts=BASE_TS,
+        stale_hours=1.0,
+        htf_interval="15min",
+        ltf_interval="15min",
+    )
+
+    assert not blocked_same_pair.allowed
+    assert allowed_other_pair.allowed
 
 
 def make_signal(

@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from config.settings import Settings
 from domain.assets.profiles import AssetRegistry
+from infrastructure.observability.metrics import MetricsCollector
 from infrastructure.data_providers.market_data import _parse_rates
 
 
@@ -58,6 +59,30 @@ def test_asset_profile_applies_timeframe_trade_management_overrides():
     assert thirty.tp1_trigger_pct == 7.5
     assert thirty.tp1_close_pct == 25.0
     assert registry.get("XAUUSD", "5min", "5min").tp1_trigger_pct == 10.0
+
+
+def test_metrics_active_zones_are_timeframe_aware_and_pruned(tmp_path):
+    metrics = MetricsCollector(Settings(base_dir=tmp_path))
+    old_ts = 1_700_000_000_000
+    object.__setattr__(metrics._cfg, "now_ms", lambda: old_ts)
+
+    base_zone = {
+        "symbol": "XAUUSD",
+        "direction": "LONG",
+        "ltfTimestamp": old_ts,
+        "pendingAt": old_ts,
+        "htfRange": {},
+        "ltfRange": {},
+    }
+    metrics.upsert_active_zone({**base_zone, "htfInterval": "5min", "ltfInterval": "5min"})
+    metrics.upsert_active_zone({**base_zone, "htfInterval": "15min", "ltfInterval": "15min"})
+
+    assert metrics.gauge("signals.active_zones") == 2.0
+
+    object.__setattr__(metrics._cfg, "now_ms", lambda: old_ts + (25 * 3_600_000))
+    metrics.build_snapshot()
+
+    assert metrics.gauge("signals.active_zones") == 0.0
 
 
 def test_settings_rejects_inverted_timeframe_pairs():

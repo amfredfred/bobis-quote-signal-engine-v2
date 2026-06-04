@@ -8,11 +8,11 @@ Python sets/dicts — no file I/O, no config imports, no _cfg.
 I/O (loading/saving dedup state to disk) lives in the infrastructure layer.
 
 Dedup rules (A–E, identical to backtester):
-  A — dead_zones:   one signal per BOS zone ever     (htf_ts, direction)
+  A — dead_zones:   one signal per BOS zone ever     (symbol, htf, ltf, htf_ts, direction)
   B — open_dir:     one open position per symbol      (symbol, direction[, htf, ltf])
-  C — seen_ltf:     one signal per LTF swing          (ltf_ts, direction)
+  C — seen_ltf:     one signal per LTF swing          (symbol, htf, ltf, ltf_ts, direction)
   D — stale filter: rejection older than stale_hours → skip
-  E — seen_rej:     each rejection candle fires once  (rej_ts)
+  E — seen_rej:     each rejection candle fires once  (symbol, htf, ltf, rej_ts)
 
 Circuit breaker:
   After MAX_CONSECUTIVE_LOSSES → pause for PAUSE_HOURS.
@@ -45,26 +45,35 @@ class DedupState:
     """
 
     # Rule A — one signal per zone per session
-    dead_zones: set[tuple[int, str]] = field(default_factory=set)
+    dead_zones: set[tuple] = field(default_factory=set)
 
     # Rule B — one open position per direction (key includes TF pair when
     #           multi_tf_independent_positions=True)
     open_dir: dict[_DirKey, Optional[int]] = field(default_factory=dict)
 
     # Rule C — one signal per LTF swing per session
-    seen_ltf: set[tuple[int, str]] = field(default_factory=set)
+    seen_ltf: set[tuple] = field(default_factory=set)
 
     # Rule E — each rejection candle fires once
-    seen_rej: set[int] = field(default_factory=set)
+    seen_rej: set[tuple] = field(default_factory=set)
 
     def replay(self, records: list[ClosedSignalRecord]) -> None:
         """Rebuild state from a list of closed signal records (startup replay)."""
         for rec in records:
-            self.dead_zones.add((rec.htf_ts, rec.direction))
+            zone_key, ltf_key, rej_key = _dedup_keys(
+                rec.symbol,
+                rec.htf_interval,
+                rec.ltf_interval,
+                rec.htf_ts,
+                rec.ltf_ts,
+                rec.rej_ts,
+                rec.direction,
+            )
+            self.dead_zones.add(zone_key)
             if rec.ltf_ts:
-                self.seen_ltf.add((rec.ltf_ts, rec.direction))
+                self.seen_ltf.add(ltf_key)
             if rec.rej_ts:
-                self.seen_rej.add(rec.rej_ts)
+                self.seen_rej.add(rej_key)
 
     def register(
         self,
@@ -80,9 +89,18 @@ class DedupState:
     ) -> None:
         """Lock zone, LTF, and rejection after a signal is emitted."""
         dir_str = direction.value
-        self.dead_zones.add((htf_range.timestamp, dir_str))
-        self.seen_ltf.add((ltf_range.timestamp, dir_str))
-        self.seen_rej.add(rejection.timestamp)
+        zone_key, ltf_key, rej_key = _dedup_keys(
+            symbol,
+            htf_interval,
+            ltf_interval,
+            htf_range.timestamp,
+            ltf_range.timestamp,
+            rejection.timestamp,
+            dir_str,
+        )
+        self.dead_zones.add(zone_key)
+        self.seen_ltf.add(ltf_key)
+        self.seen_rej.add(rej_key)
 
         dir_key: _DirKey = (
             (symbol, dir_str, htf_interval, ltf_interval)
@@ -158,11 +176,21 @@ def should_emit(
     dir_str = direction.value
 
     # A — zone already fired this session
-    if (htf_range.timestamp, dir_str) in state.dead_zones:
+    zone_key, ltf_key, rej_key = _dedup_keys(
+        symbol,
+        htf_interval,
+        ltf_interval,
+        htf_range.timestamp,
+        ltf_range.timestamp,
+        rejection.timestamp,
+        dir_str,
+    )
+
+    if zone_key in state.dead_zones:
         return DedupResult(False, f"A: [{symbol}] dead zone {htf_range.timestamp}")
 
     # C — LTF swing already used this session
-    if (ltf_range.timestamp, dir_str) in state.seen_ltf:
+    if ltf_key in state.seen_ltf:
         return DedupResult(False, f"C: [{symbol}] seen ltf {ltf_range.timestamp}")
 
     # D — rejection candle is stale
@@ -174,7 +202,24 @@ def should_emit(
         )
 
     # E — rejection candle already used
-    if rejection.timestamp in state.seen_rej:
+    if rej_key in state.seen_rej:
         return DedupResult(False, f"E: [{symbol}] seen rej {rejection.timestamp}")
 
     return DedupResult(True, "")
+
+
+def _dedup_keys(
+    symbol: str,
+    htf_interval: str,
+    ltf_interval: str,
+    htf_ts: int,
+    ltf_ts: int,
+    rej_ts: int,
+    direction: str,
+) -> tuple[tuple, tuple, tuple]:
+    prefix = (symbol, htf_interval or "", ltf_interval or "")
+    return (
+        (*prefix, htf_ts, direction),
+        (*prefix, ltf_ts, direction),
+        (*prefix, rej_ts),
+    )

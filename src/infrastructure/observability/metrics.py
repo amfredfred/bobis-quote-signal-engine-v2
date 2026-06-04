@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS metrics_gauges (
 """
 
 _FLUSH_INTERVAL_SEC = 30
+_OBS_CACHE_TTL_MS = 24 * 3_600_000
 
 
 def _get_memory_mb() -> float:
@@ -174,6 +175,7 @@ class MetricsCollector:
         self._pending_latency: dict[str, dict] = {}
         self._pending_by_signal_id: dict[str, str] = {}
         self._tick_durations: dict[str, deque] = {}
+        self._last_cache_prune_ms = 0
         self._counters: dict[str, int] = defaultdict(int)
         self._gauges: dict[str, float] = {}
         self._flush_timer: threading.Timer | None = None
@@ -186,6 +188,36 @@ class MetricsCollector:
     def _session_day(self, ts_ms: Optional[int] = None) -> str:
         ts = (ts_ms or self._now_ms()) / 1000
         return datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+
+    def _prune_observation_caches_locked(self, now: Optional[int] = None) -> None:
+        now = now or self._now_ms()
+        if now - self._last_cache_prune_ms < 60_000:
+            return
+        self._last_cache_prune_ms = now
+        cutoff = now - _OBS_CACHE_TTL_MS
+
+        stale_latency = [
+            key
+            for key, rec in self._pending_latency.items()
+            if int(rec.get("fired_at") or rec.get("analyze_start_ms") or 0) < cutoff
+        ]
+        for key in stale_latency:
+            rec = self._pending_latency.pop(key, None) or {}
+            signal_id = rec.get("signal_id")
+            if signal_id:
+                self._pending_by_signal_id.pop(signal_id, None)
+
+        stale_zones = [
+            key
+            for key, zone in self._active_zones.items()
+            if int(zone.get("pendingAt") or zone.get("ltfTimestamp") or 0) < cutoff
+        ]
+        for key in stale_zones:
+            self._active_zones.pop(key, None)
+
+        self._gauges["signals.active_zones"] = float(len(self._active_zones))
+        self._gauges["observability.pending_latency"] = float(len(self._pending_latency))
+        self._gauges["observability.active_zones"] = float(len(self._active_zones))
 
     # ── Counters / gauges ─────────────────────────────────────────────────
 
@@ -312,6 +344,7 @@ class MetricsCollector:
         now = self._now_ms()
         key = f"{symbol}_{fired_at}"
         with self._lock:
+            self._prune_observation_caches_locked(now)
             self._pending_latency[key] = {
                 "symbol": symbol,
                 "fired_at": fired_at,
@@ -475,16 +508,40 @@ class MetricsCollector:
             self._gauges["signals.active_count"] = float(len(signals))
 
     def upsert_active_zone(self, zone: dict) -> None:
-        key = (zone["symbol"], zone["direction"], zone["ltfTimestamp"])
+        key = (
+            zone["symbol"],
+            zone["direction"],
+            zone.get("htfInterval", ""),
+            zone.get("ltfInterval", ""),
+            zone["ltfTimestamp"],
+        )
         with self._lock:
+            self._prune_observation_caches_locked()
             self._active_zones[key] = zone
             self._gauges["signals.active_zones"] = float(len(self._active_zones))
 
     def remove_active_zone(
-        self, symbol: str, direction: str, ltf_timestamp: int
+        self,
+        symbol: str,
+        direction: str,
+        ltf_timestamp: int,
+        htf_interval: str = "",
+        ltf_interval: str = "",
     ) -> None:
         with self._lock:
-            self._active_zones.pop((symbol, direction, ltf_timestamp), None)
+            if htf_interval or ltf_interval:
+                self._active_zones.pop(
+                    (symbol, direction, htf_interval, ltf_interval, ltf_timestamp),
+                    None,
+                )
+            else:
+                stale = [
+                    key
+                    for key in self._active_zones
+                    if key[0] == symbol and key[1] == direction and key[-1] == ltf_timestamp
+                ]
+                for key in stale:
+                    self._active_zones.pop(key, None)
             self._gauges["signals.active_zones"] = float(len(self._active_zones))
 
     def on_signal_event(self, event, payload: dict) -> None:
@@ -533,6 +590,8 @@ class MetricsCollector:
                     symbol=sig.get("symbol", ""),
                     direction=sig.get("direction", ""),
                     ltf_timestamp=ltf_ts,
+                    htf_interval=sig.get("htfInterval", ""),
+                    ltf_interval=sig.get("ltfInterval", ""),
                 )
         except Exception:
             pass
@@ -544,6 +603,7 @@ class MetricsCollector:
         now = self._now_ms()
 
         with self._lock:
+            self._prune_observation_caches_locked(now)
             scheduler = dict(self._scheduler_state)
             ws_clients = dict(self._ws_clients)
             active_sig = list(self._active_signals)
