@@ -205,6 +205,16 @@ class SignalService:
                     )
                     continue
                 self._watchlist[signal.id] = signal
+                self._session.register_signal(
+                    signal_id=signal.id,
+                    symbol=signal.symbol,
+                    direction=signal.direction,
+                    htf_range=signal.htf_range,
+                    ltf_range=signal.ltf_range,
+                    rejection=signal.rejection_candle,
+                    htf_interval=signal.htf_interval,
+                    ltf_interval=signal.ltf_interval,
+                )
                 restored += 1
             except Exception as exc:
                 logger.warning(
@@ -212,6 +222,10 @@ class SignalService:
                 )
 
         if restored:
+            if self._metrics:
+                self._metrics.set_active_signals(
+                    [signal.to_dict() for signal in self._watchlist.values()]
+                )
             logger.info("Restored %d open signal(s)", restored)
 
     # ── Event System ─────────────────────────────────────────────────────────

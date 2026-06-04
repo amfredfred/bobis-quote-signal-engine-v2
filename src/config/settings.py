@@ -258,7 +258,7 @@ _TP1_MULTIPLIER: float = 0.5
 # partial close at 50% to TP2
 _STOP_PLACEMENT: str = "wick"
 # wick placement = High RRR // swing is more consistent and easier to explain to users
-_WS_CANDLE_BUFFER_MS: int = 1_500
+_WS_CANDLE_BUFFER_MS: int = 1_100
 # ms after candle close for MT5 to settle
 _PIVOT_BARS: int = 1
 # structural pivot strength

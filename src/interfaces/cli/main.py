@@ -170,6 +170,8 @@ class SignalEngine:
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
+        await self._service.initialize()
+
         loop = asyncio.get_running_loop()
         self._scheduler = SignalScheduler(
             loop=loop,
