@@ -29,6 +29,7 @@ import logging
 import logging.handlers
 import signal as os_signal
 import sys
+import time
 from pathlib import Path
 
 from config.settings import Settings, interval_to_minutes
@@ -91,13 +92,15 @@ class SignalEngine:
         self._trace_writer = self._trace_ctx.__enter__()
 
         # ── Infrastructure ────────────────────────────────────────────────────
-        self._md = MarketDataClient.from_settings(settings)
+        self._metrics = MetricsCollector(settings)
+        self._md = MarketDataClient.from_settings(
+            settings, metrics_fn=self._metrics.on_api_call
+        )
 
         db_path = settings.session_dir / "signals.db"
         live_dir = settings.base_dir / "results" / "live"
         self._store = SignalStore(db_path)
         self._sstore = SessionStore(settings.session_dir, live_dir)
-        self._metrics = MetricsCollector(settings)
 
         # ── Domain / app ──────────────────────────────────────────────────────
         self._registry = AssetRegistry(settings)
@@ -119,6 +122,8 @@ class SignalEngine:
     # ── Tick ──────────────────────────────────────────────────────────────────
 
     async def _on_candle_close(self, symbol: str) -> None:
+        started = time.perf_counter()
+        analysis_close = 0
         try:
             min_ltf = min(interval_to_minutes(ltf) for _, ltf in self._cfg.tf_pairs)
             now_ms = self._md.now_ms(symbol)
@@ -134,7 +139,16 @@ class SignalEngine:
             await self._service.analyze(symbol, fired_at=analysis_close)
             await self._service.update_watchlist(symbol)
         except Exception as exc:
+            self._metrics.increment("scanner.tick_errors")
+            self._metrics.record_error("signal_engine.main", "ERROR", str(exc))
             logger.error("[%s] Tick error: %s", symbol, exc, exc_info=True)
+        finally:
+            if analysis_close:
+                duration_ms = (time.perf_counter() - started) * 1000
+                self._metrics.record_tick(symbol, "ltf", analysis_close, duration_ms)
+                self._metrics.update_scheduler_state(
+                    symbol, "ltf", last_fired_at=analysis_close
+                )
 
     def _on_signal_event(self, event: SignalEvent, payload: dict) -> None:
         if self._trace_writer and payload.get("signal"):
@@ -183,6 +197,7 @@ class SignalEngine:
         self._scheduler.shutdown()
         await self._ws.stop()
         self._md.close()
+        self._metrics.close()
         self._trace_ctx.__exit__(None, None, None)
         logger.info("Signal Engine stopped")
 

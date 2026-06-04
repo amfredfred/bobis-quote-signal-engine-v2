@@ -115,10 +115,13 @@ class _SignalStore(Protocol):
 class _MetricsCollector(Protocol):
     def on_signal_event(self, event: SignalEvent, payload: dict) -> None: ...
     def signal_analyze_start(self, symbol: str, fired_at: int) -> None: ...
+    def signal_rejection_found(self, symbol: str, fired_at: int) -> None: ...
     def signal_emitted(
         self, signal_id: str, symbol: str, fired_at: int, pair: str
     ) -> None: ...
     def set_active_signals(self, signals: list[dict]) -> None: ...
+    def increment(self, name: str, by: int = 1) -> None: ...
+    def set_gauge(self, name: str, value: float | int | None) -> None: ...
 
 
 # ── Value Objects ────────────────────────────────────────────────────────────
@@ -247,8 +250,10 @@ class SignalService:
     async def analyze(self, symbol: str, fired_at: int = 0) -> list[TradeSignal]:
         if not fired_at:
             fired_at = self._cfg.now_ms()
+        analyze_started = self._cfg.now_ms()
         if self._metrics:
             self._metrics.signal_analyze_start(symbol, fired_at)
+            self._metrics.set_gauge(f"scanner.{symbol}.analysis_fired_at", fired_at)
         self._current_fired[symbol] = fired_at
         logger.info("[%s] Analyzing…  %s", symbol, self._session.status_line())
 
@@ -272,6 +277,18 @@ class SignalService:
                 )
             else:
                 all_new.extend(result)
+        if self._metrics:
+            duration_ms = self._cfg.now_ms() - analyze_started
+            stats = self._session.stats()
+            self._metrics.set_gauge("scanner.analysis_ms", duration_ms)
+            self._metrics.set_gauge(f"scanner.{symbol}.analysis_ms", duration_ms)
+            self._metrics.set_gauge("state.watchlist_open", len(self._watchlist))
+            self._metrics.set_gauge("state.pending_zones", len(self._pending_emitted))
+            self._metrics.set_gauge("state.session_r", stats.get("session_r", 0.0))
+            self._metrics.set_gauge("state.dead_zones", stats.get("dead_zones", 0))
+            self._metrics.set_gauge(
+                "state.open_positions", len(stats.get("open_positions", []))
+            )
         return all_new
 
     async def _analyze_pair(
@@ -290,12 +307,15 @@ class SignalService:
         # analysis_close is the close boundary of the newest fully closed LTF candle.
         # Example on M5: at 10:35:01, analysis_close=10:35:00 and
         # pair_fired_at=10:30:00, the open timestamp of the latest closed candle.
-        pair_fired_at = (analysis_close // ltf_interval_ms) * ltf_interval_ms - ltf_interval_ms
+        pair_fired_at = (
+            (analysis_close // ltf_interval_ms) * ltf_interval_ms - ltf_interval_ms
+        )
         real_now = self._cfg.now_ms()
         expected_latest_closed_open = (
             (real_now // ltf_interval_ms) * ltf_interval_ms - ltf_interval_ms
         )
         drift_ms = expected_latest_closed_open - pair_fired_at
+        pair_metric = f"scanner.{symbol}.{htf_interval}_{ltf_interval}"
         logger.info(
             "[%s] Signal analysis timing analysis_close=%s pair_fired_at=%s ltf_interval_ms=%s",
             pair_label,
@@ -304,6 +324,10 @@ class SignalService:
             ltf_interval_ms,
         )
         if drift_ms > 0:
+            if self._metrics:
+                self._metrics.increment("scanner.analysis_drift_detected")
+                self._metrics.set_gauge("scanner.analysis_drift_ms", drift_ms)
+                self._metrics.set_gauge(f"{pair_metric}.analysis_drift_ms", drift_ms)
             logger.warning(
                 "[%s] Signal analysis lag detected expected_latest_closed_open=%s actual_pair_fired_at=%s drift_ms=%s",
                 pair_label,
@@ -320,11 +344,15 @@ class SignalService:
             ),
         )
         if len(htf_full) < 10:
+            if self._metrics:
+                self._metrics.increment("scanner.insufficient_htf")
             logger.warning("[%s] Insufficient HTF data", pair_label)
             return []
         htf_closed_cutoff = analysis_close - htf_interval_ms
         htf_visible = [c for c in htf_full if c.timestamp <= htf_closed_cutoff]
         if len(htf_visible) < 10:
+            if self._metrics:
+                self._metrics.increment("scanner.insufficient_closed_htf")
             logger.warning("[%s] Insufficient closed HTF data", pair_label)
             return []
         htf = htf_visible[-profile.htf_lookback :]
@@ -342,8 +370,21 @@ class SignalService:
         ltf_visible = ltf_all[:hi]
         self._last_ltf[pair_key] = ltf_visible
         if len(ltf_visible) < 10:
+            if self._metrics:
+                self._metrics.increment("scanner.insufficient_ltf")
             logger.warning("[%s] Insufficient LTF data", pair_label)
             return []
+        scan_lag_ms = real_now - (pair_fired_at + ltf_interval_ms)
+        if self._metrics:
+            self._metrics.increment("scanner.pair_scans")
+            self._metrics.increment(f"{pair_metric}.scans")
+            self._metrics.set_gauge("scanner.scan_lag_ms", scan_lag_ms)
+            self._metrics.set_gauge(f"{pair_metric}.scan_lag_ms", scan_lag_ms)
+            self._metrics.set_gauge(
+                f"{pair_metric}.latest_visible_ltf_open",
+                ltf_visible[-1].timestamp,
+            )
+            self._metrics.set_gauge(f"{pair_metric}.pair_fired_at", pair_fired_at)
         logger.info(
             "[%s] Signal scan",
             pair_label,
@@ -356,7 +397,7 @@ class SignalService:
                 "evaluated_candle_close": pair_fired_at + ltf_interval_ms,
                 "latest_visible_ltf_open": ltf_visible[-1].timestamp,
                 "latest_visible_ltf_close": ltf_visible[-1].timestamp + ltf_interval_ms,
-                "scan_lag_ms": real_now - (pair_fired_at + ltf_interval_ms),
+                "scan_lag_ms": scan_lag_ms,
             },
         )
 
@@ -365,6 +406,9 @@ class SignalService:
         if profile.use_trend_filter:
             structure = MarketStructure.detect(htf, pivot_bars=self._cfg.pivot_bars)
             if structure.bias.value == "NEUTRAL":
+                if self._metrics:
+                    self._metrics.increment("signals.trend_blocked")
+                    self._metrics.increment("signals.trend_blocked.neutral")
                 logger.info("[%s] HTF bias=NEUTRAL — skipping", pair_label)
                 return []
 
@@ -375,6 +419,8 @@ class SignalService:
             htf_interval_ms=htf_interval_ms,
             max_zones_per_dir=self._cfg.max_htf_zones_per_dir,
         )
+
+        before_displacement_count = len(htf_ranges)
 
         # Displacement filter
         if self._cfg.use_displacement_filter:
@@ -389,6 +435,12 @@ class SignalService:
                     atr_mult=pair_disp_mult,
                 )
             ]
+            if self._metrics:
+                blocked = before_displacement_count - len(htf_ranges)
+                if blocked > 0:
+                    self._metrics.increment("filters.displacement_blocked", blocked)
+        if self._metrics:
+            self._metrics.set_gauge(f"{pair_metric}.htf_ranges", len(htf_ranges))
         self._last_ranges[pair_key] = htf_ranges
 
         now = pair_fired_at
@@ -455,10 +507,17 @@ class SignalService:
 
             ltf_range = ltf_range_cache.get(htf_key)
             if not ltf_range:
+                if self._metrics:
+                    self._metrics.increment("signals.no_ltf_range")
                 continue
             if structure is not None and not structure.allows(
                 ltf_range.direction.value
             ):
+                if self._metrics:
+                    self._metrics.increment("signals.trend_blocked")
+                    self._metrics.increment(
+                        f"signals.trend_blocked.{ltf_range.direction.value.lower()}"
+                    )
                 continue
 
             # Pending signal
@@ -511,13 +570,29 @@ class SignalService:
                 self._cfg.min_wick_ratio,
             )
             if not rej_result:
+                if self._metrics:
+                    self._metrics.increment("signals.no_rejection")
                 continue
             rejection, _ = rej_result
+            if self._metrics:
+                self._metrics.signal_rejection_found(symbol, fired_at)
             real_now = self._cfg.now_ms()
             max_emit_lag_ms = self._cfg.max_emit_lag_ms
             rejection_closed_at = rejection.timestamp + ltf_interval_ms
             emit_lag_ms = real_now - rejection_closed_at
+            if self._metrics:
+                self._metrics.set_gauge("latency.emit_lag_ms", emit_lag_ms)
+                self._metrics.set_gauge(
+                    f"latency.{symbol}.{htf_interval}_{ltf_interval}.emit_lag_ms",
+                    emit_lag_ms,
+                )
             if emit_lag_ms > max_emit_lag_ms:
+                if self._metrics:
+                    self._metrics.increment("signals.stale_skipped")
+                    self._metrics.set_gauge("signals.last_stale_lag_ms", emit_lag_ms)
+                    self._metrics.set_gauge(
+                        "signals.last_stale_rejection_open", rejection.timestamp
+                    )
                 logger.info(
                     "[%s] Skipping stale rejection rejection_open=%s rejection_close=%s real_now=%s lag=%.1fs max_lag=%.1fs",
                     pair_label,
@@ -534,6 +609,8 @@ class SignalService:
                 symbol, ltf_range.direction, self.get_active_signals()
             )
             if corr_conflict_flag:
+                if self._metrics:
+                    self._metrics.increment("signals.correlation_blocked")
                 logger.info("[%s] ✗ Correlation block: %s", pair_label, corr_reason)
                 continue
 
@@ -548,6 +625,10 @@ class SignalService:
                 ltf_interval=ltf_interval,
             )
             if not allowed:
+                if self._metrics:
+                    self._metrics.increment("signals.dedup_blocked")
+                    reason_key = reason.split(":", 1)[0].strip().lower() or "unknown"
+                    self._metrics.increment(f"signals.dedup_blocked.{reason_key}")
                 logger.debug("[%s] Blocked: %s", pair_label, reason)
                 continue
 
@@ -556,6 +637,8 @@ class SignalService:
                 f"{rejection.timestamp}_{ltf_range.direction.value}"
             )
             if signal_id in self._watchlist:
+                if self._metrics:
+                    self._metrics.increment("signals.watchlist_duplicate")
                 continue
 
             decision = self._decision_engine.evaluate_setup(
@@ -570,6 +653,12 @@ class SignalService:
             )
             signal = decision.signal
             if signal is None:
+                if self._metrics:
+                    self._metrics.increment("signals.decision_blocked")
+                    if decision.blocked_reason:
+                        self._metrics.increment(
+                            f"signals.decision_blocked.{decision.blocked_reason}"
+                        )
                 logger.debug("[%s] Blocked: %s", pair_label, decision.blocked_reason)
                 continue
 
@@ -579,6 +668,11 @@ class SignalService:
             signal.detected_at = detected_at
             signal.emitted_at = detected_at
             emit_lag_ms = detected_at - signal.setup_candle_close_at
+            if self._metrics:
+                self._metrics.set_gauge("latency.emit_lag_ms", emit_lag_ms)
+                self._metrics.set_gauge(
+                    "signals.last_signal_rr", signal.risk_reward_ratio
+                )
 
             self._session.register_signal(
                 signal_id=signal.id,

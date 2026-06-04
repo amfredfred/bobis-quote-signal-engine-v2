@@ -15,7 +15,7 @@ import os
 import platform
 import sqlite3
 import threading
-from collections import deque
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -88,7 +88,21 @@ CREATE TABLE IF NOT EXISTS ws_events (
     occurred_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ws_day ON ws_events(session_day);
+
+CREATE TABLE IF NOT EXISTS metrics_counters (
+    name        TEXT PRIMARY KEY,
+    value       INTEGER NOT NULL DEFAULT 0,
+    updated_at  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS metrics_gauges (
+    name        TEXT PRIMARY KEY,
+    value       REAL NOT NULL DEFAULT 0,
+    updated_at  INTEGER
+);
 """
+
+_FLUSH_INTERVAL_SEC = 30
 
 
 def _get_memory_mb() -> float:
@@ -160,6 +174,11 @@ class MetricsCollector:
         self._pending_latency: dict[str, dict] = {}
         self._pending_by_signal_id: dict[str, str] = {}
         self._tick_durations: dict[str, deque] = {}
+        self._counters: dict[str, int] = defaultdict(int)
+        self._gauges: dict[str, float] = {}
+        self._flush_timer: threading.Timer | None = None
+        self._restore_counter_gauge_metrics()
+        self._schedule_flush()
 
     def _now_ms(self) -> int:
         return self._cfg.now_ms()
@@ -167,6 +186,89 @@ class MetricsCollector:
     def _session_day(self, ts_ms: Optional[int] = None) -> str:
         ts = (ts_ms or self._now_ms()) / 1000
         return datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+
+    # ── Counters / gauges ─────────────────────────────────────────────────
+
+    def _restore_counter_gauge_metrics(self) -> None:
+        try:
+            counters = self._conn.execute(
+                "SELECT name, value FROM metrics_counters"
+            ).fetchall()
+            gauges = self._conn.execute(
+                "SELECT name, value FROM metrics_gauges"
+            ).fetchall()
+            with self._lock:
+                for name, value in counters:
+                    self._counters[name] = int(value)
+                for name, value in gauges:
+                    self._gauges[name] = float(value)
+        except Exception:
+            pass
+
+    def increment(self, name: str, by: int = 1) -> None:
+        with self._lock:
+            self._counters[name] += by
+
+    def set_gauge(self, name: str, value: float | int | None) -> None:
+        if value is None:
+            return
+        with self._lock:
+            self._gauges[name] = float(value)
+
+    def counter(self, name: str) -> int:
+        with self._lock:
+            return int(self._counters[name])
+
+    def gauge(self, name: str) -> float:
+        with self._lock:
+            return float(self._gauges.get(name, 0.0))
+
+    def metrics_snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "counters": dict(self._counters),
+                "gauges": dict(self._gauges),
+            }
+
+    def flush_metrics(self) -> None:
+        try:
+            snap = self.metrics_snapshot()
+            ts = self._now_ms()
+            with self._lock:
+                for name, value in snap["counters"].items():
+                    self._conn.execute(
+                        """
+                        INSERT INTO metrics_counters (name, value, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(name) DO UPDATE SET
+                            value=excluded.value,
+                            updated_at=excluded.updated_at
+                        """,
+                        (name, int(value), ts),
+                    )
+                for name, value in snap["gauges"].items():
+                    self._conn.execute(
+                        """
+                        INSERT INTO metrics_gauges (name, value, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(name) DO UPDATE SET
+                            value=excluded.value,
+                            updated_at=excluded.updated_at
+                        """,
+                        (name, float(value), ts),
+                    )
+                self._conn.commit()
+        except Exception:
+            pass
+
+    def _schedule_flush(self) -> None:
+        self._flush_timer = threading.Timer(_FLUSH_INTERVAL_SEC, self._flush_tick)
+        self._flush_timer.daemon = True
+        self._flush_timer.start()
+
+    def _flush_tick(self) -> None:
+        self.flush_metrics()
+        self._schedule_flush()
 
     # ── Scheduler ─────────────────────────────────────────────────────────────
 
@@ -183,6 +285,10 @@ class MetricsCollector:
             if symbol not in self._tick_durations:
                 self._tick_durations[symbol] = deque(maxlen=100)
             self._tick_durations[symbol].append(duration_ms)
+            self._counters["scanner.ticks"] += 1
+            self._gauges["scanner.last_tick_duration_ms"] = float(duration_ms)
+            self._gauges[f"scanner.{symbol}.last_tick_duration_ms"] = float(duration_ms)
+            self._gauges[f"scanner.{symbol}.last_fired_at"] = float(fired_at)
 
     def update_scheduler_state(
         self,
@@ -212,6 +318,9 @@ class MetricsCollector:
                 "analyze_start_ms": now,
                 "scheduler_lag_ms": now - fired_at,
             }
+            self._counters["scanner.analysis_started"] += 1
+            self._gauges["scanner.scheduler_lag_ms"] = float(now - fired_at)
+            self._gauges[f"scanner.{symbol}.scheduler_lag_ms"] = float(now - fired_at)
         return now
 
     def signal_rejection_found(self, symbol: str, fired_at: int) -> None:
@@ -219,6 +328,7 @@ class MetricsCollector:
         with self._lock:
             if key in self._pending_latency:
                 self._pending_latency[key]["rejection_found_ms"] = self._now_ms()
+            self._counters["signals.rejections_found"] += 1
 
     def signal_emitted(
         self, signal_id: str, symbol: str, fired_at: int, tf_pair: str = ""
@@ -234,6 +344,9 @@ class MetricsCollector:
             rec["analyze_duration_ms"] = now - start
             self._pending_latency[key] = rec
             self._pending_by_signal_id[signal_id] = key
+            self._counters["signals.emitted"] += 1
+            self._gauges["latency.analysis_to_emit_ms"] = float(now - start)
+            self._gauges["signals.last_emitted_at"] = float(now)
 
     def signal_broadcast_done(self, signal_id: str, symbol: str, fired_at: int) -> None:
         now = self._now_ms()
@@ -270,6 +383,7 @@ class MetricsCollector:
                 ),
             )
             self._conn.commit()
+            self._gauges["latency.signal_broadcast_total_ms"] = float(rec["total_ms"])
 
     # ── API calls ──────────────────────────────────────────────────────────────
 
@@ -301,6 +415,12 @@ class MetricsCollector:
                 ),
             )
             self._conn.commit()
+            self._counters["mt5.calls"] += 1
+            self._counters[f"mt5.calls.{interval}"] += 1
+            if not success:
+                self._counters["mt5.errors"] += 1
+            self._gauges["mt5.last_call_ms"] = float(duration_ms)
+            self._gauges[f"mt5.{symbol}.{interval}.last_call_ms"] = float(duration_ms)
 
     # Keep old name for compatibility
     record_api_call = on_api_call
@@ -316,6 +436,7 @@ class MetricsCollector:
                 (day, module, level, message, now),
             )
             self._conn.commit()
+            self._counters["errors.total"] += 1
 
     # ── WS clients ─────────────────────────────────────────────────────────────
 
@@ -332,6 +453,7 @@ class MetricsCollector:
                 (day, client_id, event, _json.dumps(symbols) if symbols else None, now),
             )
             self._conn.commit()
+            self._counters[f"websocket.{event}"] += 1
 
     def update_ws_client(self, client_id: str, symbols: list[str]) -> None:
         with self._lock:
@@ -340,32 +462,40 @@ class MetricsCollector:
                 "symbols": symbols,
                 "connected_at": ex.get("connected_at", self._now_ms()),
             }
+            self._gauges["websocket.client_count"] = float(len(self._ws_clients))
 
     def remove_ws_client(self, client_id: str) -> None:
         with self._lock:
             self._ws_clients.pop(client_id, None)
+            self._gauges["websocket.client_count"] = float(len(self._ws_clients))
 
     def set_active_signals(self, signals: list[dict]) -> None:
         with self._lock:
             self._active_signals = signals
+            self._gauges["signals.active_count"] = float(len(signals))
 
     def upsert_active_zone(self, zone: dict) -> None:
         key = (zone["symbol"], zone["direction"], zone["ltfTimestamp"])
         with self._lock:
             self._active_zones[key] = zone
+            self._gauges["signals.active_zones"] = float(len(self._active_zones))
 
     def remove_active_zone(
         self, symbol: str, direction: str, ltf_timestamp: int
     ) -> None:
         with self._lock:
             self._active_zones.pop((symbol, direction, ltf_timestamp), None)
+            self._gauges["signals.active_zones"] = float(len(self._active_zones))
 
     def on_signal_event(self, event, payload: dict) -> None:
         """Called by SignalService._emit via the metrics hook."""
         from domain.entities.enums import SignalEvent
 
         try:
+            event_name = getattr(event, "value", str(event))
+            self.increment(f"events.{event_name}")
             if event == SignalEvent.SIGNAL_PENDING:
+                self.increment("signals.pending")
                 self.upsert_active_zone(
                     {
                         "symbol": payload["symbol"],
@@ -385,6 +515,16 @@ class MetricsCollector:
                 SignalEvent.SIGNAL_SL_HIT,
                 SignalEvent.SIGNAL_TP2_HIT,
             ):
+                if event == SignalEvent.SIGNAL_TRIGGERED:
+                    self.increment("signals.triggered")
+                elif event == SignalEvent.SIGNAL_INVALIDATED:
+                    self.increment("signals.invalidated")
+                elif event == SignalEvent.SIGNAL_EXPIRED:
+                    self.increment("signals.expired")
+                elif event == SignalEvent.SIGNAL_SL_HIT:
+                    self.increment("signals.sl_hit")
+                elif event == SignalEvent.SIGNAL_TP2_HIT:
+                    self.increment("signals.tp2_hit")
                 sig = payload.get("signal") or payload
                 ltf_ts = sig.get("ltfTimestamp") or (sig.get("ltfRange") or {}).get(
                     "timestamp", 0
@@ -409,6 +549,8 @@ class MetricsCollector:
             active_sig = list(self._active_signals)
             active_zones = list(self._active_zones.values())
             tick_dur = {s: list(v) for s, v in self._tick_durations.items()}
+            counters = dict(self._counters)
+            gauges = dict(self._gauges)
 
         tick_rows = self._conn.execute(
             "SELECT symbol, mode, COUNT(*), AVG(duration_ms), MAX(duration_ms) "
@@ -542,8 +684,37 @@ class MetricsCollector:
             "websocket": {"client_count": len(ws_out), "clients": ws_out},
             "active_signals": active_sig,
             "active_zones": active_zones,
+            "metrics": {
+                "raw_counters": counters,
+                "raw_gauges": gauges,
+                "scanner_ticks": counters.get("scanner.ticks", 0),
+                "scanner_tick_errors": counters.get("scanner.tick_errors", 0),
+                "analysis_started": counters.get("scanner.analysis_started", 0),
+                "signals_pending": counters.get("signals.pending", 0),
+                "signals_emitted": counters.get("signals.emitted", 0),
+                "signals_triggered": counters.get("signals.triggered", 0),
+                "signals_stale_skipped": counters.get("signals.stale_skipped", 0),
+                "signals_dedup_blocked": counters.get("signals.dedup_blocked", 0),
+                "signals_correlation_blocked": counters.get(
+                    "signals.correlation_blocked", 0
+                ),
+                "signals_decision_blocked": counters.get("signals.decision_blocked", 0),
+                "signals_no_ltf_range": counters.get("signals.no_ltf_range", 0),
+                "signals_no_rejection": counters.get("signals.no_rejection", 0),
+                "mt5_calls": counters.get("mt5.calls", 0),
+                "mt5_errors": counters.get("mt5.errors", 0),
+                "last_emit_lag_ms": gauges.get("latency.emit_lag_ms", 0),
+                "last_scan_lag_ms": gauges.get("scanner.scan_lag_ms", 0),
+                "last_analysis_ms": gauges.get("scanner.analysis_ms", 0),
+                "active_signals": gauges.get("signals.active_count", len(active_sig)),
+                "active_zones": gauges.get("signals.active_zones", len(active_zones)),
+                "websocket_clients": len(ws_out),
+            },
         }
 
     def close(self) -> None:
+        if self._flush_timer:
+            self._flush_timer.cancel()
+        self.flush_metrics()
         with self._lock:
             self._conn.close()
