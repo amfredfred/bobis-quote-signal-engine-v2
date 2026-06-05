@@ -6,7 +6,7 @@ websocket:
 
 mt5:
   # Optional path to terminal64.exe. Leave empty to use the default installed MT5 terminal.
-  terminal_path: "c:\\Program Files\\FBS MetaTrader 5\\terminal64.exe"
+  terminal_path: "C:\\Program Files\\MetaTrader 5 EXNESS\\terminal64.exe"
   timeout_ms: 60000
   # Variants: false (normal install), true (portable terminal install).
   portable: false

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,8 @@ from config.settings import Settings
 from domain.assets.profiles import AssetRegistry
 from infrastructure.observability.metrics import MetricsCollector
 from infrastructure.data_providers.market_data import _parse_rates
+from infrastructure.data_providers.market_data import MarketDataClient, MarketDataError
+import infrastructure.data_providers.market_data as market_data
 
 
 def test_settings_loads_yaml_config(tmp_path, monkeypatch):
@@ -147,3 +150,61 @@ def test_parse_rates_normalizes_broker_epoch_seconds_to_utc():
 
     assert candles[0].timestamp == 1_700_000_000_000
     assert candles[0].volume == 12.0
+
+
+def _market_data_client_without_mt5_init() -> MarketDataClient:
+    client = object.__new__(MarketDataClient)
+    client._resolved_symbols = {}
+    return client
+
+
+def test_market_data_resolves_broker_symbol_suffix_and_caches(monkeypatch):
+    symbol_info_calls = []
+    selected = []
+    infos = {
+        "XAUUSD.": SimpleNamespace(name="XAUUSD.", visible=False),
+    }
+    fake_mt5 = SimpleNamespace(
+        symbol_info=lambda name: symbol_info_calls.append(name) or infos.get(name),
+        symbols_get=lambda: [
+            SimpleNamespace(name="XAUUSD_x100"),
+            SimpleNamespace(name="XAUUSD."),
+        ],
+        symbol_select=lambda name, visible: selected.append((name, visible)) or True,
+    )
+    monkeypatch.setattr(market_data, "mt5", fake_mt5)
+    client = _market_data_client_without_mt5_init()
+
+    assert client._ensure_symbol("XAU/USD") == "XAUUSD."
+    assert client._ensure_symbol("XAUUSD") == "XAUUSD."
+    assert selected == [("XAUUSD.", True)]
+    assert symbol_info_calls == ["XAUUSD", "XAUUSD."]
+
+
+def test_market_data_prefers_exact_broker_symbol(monkeypatch):
+    fake_mt5 = SimpleNamespace(
+        symbol_info=lambda name: (
+            SimpleNamespace(name="XAUUSD", visible=True) if name == "XAUUSD" else None
+        ),
+        symbols_get=lambda: pytest.fail("symbols_get should not run for exact match"),
+        symbol_select=lambda *_: pytest.fail("visible exact symbol should not be selected"),
+    )
+    monkeypatch.setattr(market_data, "mt5", fake_mt5)
+    client = _market_data_client_without_mt5_init()
+
+    assert client._ensure_symbol("xau-usd") == "XAUUSD"
+
+
+def test_market_data_missing_symbol_lists_related_candidates(monkeypatch):
+    fake_mt5 = SimpleNamespace(
+        symbol_info=lambda _name: None,
+        symbols_get=lambda: [
+            SimpleNamespace(name="XAUJPY."),
+            SimpleNamespace(name="EURUSD."),
+        ],
+    )
+    monkeypatch.setattr(market_data, "mt5", fake_mt5)
+    client = _market_data_client_without_mt5_init()
+
+    with pytest.raises(MarketDataError, match="related broker symbols.*XAUJPY"):
+        client._ensure_symbol("XAUUSD")

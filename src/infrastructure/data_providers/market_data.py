@@ -140,6 +140,7 @@ class MarketDataClient:
         self._metrics_fn = metrics_fn
         self._settings = settings
         self._broker_time_offset_ms_by_symbol: dict[str, int] = {}
+        self._resolved_symbols: dict[str, str] = {}
         self._shutdown_on_close = False
 
         kwargs = {"timeout": timeout_ms, "portable": portable}
@@ -179,17 +180,56 @@ class MarketDataClient:
         )
 
     def _normalize_symbol(self, symbol: str) -> str:
-        return symbol.upper().replace("/", "")
+        return "".join(ch for ch in symbol.upper() if ch.isalnum())
 
     def _ensure_symbol(self, symbol: str) -> str:
-        mt5_symbol = self._normalize_symbol(symbol)
-        info = mt5.symbol_info(mt5_symbol)
+        clean = self._normalize_symbol(symbol)
+        cached = self._resolved_symbols.get(clean)
+        if cached:
+            return cached
+
+        info = mt5.symbol_info(clean)
+        if info is not None:
+            mt5_symbol = getattr(info, "name", clean)
+        else:
+            symbols = mt5.symbols_get()
+            if not symbols:
+                raise MarketDataError(
+                    f"MT5 symbol {clean!r} not found; symbols_get returned no symbols "
+                    f"({_last_error()})"
+                )
+
+            matches = [
+                str(item.name)
+                for item in symbols
+                if self._normalize_symbol(str(item.name)).startswith(clean)
+                or self._normalize_symbol(str(item.name)).endswith(clean)
+            ]
+            if not matches:
+                related = [
+                    str(item.name)
+                    for item in symbols
+                    if clean[:3] and clean[:3] in self._normalize_symbol(str(item.name))
+                ][:10]
+                hint = f"; related broker symbols: {related}" if related else ""
+                raise MarketDataError(f"MT5 symbol {clean!r} not found{hint}")
+
+            mt5_symbol = min(matches, key=lambda name: (len(name), name.upper()))
+            logger.warning(
+                "MT5 symbol %r resolved to broker symbol %r%s",
+                symbol,
+                mt5_symbol,
+                f" from {matches}" if len(matches) > 1 else "",
+            )
+            info = mt5.symbol_info(mt5_symbol)
+
         if info is None:
-            raise MarketDataError(f"MT5 symbol {mt5_symbol!r} not found")
+            raise MarketDataError(f"MT5 symbol {mt5_symbol!r} could not be inspected")
         if not info.visible and not mt5.symbol_select(mt5_symbol, True):
             raise MarketDataError(
                 f"MT5 symbol {mt5_symbol!r} is not visible and could not be selected"
             )
+        self._resolved_symbols[clean] = mt5_symbol
         return mt5_symbol
 
     def _broker_time_offset_ms(self, symbol: str) -> int:
