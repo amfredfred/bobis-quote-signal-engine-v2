@@ -115,6 +115,19 @@ def spread_points_to_price_units(symbol: str, spread_points: float) -> float:
     point_size = SPREAD_POINT_SIZE_BY_SYMBOL.get(symbol.upper().replace("/", ""), 1.0)
     return spread_points * point_size
 
+
+def spread_adjusted_rr(
+    raw_rr: float,
+    raw_risk_distance: float,
+    spread_price_units: float,
+) -> float:
+    """Return R after sizing against the entry-to-stop distance plus spread."""
+    if spread_price_units <= 0.0 or raw_risk_distance <= 0.0:
+        return raw_rr
+    executed_risk = raw_risk_distance + spread_price_units
+    return (raw_rr * raw_risk_distance - spread_price_units) / executed_risk
+
+
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -392,7 +405,7 @@ class BacktestReport:
 
             # EXPIRED trades are never entered — no spread is paid.
             if spread_points > 0 and r.outcome != EXP:
-                executed_rr = raw_rr - (spread_points / s.risk_pips)
+                executed_rr = spread_adjusted_rr(raw_rr, s.risk_pips, spread_points)
             else:
                 executed_rr = raw_rr
 
@@ -1715,7 +1728,7 @@ class MultiPairBacktester:
         spread_points = self.spread_points
         EXP = SignalOutcome.EXPIRED
         if spread_points > 0 and r.outcome != EXP:
-            executed_rr = raw_rr - (spread_points / s.risk_pips)
+            executed_rr = spread_adjusted_rr(raw_rr, s.risk_pips, spread_points)
         else:
             executed_rr = raw_rr
 

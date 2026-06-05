@@ -3,7 +3,7 @@ tests/test_backtest_spread.py
 
 Unit tests for spread support in the backtest engine.
 Spread is specified in price units directly (--spread-points).
-Cost in R = spread_points / risk_pips — varies per trade, which is realistic.
+Position size uses the raw stop distance plus spread, matching live sizing.
 
 Covers: formula correctness, LONG/SHORT, zero spread, expired trades,
         per-trade field names, executed entry/exit prices, and validation.
@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.backtesting.backtest import (
     DEFAULT_SPREAD_POINTS,
+    spread_adjusted_rr,
     spread_points_to_price_units,
 )
 from domain.entities.enums import SignalDirection, SignalOutcome
@@ -31,32 +32,30 @@ def test_cli_spread_points_leave_unknown_symbols_as_price_units():
     assert spread_points_to_price_units("UNKNOWN", 3.0) == pytest.approx(3.0)
 
 
-# ── Spread formula: executed_rr = raw_rr - (spread_points / risk_pips) ────────
+# ── Spread-adjusted risk sizing ───────────────────────────────────────────────
 
 class TestSpreadExecutedRR:
     """
     entry=2000, sl=1990 → risk_pips=10
-    spread_points=0.1 → cost_r = 0.1/10 = 0.01R per trade
+    spread_points=0.1 → executed risk distance = 10.1
     """
 
     RISK_PIPS = 10.0
     SPREAD_POINTS = 0.1
-    SPREAD_R = SPREAD_POINTS / RISK_PIPS  # 0.01
-
     def _executed_rr(self, raw_rr: float) -> float:
-        return raw_rr - self.SPREAD_R
+        return spread_adjusted_rr(raw_rr, self.RISK_PIPS, self.SPREAD_POINTS)
 
     def test_win_rr_reduced(self):
-        assert self._executed_rr(2.5) == pytest.approx(2.49)
+        assert self._executed_rr(2.5) == pytest.approx((25.0 - 0.1) / 10.1)
 
-    def test_loss_rr_worsened(self):
-        assert self._executed_rr(-1.0) == pytest.approx(-1.01)
+    def test_loss_rr_remains_one_r(self):
+        assert self._executed_rr(-1.0) == pytest.approx(-1.0)
 
     def test_breakeven_rr_reduced(self):
-        assert self._executed_rr(0.5) == pytest.approx(0.49)
+        assert self._executed_rr(0.5) == pytest.approx((5.0 - 0.1) / 10.1)
 
     def test_direction_agnostic(self):
-        assert self._executed_rr(2.0) == pytest.approx(1.99)
+        assert self._executed_rr(2.0) == pytest.approx((20.0 - 0.1) / 10.1)
 
     def test_expired_no_spread_deducted(self):
         executed = 0.0
@@ -64,14 +63,13 @@ class TestSpreadExecutedRR:
 
     def test_zero_spread_passthrough(self):
         for raw in [2.5, -1.0, 0.5, 0.0]:
-            assert raw - 0.0 == pytest.approx(raw)
+            assert spread_adjusted_rr(raw, self.RISK_PIPS, 0.0) == pytest.approx(raw)
 
-    def test_tight_stop_costs_more_r(self):
-        # Same spread, half the stop → double the R-cost (realistic behaviour)
+    def test_tight_stop_reduces_winning_r_more(self):
         spread = 0.5
-        cost_wide = spread / 10.0   # 0.05R
-        cost_tight = spread / 5.0   # 0.10R
-        assert cost_tight == pytest.approx(2 * cost_wide)
+        wide = spread_adjusted_rr(2.0, 10.0, spread)
+        tight = spread_adjusted_rr(2.0, 5.0, spread)
+        assert tight < wide
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -147,7 +145,7 @@ def _make_report(results, spread_points=0.0, start_balance=5000.0, risk_percent=
 class TestSpreadInAccounting:
     """
     entry=2000, sl=1990 → risk_pips=10
-    spread_points=0.3 → cost_r = 0.03R per trade
+    spread_points=0.3 → executed risk distance = 10.3
     balance=5000, risk=1% → risk_amount=50
     """
 
@@ -157,10 +155,9 @@ class TestSpreadInAccounting:
         per_trade, _ = report._compute_accounting([r])
         a = per_trade[0]
 
-        # cost_r = 0.3/10 = 0.03; executed_rr = 2.5 - 0.03 = 2.47
-        assert a["executed_rr"] == pytest.approx(2.47, rel=1e-6)
+        assert a["executed_rr"] == pytest.approx((25.0 - 0.3) / 10.3, rel=1e-6)
         assert a["theoretical_rr"] == pytest.approx(2.5)
-        assert a["pnl"] == pytest.approx(2.47 * 50, rel=1e-6)
+        assert a["pnl"] == pytest.approx(a["executed_rr"] * 50, rel=1e-6)
 
     def test_long_loss_pnl_uses_executed_rr(self):
         r = _make_mock_result(-1.0, SignalOutcome.LOSS, SignalDirection.LONG)
@@ -168,8 +165,8 @@ class TestSpreadInAccounting:
         per_trade, _ = report._compute_accounting([r])
         a = per_trade[0]
 
-        assert a["executed_rr"] == pytest.approx(-1.03, rel=1e-6)
-        assert a["pnl"] == pytest.approx(-1.03 * 50, rel=1e-6)
+        assert a["executed_rr"] == pytest.approx(-1.0, rel=1e-6)
+        assert a["pnl"] == pytest.approx(-50.0, rel=1e-6)
 
     def test_short_win_pnl_uses_executed_rr(self):
         r = _make_mock_result(2.0, SignalOutcome.WIN_FULL, SignalDirection.SHORT)
@@ -177,7 +174,7 @@ class TestSpreadInAccounting:
         per_trade, _ = report._compute_accounting([r])
         a = per_trade[0]
 
-        assert a["executed_rr"] == pytest.approx(2.0 - 0.03, rel=1e-6)
+        assert a["executed_rr"] == pytest.approx((20.0 - 0.3) / 10.3, rel=1e-6)
 
     def test_expired_no_spread_deducted(self):
         r = _make_mock_result(0.0, SignalOutcome.EXPIRED, SignalDirection.LONG)
@@ -234,8 +231,7 @@ class TestSpreadInAccounting:
         per_trade, _ = report._compute_accounting([r])
         a = per_trade[0]
 
-        # cost_r = 0.05/10 = 0.005; executed_rr = 2.0 - 0.005 = 1.995
-        assert a["executed_rr"] == pytest.approx(1.995, rel=1e-6)
+        assert a["executed_rr"] == pytest.approx((20.0 - 0.05) / 10.05, rel=1e-6)
 
 
 # ── MultiPairBacktester spread_points validation ──────────────────────────────

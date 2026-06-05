@@ -161,7 +161,7 @@ def test_live_backtest_same_spread_adjustment_for_sell():
     report = _report(_result(signal, SignalOutcome.WIN_FULL, 2.0), spread_points=0.25)
     per_trade, _ = report._compute_accounting(report.results)
 
-    assert per_trade[0]["executed_rr"] == pytest.approx(1.95)
+    assert per_trade[0]["executed_rr"] == pytest.approx((2.0 * 5.0 - 0.25) / 5.25)
     assert per_trade[0]["executed_exit_price"] == pytest.approx(signal.tp2 + 0.25)
 
 
@@ -170,7 +170,7 @@ def test_live_backtest_same_spread_adjustment_for_buy():
     report = _report(_result(signal, SignalOutcome.WIN_FULL, 2.0), spread_points=0.25)
     per_trade, _ = report._compute_accounting(report.results)
 
-    assert per_trade[0]["executed_rr"] == pytest.approx(1.95)
+    assert per_trade[0]["executed_rr"] == pytest.approx((2.0 * 5.0 - 0.25) / 5.25)
     assert per_trade[0]["executed_entry_price"] == pytest.approx(signal.entry_price + 0.25)
 
 
