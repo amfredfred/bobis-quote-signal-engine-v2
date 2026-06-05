@@ -37,7 +37,7 @@ timeframes:
       entry_model: crt
     - htf: 30min
       ltf: 30min
-      entry_model: candle_pattern
+      entry_model: all
   htf_lookback: 240
   htf_outputsize: 1000
 
@@ -66,7 +66,7 @@ features:
   # Boolean variants: true, false.
   use_trend_filter: true
   use_invalidation: false
-  multi_tf_independent_positions: false
+  multi_tf_independent_positions: true
   # Variants: candle_pattern, crt, all.
   entry_model: crt
 
@@ -79,7 +79,7 @@ trade_management:
   tp1_close_pct: 0.0
   move_sl_to_be_on_tp1: true
   # 0 = entry BE; otherwise multiplier must be >= 1 to cover at least one spread.
-  breakeven_spread_multiplier: 1.5
+  breakeven_spread_multiplier: 1.2
   # Soft cap on extra margin; the buffer will never be clipped below one spread.
   breakeven_max_buffer_pct_of_risk: 10.0
   # Per-pair overrides use "HTF_minutes/LTF_minutes".
@@ -92,7 +92,7 @@ trade_management:
 displacement_filter:
   enabled: false
   atr_period: 10
-  atr_mult: 1.2
+  atr_mult: 1.0
   tf_mult:
     "5/5": 1.0
     "30/30": 1.0
