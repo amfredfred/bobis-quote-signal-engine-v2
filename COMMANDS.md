@@ -180,7 +180,7 @@ backtest --symbol XAUUSD --spread-points 5 --breakeven-spread-multiplier 1.5 --o
 Run the focused XAUUSD RBA basket:
 
 ```powershell
-py -m src.app.backtesting.rba --spread-points 3.5 --from-date 2025-01-01 --start-balance 100 --risk-percent 5
+py -m src.app.backtesting.rba --spread-points 3.5 --breakeven-spread-multiplier 1.2 --from-date 2025-01-01 --start-balance 100 --risk-percent 5
 ```
 
 Run RBA with a mixed list. Unsupported symbols are reported and skipped:

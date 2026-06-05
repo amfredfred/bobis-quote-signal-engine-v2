@@ -92,7 +92,7 @@ def main():
 
     p.add_argument("--workers", type=int, default=min(6, os.cpu_count() or 4))  # FIXED
     p.add_argument("--output-dir", default="results/RBA")
-    p.add_argument("--symbols", nargs="+")
+    p.add_argument("--symbols", "--symbol", dest="symbols", nargs="+")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--resume-max-age", type=float, default=24.0)
     p.add_argument("--only-failed", action="store_true")
@@ -106,6 +106,12 @@ def main():
     p.add_argument("--start-balance", dest="start_balance", type=float, default=None)
     p.add_argument("--risk-percent", dest="risk_percent", type=float, default=None)
     p.add_argument("--spread-points", dest="spread_points", type=float, default=None)
+    p.add_argument(
+        "--breakeven-spread-multiplier",
+        dest="breakeven_spread_multiplier",
+        type=float,
+        default=None,
+    )
 
     args = p.parse_args()
 
@@ -120,6 +126,11 @@ def main():
         extra += ["--risk-percent", str(args.risk_percent)]
     if args.spread_points is not None:
         extra += ["--spread-points", str(args.spread_points)]
+    if args.breakeven_spread_multiplier is not None:
+        extra += [
+            "--breakeven-spread-multiplier",
+            str(args.breakeven_spread_multiplier),
+        ]
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
