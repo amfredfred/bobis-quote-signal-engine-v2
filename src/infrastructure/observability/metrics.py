@@ -709,6 +709,7 @@ class MetricsCollector:
             "stop_placement": self._cfg.stop_placement_method,
             "stop_buffer_pct": self._cfg.stop_buffer_pct,
             "max_sl_zone_mult": self._cfg.max_sl_zone_mult,
+            "max_spread_to_sl_ratio": self._cfg.max_spread_to_sl_ratio,
             "min_rr": self._cfg.min_rr,
             "max_rr": self._cfg.max_rr,
             "tf_max_rr": dict(self._cfg.tf_max_rr),

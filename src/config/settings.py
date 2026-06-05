@@ -409,6 +409,7 @@ class Settings:
     min_wick_ratio: float = 0.65
     stop_placement_method: str = "wick"  # wick | range
     max_sl_zone_mult: float = 2.0
+    max_spread_to_sl_ratio: float = 0.35  # 0 = disabled
     min_rr: float = 1.5
     max_rr: float = 9.0  # 0 = disabled
     max_emit_lag_ms: int = 90_000
@@ -502,6 +503,8 @@ class Settings:
             )
         if self.max_signal_count_per_zone < 1:
             raise ValueError("zones.max_signal_count must be >= 1.")
+        if self.max_spread_to_sl_ratio < 0.0:
+            raise ValueError("signal_quality.max_spread_to_sl_ratio must be >= 0.")
         if self.apex_env not in {"paper", "live"}:
             raise ValueError("apex_env must be 'paper' or 'live'.")
         if self.apex_env == "live" and self.apex_live_confirm != "YES_I_ACCEPT_RISK":
@@ -631,6 +634,9 @@ class Settings:
                 _get(cfg, "signal_quality.stop_model", "wick")
             ).strip().lower(),
             max_sl_zone_mult=float(_get(cfg, "signal_quality.max_sl_zone_mult", 2.0)),
+            max_spread_to_sl_ratio=float(
+                _get(cfg, "signal_quality.max_spread_to_sl_ratio", 0.35)
+            ),
             min_rr=float(_get(cfg, "signal_quality.min_rr", 1.5)),
             max_rr=float(_get(cfg, "signal_quality.max_rr", 9.0)),
             max_emit_lag_ms=int(_get(cfg, "signals.max_emit_lag_ms", 90_000)),

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.backtesting.backtest import (
     DEFAULT_SPREAD_POINTS,
+    passes_spread_quality_gate,
     spread_adjusted_rr,
     spread_points_to_price_units,
 )
@@ -30,6 +31,22 @@ def test_cli_spread_points_convert_gold_to_price_units():
 
 def test_cli_spread_points_leave_unknown_symbols_as_price_units():
     assert spread_points_to_price_units("UNKNOWN", 3.0) == pytest.approx(3.0)
+
+
+@pytest.mark.parametrize(
+    ("spread", "stop_distance", "threshold", "expected"),
+    [
+        (0.3, 1.0, 0.35, True),
+        (0.35, 1.0, 0.35, True),
+        (0.36, 1.0, 0.35, False),
+        (0.3, 0.0, 0.35, False),
+        (0.3, -1.0, 0.35, False),
+        (0.3, 1.0, 0.0, True),
+        (0.0, 0.0, 0.35, True),
+    ],
+)
+def test_spread_quality_gate(spread, stop_distance, threshold, expected):
+    assert passes_spread_quality_gate(spread, stop_distance, threshold) is expected
 
 
 # ── Spread-adjusted risk sizing ───────────────────────────────────────────────

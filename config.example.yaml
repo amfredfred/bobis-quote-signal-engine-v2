@@ -47,6 +47,9 @@ signal_quality:
   # Stop-loss placement variants: wick, range.
   stop_model: wick
   max_sl_zone_mult: 3.0
+  # Backtest execution-parity gate. Reject when spread exceeds this fraction of SL distance.
+  # Set to 0 to disable.
+  max_spread_to_sl_ratio: 0.35
   min_rr: 2.5
   # Set max_rr to 0 to disable the ceiling.
   max_rr: 5.0

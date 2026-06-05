@@ -26,6 +26,7 @@ crt:
   mode: both
 signal_quality:
   stop_model: range
+  max_spread_to_sl_ratio: 0.4
 timeframes:
   pairs:
     - htf: 1h
@@ -43,6 +44,7 @@ timeframes:
     assert settings.entry_model == "crt"
     assert settings.crt_mode == "both"
     assert settings.stop_placement_method == "range"
+    assert settings.max_spread_to_sl_ratio == 0.4
     assert settings.tf_pairs == (("1h", "5min"),)
     assert settings.entry_model_for("1h", "5min") == "candle_pattern"
     assert settings.entry_model_for("30min", "5min") == "crt"
@@ -74,6 +76,11 @@ def test_settings_rejects_invalid_stop_model():
 def test_settings_rejects_zone_signal_count_below_one():
     with pytest.raises(ValueError, match="zones.max_signal_count"):
         Settings(max_signal_count_per_zone=0)
+
+
+def test_settings_rejects_negative_spread_to_sl_ratio():
+    with pytest.raises(ValueError, match="signal_quality.max_spread_to_sl_ratio"):
+        Settings(max_spread_to_sl_ratio=-0.01)
 
 
 def test_settings_rejects_breakeven_multiplier_below_one() -> None:

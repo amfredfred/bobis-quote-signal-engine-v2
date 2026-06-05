@@ -128,6 +128,19 @@ def spread_adjusted_rr(
     return (raw_rr * raw_risk_distance - spread_price_units) / executed_risk
 
 
+def passes_spread_quality_gate(
+    spread_price_units: float,
+    stop_distance: float,
+    max_spread_to_sl_ratio: float,
+) -> bool:
+    """Mirror live execution's spread-to-SL quality rejection."""
+    if max_spread_to_sl_ratio <= 0.0 or spread_price_units <= 0.0:
+        return True
+    if stop_distance <= 0.0:
+        return False
+    return spread_price_units / stop_distance <= max_spread_to_sl_ratio
+
+
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -827,6 +840,7 @@ class MultiPairBacktester:
         self.trailing_giveback_pct = trailing_giveback_pct
         self.trace_out = trace_out
         self._trace_writer: Optional[ParityTraceWriter] = None
+        self.spread_quality_blocked = 0
         self._registry = AssetRegistry(cfg)
         self._decision_engine = DecisionEngine()
 
@@ -1203,6 +1217,32 @@ class MultiPairBacktester:
                     signal.setup_candle_close_at = rejection.timestamp + ltf_interval_ms
                     signal.zone_attempt = zone_signal_counts.get(zone_key, 0) + 1
 
+                    if not passes_spread_quality_gate(
+                        self.spread_points,
+                        signal.risk_pips,
+                        cfg.max_spread_to_sl_ratio,
+                    ):
+                        spread_to_sl_ratio = (
+                            self.spread_points / signal.risk_pips
+                            if signal.risk_pips > 0.0
+                            else math.inf
+                        )
+                        self.spread_quality_blocked += 1
+                        seen_ltf.add(ltf_key)
+                        seen_rej.add(rej_key)
+                        logger.debug(
+                            "[%s %s/%s] spread quality blocked: %.5f spread / "
+                            "%.5f SL = %.2f > %.2f",
+                            symbol,
+                            htf_interval,
+                            ltf_interval,
+                            self.spread_points,
+                            signal.risk_pips,
+                            spread_to_sl_ratio,
+                            cfg.max_spread_to_sl_ratio,
+                        )
+                        continue
+
                     cur_ltf_i = ltf_hi_idx - 1
                     future_np = self.ltf_candles_np[ltf_interval][cur_ltf_i + 1 :]
                     result = _simulate(signal, future_np)
@@ -1237,7 +1277,12 @@ class MultiPairBacktester:
                     _print_result(result)
                     break  # one signal per LTF tick per HTF zone scan
 
-        print(f"\r [{'█'*20}] 100.0% signals={len(self.results)}\n")
+        blocked_label = (
+            f" spread-blocked={self.spread_quality_blocked}"
+            if self.spread_quality_blocked
+            else ""
+        )
+        print(f"\r [{'█'*20}] 100.0% signals={len(self.results)}{blocked_label}\n")
         trace_ctx.__exit__(None, None, None)
         self._trace_writer = None
 
