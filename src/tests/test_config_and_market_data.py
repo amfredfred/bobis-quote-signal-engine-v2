@@ -19,6 +19,8 @@ def test_settings_loads_yaml_config(tmp_path, monkeypatch):
         """
 features:
   entry_model: crt
+crt:
+  mode: both
 timeframes:
   pairs:
     - htf: 1h
@@ -34,6 +36,7 @@ timeframes:
     settings = Settings.from_env()
 
     assert settings.entry_model == "crt"
+    assert settings.crt_mode == "both"
     assert settings.tf_pairs == (("1h", "5min"),)
     assert settings.entry_model_for("1h", "5min") == "candle_pattern"
     assert settings.entry_model_for("30min", "5min") == "crt"
@@ -50,6 +53,11 @@ def test_settings_allows_equal_timeframe_pairs():
 def test_settings_rejects_invalid_pair_entry_model():
     with pytest.raises(ValueError, match="timeframes.pairs entry_model"):
         Settings(tf_entry_models={"5/5": "invalid"})
+
+
+def test_settings_rejects_invalid_crt_mode():
+    with pytest.raises(ValueError, match="crt.mode"):
+        Settings(crt_mode="invalid")
 
 
 def test_settings_rejects_breakeven_multiplier_below_one() -> None:

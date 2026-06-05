@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from domain.entities.candle import Candle
 from domain.entities.enums import BosDirection, CandlePattern, SignalDirection
 from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
+from domain.market.rejection import CrtDetector
 from domain.market.swings import SwingDetector
 from domain.signals.entry import find_entry
 
@@ -60,3 +63,60 @@ def test_all_entry_model_selects_most_recent_candidate() -> None:
 
     assert result is not None
     assert result[0] is newer
+
+
+def test_crt_previous_candle_mode_uses_previous_candle_level() -> None:
+    htf_range = HtfRange(110.0, 90.0, BosDirection.BEARISH, BASE)
+    structural_range = LtfRange(108.0, 100.0, BASE, SignalDirection.SHORT)
+    candles = [
+        Candle(BASE + M5, 100.0, 104.0, 99.0, 103.0),
+        Candle(BASE + 2 * M5, 103.0, 105.0, 101.0, 103.5),
+    ]
+
+    result = CrtDetector.find_most_recent(
+        candles, structural_range, htf_range, mode="previous_candle"
+    )
+
+    assert result is not None
+    assert result[0].timestamp == BASE + 2 * M5
+
+
+def test_crt_structural_range_mode_uses_selected_ltf_boundary() -> None:
+    htf_range = HtfRange(110.0, 90.0, BosDirection.BEARISH, BASE)
+    structural_range = LtfRange(108.0, 100.0, BASE, SignalDirection.SHORT)
+    candles = [
+        Candle(BASE + M5, 100.0, 104.0, 99.0, 103.0),
+        Candle(BASE + 2 * M5, 103.0, 109.0, 101.0, 107.0),
+    ]
+
+    result = CrtDetector.find_most_recent(
+        candles, structural_range, htf_range, mode="structural_range"
+    )
+
+    assert result is not None
+    assert result[0].timestamp == BASE + 2 * M5
+
+
+def test_crt_both_mode_selects_newest_trigger() -> None:
+    htf_range = HtfRange(110.0, 90.0, BosDirection.BEARISH, BASE)
+    structural_range = LtfRange(108.0, 100.0, BASE, SignalDirection.SHORT)
+    candles = [
+        Candle(BASE + M5, 100.0, 109.0, 99.0, 107.0),
+        Candle(BASE + 2 * M5, 107.0, 107.5, 103.0, 106.0),
+        Candle(BASE + 3 * M5, 106.0, 108.0, 104.0, 106.5),
+    ]
+
+    result = CrtDetector.find_most_recent(
+        candles, structural_range, htf_range, mode="both"
+    )
+
+    assert result is not None
+    assert result[0].timestamp == BASE + 3 * M5
+
+
+def test_crt_rejects_invalid_mode() -> None:
+    htf_range = HtfRange(110.0, 90.0, BosDirection.BEARISH, BASE)
+    structural_range = LtfRange(108.0, 100.0, BASE, SignalDirection.SHORT)
+
+    with pytest.raises(ValueError, match="Unsupported CRT mode"):
+        CrtDetector.find_most_recent([], structural_range, htf_range, mode="invalid")

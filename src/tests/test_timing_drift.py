@@ -87,6 +87,9 @@ def test_backtest_print_separates_setup_actionable_entry_and_never_closed_open(c
     assert "S=2023-11-14 22:13:20" in out
     assert "A=2023-11-14 22:18:20" in out
     assert "E@2023-11-14 22:18:20" in out
+    assert "LONG" not in out
+    assert "RR=" not in out
+    assert "EXP 0.00R" in out
     assert "closed OPEN" not in out
     assert "closed EXPIRED" in out
 

@@ -988,6 +988,7 @@ class MultiPairBacktester:
                 model if isinstance(model, str) else cfg.entry_model
             )
         _min_wick_ratio = cfg.min_wick_ratio
+        _crt_mode = cfg.crt_mode
 
         trace_ctx = ParityTraceWriter(self.trace_out)
         self._trace_writer = trace_ctx.__enter__()
@@ -1122,6 +1123,7 @@ class MultiPairBacktester:
                                 htf_range,
                                 entry_model,
                                 _min_wick_ratio,
+                                _crt_mode,
                             )
                             if ltf_range
                             else None
@@ -1735,17 +1737,12 @@ class MultiPairBacktester:
         def _rr_label(rr: float) -> str:
             return f"+{rr:.2f}R" if rr >= 0 else f"{rr:.2f}R"
 
-        if spread_points > 0 and r.outcome != EXP:
-            rr_tag = f"RR={_rr_label(raw_rr)}→{_rr_label(executed_rr)}"
-        else:
-            rr_tag = f"RR={s.risk_reward_ratio:.2f}"
-
         outcome_str = {
-            SignalOutcome.WIN_FULL: f"{GREEN}WIN {_rr_label(executed_rr)}{RESET}",
+            SignalOutcome.WIN_FULL: f"{GREEN}W {_rr_label(executed_rr)}{RESET}",
             SignalOutcome.BREAKEVEN: f"{YELLOW}BE {_rr_label(executed_rr)}{RESET}",
-            SignalOutcome.LOSS: f"{RED}LOSS {_rr_label(executed_rr)}{RESET}",
-            SignalOutcome.INVALIDATED: f"{DIM}VOID 0.0R{RESET}",
-            SignalOutcome.EXPIRED: f"{DIM}EXPD 0.0R{RESET}",
+            SignalOutcome.LOSS: f"{RED}L {_rr_label(executed_rr)}{RESET}",
+            SignalOutcome.INVALIDATED: f"{DIM}INV 0.00R{RESET}",
+            SignalOutcome.EXPIRED: f"{DIM}EXP 0.00R{RESET}",
         }.get(r.outcome, f"{DIM}?{RESET}")
 
         setup_ts = s.setup_candle_open_at or s.rejection_candle.timestamp
@@ -1762,12 +1759,12 @@ class MultiPairBacktester:
 
         print(f"\r{' '*80}\r", end="")
         print(
-            f" {arrow} {BOLD}{s.direction.value:5s}{RESET} {tf_tag} {et_pattern} "
+            f" {arrow} {tf_tag} {et_pattern} "
             f"S={CYAN}{self.cfg.dt_ms(setup_ts)}{RESET} "
             f"A={CYAN}{self.cfg.dt_ms(actionable_ts)}{RESET} "
             f"E@{CYAN}{self.cfg.dt_ms(s.triggered_at)}{RESET} "
             f"E={s.entry_price:.5f} SL={s.stop_loss:.5f} TP2={s.tp2:.5f} "
-            f"{rr_tag} → {outcome_str}{retrace_marker} "
+            f"→ {outcome_str}{retrace_marker} "
             f"closed {close_label}"
         )
 

@@ -212,6 +212,7 @@ class CrtDetector:
       i.e. candle.low <= htf_range.range_high AND candle.high >= htf_range.range_low
       This ensures the sweep is happening AT the zone, giving momentum to push back.
     """
+    VALID_MODES = {"previous_candle", "structural_range", "both"}
 
     @staticmethod
     def _inside_htf(candle: Candle, htf_range: HtfRange) -> bool:
@@ -327,48 +328,74 @@ class CrtDetector:
         candles: list[Candle],
         ltf_range: LtfRange,
         htf_range: Optional[HtfRange] = None,
+        mode: str = "previous_candle",
     ) -> Optional[tuple[RejectionCandle, RejectionScore]]:
-        if len(candles) < 2:
+        if mode not in CrtDetector.VALID_MODES:
+            raise ValueError(f"Unsupported CRT mode: {mode!r}")
+        candidates: list[tuple[RejectionCandle, RejectionScore]] = []
+
+        if mode in ("previous_candle", "both") and len(candles) >= 2:
+            for i in range(len(candles) - 1, 0, -1):
+                current = candles[i]
+                prev_candle = candles[i - 1]
+
+                prev_range = LtfRange(
+                    range_high=prev_candle.high,
+                    range_low=prev_candle.low,
+                    direction=ltf_range.direction,
+                    timestamp=prev_candle.timestamp,
+                )
+                result = CrtDetector.check(current, prev_range, htf_range)
+                if result:
+                    candidates.append(result)
+                    break
+
+        if mode in ("structural_range", "both"):
+            for candle in reversed(candles):
+                result = CrtDetector.check(candle, ltf_range, htf_range)
+                if result:
+                    candidates.append(result)
+                    break
+
+        if not candidates:
             return None
-
-        for i in range(len(candles) - 1, 0, -1):
-            current = candles[i]
-            prev_candle = candles[i - 1]
-
-            prev_range = LtfRange(
-                range_high=prev_candle.high,
-                range_low=prev_candle.low,
-                direction=ltf_range.direction,
-                timestamp=prev_candle.timestamp,
-            )
-            result = CrtDetector.check(current, prev_range, htf_range)
-            if result:
-                return result
-
-        return None
+        # Later candidates win a same-candle tie, so structural_range takes
+        # precedence over previous_candle when mode="both".
+        return max(
+            enumerate(candidates),
+            key=lambda item: (item[1][0].timestamp, item[0]),
+        )[1]
 
     @staticmethod
     def find_all_scored(
         candles: list[Candle],
         ltf_range: LtfRange,
         htf_range: Optional[HtfRange] = None,
+        mode: str = "previous_candle",
     ) -> list[tuple[RejectionCandle, RejectionScore]]:
-        if len(candles) < 2:
-            return []
-
+        if mode not in CrtDetector.VALID_MODES:
+            raise ValueError(f"Unsupported CRT mode: {mode!r}")
         results = []
-        for i in range(1, len(candles)):
-            current = candles[i]
-            prev_candle = candles[i - 1]
+        if mode in ("previous_candle", "both"):
+            for i in range(1, len(candles)):
+                current = candles[i]
+                prev_candle = candles[i - 1]
 
-            prev_range = LtfRange(
-                range_high=prev_candle.high,
-                range_low=prev_candle.low,
-                direction=ltf_range.direction,
-                timestamp=prev_candle.timestamp,
-            )
-            result = CrtDetector.check(current, prev_range, htf_range)
-            if result:
-                results.append(result)
+                prev_range = LtfRange(
+                    range_high=prev_candle.high,
+                    range_low=prev_candle.low,
+                    direction=ltf_range.direction,
+                    timestamp=prev_candle.timestamp,
+                )
+                result = CrtDetector.check(current, prev_range, htf_range)
+                if result:
+                    results.append(result)
+
+        if mode in ("structural_range", "both"):
+            previous_timestamps = {r[0].timestamp for r in results}
+            for candle in candles:
+                result = CrtDetector.check(candle, ltf_range, htf_range)
+                if result and result[0].timestamp not in previous_timestamps:
+                    results.append(result)
 
         return sorted(results, key=lambda x: x[1].total, reverse=True)

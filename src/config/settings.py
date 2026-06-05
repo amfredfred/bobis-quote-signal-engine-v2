@@ -439,6 +439,7 @@ class Settings:
     use_invalidation: bool = False
     multi_tf_independent_positions: bool = True
     entry_model: str = "candle_pattern"  # candle_pattern | crt | all
+    crt_mode: str = "previous_candle"  # previous_candle | structural_range | both
 
     def entry_model_for(self, htf_interval: str, ltf_interval: str) -> str:
         """Return the entry model override for a TF pair, or the global default."""
@@ -492,6 +493,11 @@ class Settings:
                     f"timeframes.pairs entry_model for {pair} must be one of "
                     f"{valid_models}, got {model!r}."
                 )
+        valid_crt_modes = {"previous_candle", "structural_range", "both"}
+        if self.crt_mode not in valid_crt_modes:
+            raise ValueError(
+                f"crt.mode must be one of {valid_crt_modes}, got {self.crt_mode!r}."
+            )
         if self.apex_env not in {"paper", "live"}:
             raise ValueError("apex_env must be 'paper' or 'live'.")
         if self.apex_env == "live" and self.apex_live_confirm != "YES_I_ACCEPT_RISK":
@@ -648,6 +654,7 @@ class Settings:
                 _get(cfg, "features.multi_tf_independent_positions", True)
             ),
             entry_model=str(_get(cfg, "features.entry_model", "candle_pattern")).lower(),
+            crt_mode=str(_get(cfg, "crt.mode", "previous_candle")).lower(),
             use_displacement_filter=_as_bool(
                 _get(cfg, "displacement_filter.enabled", True)
             ),

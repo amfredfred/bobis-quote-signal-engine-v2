@@ -37,6 +37,7 @@ def find_entry(
     htf_range: HtfRange,
     entry_model: str,
     min_wick_ratio: float,
+    crt_mode: str = "previous_candle",
 ) -> Optional[tuple]:
     """
     Route to the correct entry detector(s) based on *entry_model*.
@@ -48,6 +49,7 @@ def find_entry(
     htf_range       — The HTF BOS-confirmed range.
     entry_model     — One of 'candle_pattern', 'crt', or 'all'.
     min_wick_ratio  — Minimum wick-to-range ratio for candle_pattern detection.
+    crt_mode        — CRT trigger level: previous_candle, structural_range, or both.
 
     Returns (RejectionCandle, RejectionScore) or None.
     """
@@ -65,7 +67,9 @@ def find_entry(
                 candidates.append(result)
 
     if entry_model in ("crt", "all"):
-        result = CrtDetector.find_most_recent(ltf_zone, ltf_range, htf_range)
+        result = CrtDetector.find_most_recent(
+            ltf_zone, ltf_range, htf_range, mode=crt_mode
+        )
         if result:
             candidates.append(result)
 

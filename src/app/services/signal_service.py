@@ -69,6 +69,7 @@ class _Settings(Protocol):
     displacement_atr_period: int
     signal_expiry_hours: float
     entry_model: str
+    crt_mode: str
     min_wick_ratio: float
 
     def now_ms(self) -> int: ...
@@ -595,6 +596,7 @@ class SignalService:
                 htf_range,
                 entry_model,
                 self._cfg.min_wick_ratio,
+                self._cfg.crt_mode,
             )
             if not rej_result:
                 if self._metrics:
