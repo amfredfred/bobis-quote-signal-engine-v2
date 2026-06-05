@@ -176,6 +176,20 @@ def _parse_tf_pairs(value: Any) -> tuple:
     return tuple(pairs) or (("1h", "5min"),)
 
 
+def _parse_tf_entry_models(value: Any) -> dict:
+    models = {}
+    if not isinstance(value, (list, tuple)):
+        return models
+    for item in value:
+        if not isinstance(item, dict) or "entry_model" not in item:
+            continue
+        htf = str(item["htf"])
+        ltf = str(item["ltf"])
+        key = f"{interval_to_minutes(htf)}/{interval_to_minutes(ltf)}"
+        models[key] = str(item["entry_model"]).strip().lower()
+    return models
+
+
 def interval_to_minutes(interval: str) -> int:
     """
     Convert a timeframe string to minutes.
@@ -352,6 +366,7 @@ class Settings:
 
     # ── Timeframes ────────────────────────────────────────────────────────────
     tf_pairs: tuple = (("1h", "5min"),)
+    tf_entry_models: dict = field(default_factory=dict)
     htf_lookback: int = 120
     htf_outputsize: int = 1000
 
@@ -425,6 +440,11 @@ class Settings:
     multi_tf_independent_positions: bool = True
     entry_model: str = "candle_pattern"  # candle_pattern | crt | all
 
+    def entry_model_for(self, htf_interval: str, ltf_interval: str) -> str:
+        """Return the entry model override for a TF pair, or the global default."""
+        key = f"{interval_to_minutes(htf_interval)}/{interval_to_minutes(ltf_interval)}"
+        return str(self.tf_entry_models.get(key, self.entry_model))
+
     # ── Displacement filter ───────────────────────────────────────────────────
     # Guards against ranging markets by requiring the BOS candle to show a
     # strong impulsive body.  The BOS candle body must be >= displacement_atr_mult
@@ -466,6 +486,12 @@ class Settings:
             raise ValueError(
                 f"entry_model must be one of {valid_models}, got {self.entry_model!r}."
             )
+        for pair, model in self.tf_entry_models.items():
+            if model not in valid_models:
+                raise ValueError(
+                    f"timeframes.pairs entry_model for {pair} must be one of "
+                    f"{valid_models}, got {model!r}."
+                )
         if self.apex_env not in {"paper", "live"}:
             raise ValueError("apex_env must be 'paper' or 'live'.")
         if self.apex_env == "live" and self.apex_live_confirm != "YES_I_ACCEPT_RISK":
@@ -587,6 +613,7 @@ class Settings:
             apex_live_confirm=os.getenv("APEX_LIVE_CONFIRM", ""),
             apex_disable_trading=_bool_env("APEX_DISABLE_TRADING", False),
             tf_pairs=_parse_tf_pairs(_get(cfg, "timeframes.pairs")),
+            tf_entry_models=_parse_tf_entry_models(_get(cfg, "timeframes.pairs")),
             htf_lookback=int(_get(cfg, "timeframes.htf_lookback", 120)),
             htf_outputsize=int(_get(cfg, "timeframes.htf_outputsize", 1000)),
             min_wick_ratio=float(_get(cfg, "signal_quality.min_wick_ratio", 0.65)),

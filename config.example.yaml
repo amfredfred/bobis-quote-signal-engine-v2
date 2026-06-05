@@ -30,11 +30,14 @@ timeframes:
   # Supported intervals: 1min, 2min, 3min, 4min, 5min, 6min, 10min, 12min,
   # 15min, 20min, 30min, 1h, 2h, 3h, 4h, 6h, 8h, 12h, 1day, 1week, 1month.
   # Same-timeframe CRT lanes are preferred; mixed HTF:LTF pairs are disabled.
+  # Optional entry_model per pair overrides features.entry_model.
   pairs:
     - htf: 5min
       ltf: 5min
+      entry_model: crt
     - htf: 30min
       ltf: 30min
+      entry_model: candle_pattern
   htf_lookback: 240
   htf_outputsize: 1000
 

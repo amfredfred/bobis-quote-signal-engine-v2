@@ -876,11 +876,17 @@ class MultiPairBacktester:
             htf: interval_to_minutes(htf) * 60_000 for htf, _ in pairs
         }
 
-        assert cfg.entry_model in ("candle_pattern", "crt", "all"), (
-            f"Invalid entry_model: {cfg.entry_model!r}. "
-            "Must be 'candle_pattern', 'crt', or 'all'."
+        pair_models = {}
+        for htf, ltf in pairs:
+            model = cfg.entry_model_for(htf, ltf)
+            pair_models[(htf, ltf)] = (
+                model if isinstance(model, str) else cfg.entry_model
+            )
+        assert all(
+            model in ("candle_pattern", "crt", "all")
+            for model in pair_models.values()
         )
-        logger.info("[%s] Entry model: %s", symbol, cfg.entry_model)
+        logger.info("[%s] Entry models: %s", symbol, pair_models)
 
     def _candles_to_np(self, candles: list[Candle]) -> np.ndarray:
         dtype = [
@@ -961,8 +967,13 @@ class MultiPairBacktester:
         _simulate = self._simulate
         _print_result = self._print_result
 
-        # Entry model args (captured once, passed to shared dispatcher each call)
-        _entry_model = cfg.entry_model
+        # Entry model args (captured once per pair, passed to shared dispatcher)
+        _entry_models = {}
+        for htf, ltf in self.pairs:
+            model = cfg.entry_model_for(htf, ltf)
+            _entry_models[(htf, ltf)] = (
+                model if isinstance(model, str) else cfg.entry_model
+            )
         _min_wick_ratio = cfg.min_wick_ratio
 
         trace_ctx = ParityTraceWriter(self.trace_out)
@@ -988,6 +999,7 @@ class MultiPairBacktester:
                     del open_dir[dk]
 
             for htf_interval, ltf_interval in self.pairs:
+                entry_model = _entry_models[(htf_interval, ltf_interval)]
                 htf_all = self.htf_candles[htf_interval]
                 htf_ts_idx = self._htf_ts[htf_interval]
 
@@ -1095,7 +1107,7 @@ class MultiPairBacktester:
                                 ltf_zone,
                                 ltf_range,
                                 htf_range,
-                                _entry_model,
+                                entry_model,
                                 _min_wick_ratio,
                             )
                             if ltf_range

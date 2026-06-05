@@ -72,6 +72,7 @@ class _Settings(Protocol):
     min_wick_ratio: float
 
     def now_ms(self) -> int: ...
+    def entry_model_for(self, htf_interval: str, ltf_interval: str) -> str: ...
     def displacement_mult_for(self, htf_interval: str, ltf_interval: str) -> float: ...
 
 
@@ -317,6 +318,7 @@ class SignalService:
         ltf_interval_ms = interval_to_minutes(ltf_interval) * 60 * 1000
         analysis_close = fired_at
         pair_metric = f"scanner.{symbol}.{htf_interval}_{ltf_interval}"
+        entry_model = self._cfg.entry_model_for(htf_interval, ltf_interval)
 
         if analysis_close % ltf_interval_ms != 0:
             if self._metrics:
@@ -591,7 +593,7 @@ class SignalService:
                 ltf_zone,
                 ltf_range,
                 htf_range,
-                self._cfg.entry_model,
+                entry_model,
                 self._cfg.min_wick_ratio,
             )
             if not rej_result:

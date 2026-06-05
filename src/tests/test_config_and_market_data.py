@@ -23,6 +23,7 @@ timeframes:
   pairs:
     - htf: 1h
       ltf: 5min
+      entry_model: candle_pattern
 """,
         encoding="utf-8",
     )
@@ -34,6 +35,8 @@ timeframes:
 
     assert settings.entry_model == "crt"
     assert settings.tf_pairs == (("1h", "5min"),)
+    assert settings.entry_model_for("1h", "5min") == "candle_pattern"
+    assert settings.entry_model_for("30min", "5min") == "crt"
     assert settings.breakeven_spread_multiplier == 1.5
     assert settings.breakeven_max_buffer_pct_of_risk == 10.0
 
@@ -42,6 +45,11 @@ def test_settings_allows_equal_timeframe_pairs():
     settings = Settings(tf_pairs=(("1h", "1h"),))
 
     assert settings.tf_pairs == (("1h", "1h"),)
+
+
+def test_settings_rejects_invalid_pair_entry_model():
+    with pytest.raises(ValueError, match="timeframes.pairs entry_model"):
+        Settings(tf_entry_models={"5/5": "invalid"})
 
 
 def test_settings_rejects_breakeven_multiplier_below_one() -> None:
