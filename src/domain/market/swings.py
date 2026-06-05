@@ -280,10 +280,10 @@ class SwingDetector:
         ):
             window = [
                 c for c in ltf_all
-                if htf_range.htf_candle_open <= c.timestamp <= htf_range.htf_candle_close
+                if htf_range.htf_candle_open <= c.timestamp < htf_range.htf_candle_close
             ]
             logger.debug(
-                "find_ltf_range: window [%d→%d] → %d LTF candles",
+                "find_ltf_range: window [%d→%d) → %d LTF candles",
                 htf_range.htf_candle_open, htf_range.htf_candle_close, len(window),
             )
         else:
