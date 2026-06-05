@@ -149,6 +149,125 @@ def test_dedup_state_isolates_same_timestamps_by_timeframe_pair():
     assert allowed_other_pair.allowed
 
 
+def test_zone_can_emit_distinct_rejections_until_signal_limit():
+    htf = _htf_range()
+    ltf = _ltf_range()
+    first = _rejection()
+    second = RejectionCandle(
+        open=first.open,
+        high=first.high,
+        low=first.low,
+        close=first.close,
+        timestamp=first.timestamp + 300_000,
+        wick_ratio=first.wick_ratio,
+        pattern=first.pattern,
+    )
+    third = RejectionCandle(
+        open=first.open,
+        high=first.high,
+        low=first.low,
+        close=first.close,
+        timestamp=first.timestamp + 600_000,
+        wick_ratio=first.wick_ratio,
+        pattern=first.pattern,
+    )
+    state = DedupState()
+
+    attempt = state.register(
+        symbol="XAUUSD",
+        direction=SignalDirection.LONG,
+        htf_range=htf,
+        ltf_range=ltf,
+        rejection=first,
+        htf_interval="5min",
+        ltf_interval="5min",
+        max_signal_count=2,
+    )
+    state.release_direction(
+        symbol="XAUUSD",
+        direction=SignalDirection.LONG.value,
+        htf_interval="5min",
+        ltf_interval="5min",
+    )
+
+    second_result = should_emit(
+        state,
+        htf_range=htf,
+        ltf_range=ltf,
+        rejection=second,
+        direction=SignalDirection.LONG,
+        symbol="XAUUSD",
+        current_ts=second.timestamp,
+        stale_hours=1.0,
+        htf_interval="5min",
+        ltf_interval="5min",
+        max_signal_count=2,
+    )
+    second_attempt = state.register(
+        symbol="XAUUSD",
+        direction=SignalDirection.LONG,
+        htf_range=htf,
+        ltf_range=ltf,
+        rejection=second,
+        htf_interval="5min",
+        ltf_interval="5min",
+        max_signal_count=2,
+    )
+    third_result = should_emit(
+        state,
+        htf_range=htf,
+        ltf_range=ltf,
+        rejection=third,
+        direction=SignalDirection.LONG,
+        symbol="XAUUSD",
+        current_ts=third.timestamp,
+        stale_hours=1.0,
+        htf_interval="5min",
+        ltf_interval="5min",
+        max_signal_count=2,
+    )
+
+    assert attempt == 1
+    assert second_result.allowed
+    assert second_attempt == 2
+    assert not third_result.allowed
+    assert "2/2" in third_result.reason
+
+
+def test_zone_retry_cannot_reuse_same_rejection():
+    htf = _htf_range()
+    ltf = _ltf_range()
+    rejection = _rejection()
+    state = DedupState()
+    state.register(
+        symbol="XAUUSD",
+        direction=SignalDirection.LONG,
+        htf_range=htf,
+        ltf_range=ltf,
+        rejection=rejection,
+        htf_interval="5min",
+        ltf_interval="5min",
+        max_signal_count=2,
+    )
+
+    result = should_emit(
+        state,
+        htf_range=htf,
+        ltf_range=ltf,
+        rejection=rejection,
+        direction=SignalDirection.LONG,
+        symbol="XAUUSD",
+        current_ts=rejection.timestamp,
+        stale_hours=1.0,
+        htf_interval="5min",
+        ltf_interval="5min",
+        max_signal_count=2,
+    )
+
+    assert not result.allowed
+    assert result.reason.startswith("E:")
+
+
 def make_signal(
     *,
     direction: SignalDirection = SignalDirection.LONG,

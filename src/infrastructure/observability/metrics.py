@@ -723,6 +723,7 @@ class MetricsCollector:
             ),
             "signal_expiry_hours": self._cfg.signal_expiry_hours,
             "max_htf_zones_per_dir": self._cfg.max_htf_zones_per_dir,
+            "max_signal_count_per_zone": self._cfg.max_signal_count_per_zone,
             "use_trend_filter": self._cfg.use_trend_filter,
             "use_invalidation": self._cfg.use_invalidation,
             "multi_tf_independent_positions": self._cfg.multi_tf_independent_positions,

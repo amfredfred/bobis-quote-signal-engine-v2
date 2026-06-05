@@ -61,6 +61,7 @@ class SessionCoordinator:
         self._paused_until:     Optional[int]               = None
 
         self._load_session()
+        self._load_dedup_state()
         logger.info(
             "SessionCoordinator ready  day=%s  zones=%d  history=%d  streak=%d",
             self._session_day,
@@ -109,6 +110,7 @@ class SessionCoordinator:
             stale_hours=self._settings.rejection_stale_hours(ltf_interval),
             htf_interval=htf_interval,
             ltf_interval=ltf_interval,
+            max_signal_count=self._settings.max_signal_count_per_zone,
         )
         return result.allowed, result.reason
 
@@ -123,9 +125,9 @@ class SessionCoordinator:
         rejection:    RejectionCandle,
         htf_interval: str = "",
         ltf_interval: str = "",
-    ) -> None:
+    ) -> int:
         multi = self._settings.multi_tf_independent_positions
-        self._state.register(
+        return self._state.register(
             symbol       = symbol,
             direction    = direction,
             htf_range    = htf_range,
@@ -134,6 +136,7 @@ class SessionCoordinator:
             htf_interval = htf_interval,
             ltf_interval = ltf_interval,
             multi_tf_independent = multi,
+            max_signal_count = self._settings.max_signal_count_per_zone,
         )
 
     def record_outcome(self, rec: ClosedSignalRecord) -> None:
@@ -263,7 +266,6 @@ class SessionCoordinator:
             logger.info("No session data for %s — fresh start", session_day_str)
             return
 
-        self._state.replay(records)
         for rec in records:
             self._history.append(rec)
 
@@ -271,6 +273,19 @@ class SessionCoordinator:
         logger.info(
             "Replayed %d record(s)  zones=%d  streak=%d",
             len(records), len(self._state.dead_zones), self.consecutive_losses,
+        )
+
+    def _load_dedup_state(self) -> None:
+        try:
+            records = self._signal_store.load_closed_for_dedup()
+        except Exception as exc:
+            logger.warning("Failed to rebuild persistent zone dedup state: %s", exc)
+            return
+        self._state.replay(records, self._settings.max_signal_count_per_zone)
+        logger.info(
+            "Rebuilt zone dedup state from %d closed signal(s): %d limited zone(s)",
+            len(records),
+            len(self._state.dead_zones),
         )
 
     def _maybe_rollover(self, now: int) -> None:
@@ -283,7 +298,16 @@ class SessionCoordinator:
         )
         self._session_day      = new_day
         self._session_start_ms = self._day_start_ms(new_day)
-        self._state            = DedupState()
+        open_dir = self._state.open_dir
+        # Zone/rejection dedup survives UTC session rollover so max_signal_count
+        # applies to the zone lifetime, matching backtest behavior.
+        self._state            = DedupState(
+            dead_zones=self._state.dead_zones,
+            zone_signal_counts=self._state.zone_signal_counts,
+            open_dir=open_dir,
+            seen_ltf=self._state.seen_ltf,
+            seen_rej=self._state.seen_rej,
+        )
         self._history.clear()
         self._paused_until     = None
         self._load_session()

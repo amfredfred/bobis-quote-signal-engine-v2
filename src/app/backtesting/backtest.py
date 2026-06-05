@@ -356,6 +356,7 @@ class BacktestResult:
             "htf_interval": s.htf_interval,
             "ltf_interval": s.ltf_interval,
             "pattern": s.rejection_candle.pattern.value,
+            "zone_attempt": s.zone_attempt,
             "wick_ratio": round(s.rejection_candle.wick_ratio, 3),
             "htf_high": round(s.htf_range.range_high, 5),
             "htf_low": round(s.htf_range.range_low, 5),
@@ -953,11 +954,14 @@ class MultiPairBacktester:
         print(f"{'='*64}\n")
 
         dead_zones: set[tuple] = set()
+        zone_signal_counts: dict[tuple, int] = {}
         seen_ltf: set[tuple] = set()
+        seen_rej: set[tuple] = set()
         open_dir: dict[tuple, int] = {}
         expiry_ms = int(profile.signal_expiry_hours * 3_600_000)
         pivot_bars = cfg.pivot_bars
         max_zones  = cfg.max_htf_zones_per_dir
+        max_signal_count = cfg.max_signal_count_per_zone
         use_disp        = cfg.use_displacement_filter
         disp_atr_period = cfg.displacement_atr_period
 
@@ -1086,14 +1090,23 @@ class MultiPairBacktester:
                 ltf_visible = ltf_all[:ltf_hi_idx]
 
                 for htf_range in htf_ranges:
-                    zone_key = (htf_range.timestamp, htf_range.bos_direction.value)
+                    zone_key = (
+                        symbol,
+                        htf_interval,
+                        ltf_interval,
+                        htf_range.timestamp,
+                        htf_range.bos_direction.value,
+                    )
                     cache_key = (
                         htf_interval,
                         ltf_interval,
                         htf_range.timestamp,
                         htf_range.bos_direction.value,
                     )
-                    if zone_key in dead_zones:
+                    if (
+                        zone_key in dead_zones
+                        or zone_signal_counts.get(zone_key, 0) >= max_signal_count
+                    ):
                         continue
 
                     # ★ TIER 2: lo-index computed once per zone (zone_start is immutable)
@@ -1136,14 +1149,28 @@ class MultiPairBacktester:
                     if structure is not None and not structure.allows(direction):
                         continue
 
-                    ltf_key = (ltf_range.timestamp, direction)
-                    if ltf_key in seen_ltf:
+                    ltf_key = (
+                        symbol,
+                        htf_interval,
+                        ltf_interval,
+                        ltf_range.timestamp,
+                        direction,
+                    )
+                    if max_signal_count == 1 and ltf_key in seen_ltf:
                         continue
 
                     if not rej_result:
                         continue
 
                     rejection, _ = rej_result
+                    rej_key = (
+                        symbol,
+                        htf_interval,
+                        ltf_interval,
+                        rejection.timestamp,
+                    )
+                    if rej_key in seen_rej:
+                        continue
                     pair_dir_key = (
                         (symbol, htf_interval, ltf_interval, direction)
                         if use_mtp
@@ -1174,19 +1201,20 @@ class MultiPairBacktester:
                         continue
                     signal.setup_candle_open_at = rejection.timestamp
                     signal.setup_candle_close_at = rejection.timestamp + ltf_interval_ms
+                    signal.zone_attempt = zone_signal_counts.get(zone_key, 0) + 1
 
                     cur_ltf_i = ltf_hi_idx - 1
                     future_np = self.ltf_candles_np[ltf_interval][cur_ltf_i + 1 :]
                     result = _simulate(signal, future_np)
 
                     seen_ltf.add(ltf_key)
+                    seen_rej.add(rej_key)
+                    zone_signal_counts[zone_key] = signal.zone_attempt
 
-                    # Mark zone dead and evict from both caches — the zone will
-                    # never generate a second signal, so holding cached state for
-                    # it wastes memory for the remainder of the backtest.
-                    dead_zones.add(zone_key)
-                    _zone_cache.pop(cache_key, None)
-                    _zone_lo.pop(cache_key, None)
+                    if signal.zone_attempt >= max_signal_count:
+                        dead_zones.add(zone_key)
+                        _zone_cache.pop(cache_key, None)
+                        _zone_lo.pop(cache_key, None)
 
                     open_dir[pair_dir_key] = result.close_ts or (
                         signal.created_at + expiry_ms
@@ -1722,6 +1750,7 @@ class MultiPairBacktester:
         arrow = DOWN if s.direction == SignalDirection.SHORT else UP
         tf_tag = f"{DIM}[{s.htf_interval}/{s.ltf_interval}]{RESET}"
         et_pattern = f"{DIM}[{s.rejection_candle.pattern.value}]{RESET}"
+        attempt_tag = f"{DIM}[Z{s.zone_attempt}]{RESET}" if s.zone_attempt > 1 else ""
 
         # FIX: hit_entry_after_tp1 is always set via __init__ — direct access.
         retrace_marker = f" {YELLOW}↺{RESET}" if r.hit_entry_after_tp1 else ""
@@ -1759,7 +1788,7 @@ class MultiPairBacktester:
 
         print(f"\r{' '*80}\r", end="")
         print(
-            f" {arrow} {tf_tag} {et_pattern} "
+            f" {arrow} {tf_tag} {et_pattern}{attempt_tag} "
             f"S={CYAN}{self.cfg.dt_ms(setup_ts)}{RESET} "
             f"A={CYAN}{self.cfg.dt_ms(actionable_ts)}{RESET} "
             f"E@{CYAN}{self.cfg.dt_ms(s.triggered_at)}{RESET} "

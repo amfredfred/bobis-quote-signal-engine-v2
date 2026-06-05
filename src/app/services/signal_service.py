@@ -65,6 +65,7 @@ class _Settings(Protocol):
     htf_outputsize: int
     pivot_bars: int
     max_htf_zones_per_dir: int
+    max_signal_count_per_zone: int
     use_displacement_filter: bool
     displacement_atr_period: int
     signal_expiry_hours: float
@@ -207,7 +208,7 @@ class SignalService:
                     )
                     continue
                 self._watchlist[signal.id] = signal
-                self._session.register_signal(
+                signal.zone_attempt = self._session.register_signal(
                     signal_id=signal.id,
                     symbol=signal.symbol,
                     direction=signal.direction,
@@ -694,7 +695,7 @@ class SignalService:
                     "signals.last_signal_rr", signal.risk_reward_ratio
                 )
 
-            self._session.register_signal(
+            signal.zone_attempt = self._session.register_signal(
                 signal_id=signal.id,
                 symbol=symbol,
                 direction=ltf_range.direction,
@@ -886,6 +887,7 @@ class SignalService:
             pattern=signal.rejection_candle.pattern.value,
             htf_interval=signal.htf_interval or "",
             ltf_interval=signal.ltf_interval or "",
+            zone_attempt=signal.zone_attempt,
             sl=signal.stop_loss,
             tp1=signal.tp1,
             tp2=signal.tp2,

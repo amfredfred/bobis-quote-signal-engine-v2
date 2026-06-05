@@ -61,6 +61,8 @@ signals:
 
 zones:
   max_htf_zones_per_dir: 2
+  # Number of distinct emitted signals allowed before a BOS zone is discarded.
+  max_signal_count: 3
 
 features:
   # Boolean variants: true, false.

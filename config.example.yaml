@@ -45,7 +45,7 @@ signal_quality:
   # Rejection wick ratio from 0.0 to 1.0. Higher means stricter candle rejection.
   min_wick_ratio: 0.51
   max_sl_zone_mult: 3.0
-  min_rr: 1
+  min_rr: 2.5
   # Set max_rr to 0 to disable the ceiling.
   max_rr: 5.0
   # Per-pair max RR caps use "HTF_minutes/LTF_minutes".
@@ -61,6 +61,8 @@ signals:
 
 zones:
   max_htf_zones_per_dir: 2
+  # Number of distinct emitted signals allowed before a BOS zone is discarded.
+  max_signal_count: 3
 
 features:
   # Boolean variants: true, false.

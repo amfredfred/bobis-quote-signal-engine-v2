@@ -58,6 +58,7 @@ class ClosedSignalRecord:
     pattern:      str = ""
     htf_interval: str = ""
     ltf_interval: str = ""
+    zone_attempt: int = 1
 
     # ── Zone geometry ─────────────────────────────────────────────────────────
     htf_high:  float = 0.0

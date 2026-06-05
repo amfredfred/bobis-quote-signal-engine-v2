@@ -427,6 +427,7 @@ class Settings:
 
     # ── Zone limits ───────────────────────────────────────────────────────────
     max_htf_zones_per_dir: int = 1
+    max_signal_count_per_zone: int = 1
 
     # ── Feature flags ─────────────────────────────────────────────────────────
     use_trend_filter: bool = True
@@ -498,6 +499,8 @@ class Settings:
             raise ValueError(
                 f"crt.mode must be one of {valid_crt_modes}, got {self.crt_mode!r}."
             )
+        if self.max_signal_count_per_zone < 1:
+            raise ValueError("zones.max_signal_count must be >= 1.")
         if self.apex_env not in {"paper", "live"}:
             raise ValueError("apex_env must be 'paper' or 'live'.")
         if self.apex_env == "live" and self.apex_live_confirm != "YES_I_ACCEPT_RISK":
@@ -630,6 +633,7 @@ class Settings:
             tf_max_rr=_parse_pair_map(_get(cfg, "signal_quality.tf_max_rr")),
             signal_expiry_hours=float(_get(cfg, "signal_lifetime.expiry_hours", 120)),
             max_htf_zones_per_dir=int(_get(cfg, "zones.max_htf_zones_per_dir", 3)),
+            max_signal_count_per_zone=int(_get(cfg, "zones.max_signal_count", 1)),
             use_trend_filter=_as_bool(_get(cfg, "features.use_trend_filter", True)),
             tp1_trigger_pct=float(_get(cfg, "trade_management.tp1_trigger_pct", 50.0)),
             tp1_close_pct=float(_get(cfg, "trade_management.tp1_close_pct", 0.0)),

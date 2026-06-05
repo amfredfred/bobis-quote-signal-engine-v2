@@ -8,7 +8,7 @@ Python sets/dicts — no file I/O, no config imports, no _cfg.
 I/O (loading/saving dedup state to disk) lives in the infrastructure layer.
 
 Dedup rules (A–E, identical to backtester):
-  A — dead_zones:   one signal per BOS zone ever     (symbol, htf, ltf, htf_ts, direction)
+  A — zone count:   up to max_signal_count emissions per BOS zone
   B — open_dir:     one open position per symbol      (symbol, direction[, htf, ltf])
   C — seen_ltf:     one signal per LTF swing          (symbol, htf, ltf, ltf_ts, direction)
   D — stale filter: rejection older than stale_hours → skip
@@ -38,26 +38,28 @@ _DirKey = tuple  # (symbol, direction, htf_interval, ltf_interval) or (symbol, d
 @dataclass
 class DedupState:
     """
-    All mutable dedup state for one trading session.
+    Mutable dedup state. Zone counts persist for the lifetime of each zone;
+    direction locks and trade history are managed by the session coordinator.
 
-    Designed to be created fresh each session day and populated from
-    the infrastructure layer (SQLite / JSON) on startup.
+    Populated from the infrastructure layer on startup and retained across
+    session-day rollovers.
     """
 
-    # Rule A — one signal per zone per session
+    # Rule A — zones that reached their configured signal limit
     dead_zones: set[tuple] = field(default_factory=set)
+    zone_signal_counts: dict[tuple, int] = field(default_factory=dict)
 
     # Rule B — one open position per direction (key includes TF pair when
     #           multi_tf_independent_positions=True)
     open_dir: dict[_DirKey, Optional[int]] = field(default_factory=dict)
 
-    # Rule C — one signal per LTF swing per session
+    # Rule C — one signal per LTF swing when zone retries are disabled
     seen_ltf: set[tuple] = field(default_factory=set)
 
     # Rule E — each rejection candle fires once
     seen_rej: set[tuple] = field(default_factory=set)
 
-    def replay(self, records: list[ClosedSignalRecord]) -> None:
+    def replay(self, records: list[ClosedSignalRecord], max_signal_count: int = 1) -> None:
         """Rebuild state from a list of closed signal records (startup replay)."""
         for rec in records:
             zone_key, ltf_key, rej_key = _dedup_keys(
@@ -69,7 +71,10 @@ class DedupState:
                 rec.rej_ts,
                 rec.direction,
             )
-            self.dead_zones.add(zone_key)
+            count = self.zone_signal_counts.get(zone_key, 0) + 1
+            self.zone_signal_counts[zone_key] = count
+            if count >= max_signal_count:
+                self.dead_zones.add(zone_key)
             if rec.ltf_ts:
                 self.seen_ltf.add(ltf_key)
             if rec.rej_ts:
@@ -86,8 +91,9 @@ class DedupState:
         htf_interval: str = "",
         ltf_interval: str = "",
         multi_tf_independent: bool = True,
-    ) -> None:
-        """Lock zone, LTF, and rejection after a signal is emitted."""
+        max_signal_count: int = 1,
+    ) -> int:
+        """Register an emitted signal and return its one-based zone attempt."""
         dir_str = direction.value
         zone_key, ltf_key, rej_key = _dedup_keys(
             symbol,
@@ -98,7 +104,10 @@ class DedupState:
             rejection.timestamp,
             dir_str,
         )
-        self.dead_zones.add(zone_key)
+        attempt = self.zone_signal_counts.get(zone_key, 0) + 1
+        self.zone_signal_counts[zone_key] = attempt
+        if attempt >= max_signal_count:
+            self.dead_zones.add(zone_key)
         self.seen_ltf.add(ltf_key)
         self.seen_rej.add(rej_key)
 
@@ -110,10 +119,12 @@ class DedupState:
         self.open_dir[dir_key] = None
 
         logger.info(
-            "registered %s %s  zone=%d  ltf=%d  rej=%d",
+            "registered %s %s  zone=%d attempt=%d/%d  ltf=%d  rej=%d",
             dir_str, symbol,
-            htf_range.timestamp, ltf_range.timestamp, rejection.timestamp,
+            htf_range.timestamp, attempt, max_signal_count,
+            ltf_range.timestamp, rejection.timestamp,
         )
+        return attempt
 
     def release_direction(
         self,
@@ -167,6 +178,7 @@ def should_emit(
     stale_hours:  float,
     htf_interval: str  = "",
     ltf_interval: str  = "",
+    max_signal_count: int = 1,
 ) -> DedupResult:
     """
     Run rules A–E and return whether this signal should be emitted.
@@ -175,7 +187,7 @@ def should_emit(
     """
     dir_str = direction.value
 
-    # A — zone already fired this session
+    # A — zone reached its configured emission limit
     zone_key, ltf_key, rej_key = _dedup_keys(
         symbol,
         htf_interval,
@@ -186,11 +198,17 @@ def should_emit(
         dir_str,
     )
 
-    if zone_key in state.dead_zones:
-        return DedupResult(False, f"A: [{symbol}] dead zone {htf_range.timestamp}")
+    zone_count = state.zone_signal_counts.get(zone_key, 0)
+    if zone_key in state.dead_zones or zone_count >= max_signal_count:
+        return DedupResult(
+            False,
+            f"A: [{symbol}] zone signal limit {zone_count}/{max_signal_count} "
+            f"for {htf_range.timestamp}",
+        )
 
-    # C — LTF swing already used this session
-    if ltf_key in state.seen_ltf:
+    # C — preserve legacy one-signal-per-LTF behavior when zone retries are off.
+    # With retries enabled, Rule E still requires a distinct rejection candle.
+    if max_signal_count == 1 and ltf_key in state.seen_ltf:
         return DedupResult(False, f"C: [{symbol}] seen ltf {ltf_range.timestamp}")
 
     # D — rejection candle is stale

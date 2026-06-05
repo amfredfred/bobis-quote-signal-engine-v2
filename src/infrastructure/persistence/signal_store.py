@@ -233,6 +233,28 @@ class SignalStore:
                 logger.warning("Skipping malformed closed_signal row: %s", exc)
         return records
 
+    def load_closed_for_dedup(self) -> list[ClosedSignalRecord]:
+        """Return structural keys for all closed signals to rebuild zone limits."""
+        rows = (
+            self._conn()
+            .execute(
+                """
+                SELECT signal_id, symbol, direction, htf_interval, ltf_interval,
+                       outcome, realized_rr, htf_ts, ltf_ts, rej_ts, closed_at
+                FROM closed_signals
+                ORDER BY closed_at
+                """
+            )
+            .fetchall()
+        )
+        records = []
+        for row in rows:
+            try:
+                records.append(ClosedSignalRecord(**dict(row)))
+            except Exception as exc:
+                logger.warning("Skipping malformed dedup record: %s", exc)
+        return records
+
     def get_open(self, signal_id: str) -> Optional[dict]:
         """Fetch a single open signal by ID. Returns None if not found."""
         row = (

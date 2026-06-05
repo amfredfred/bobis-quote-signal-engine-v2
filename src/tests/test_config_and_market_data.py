@@ -60,6 +60,11 @@ def test_settings_rejects_invalid_crt_mode():
         Settings(crt_mode="invalid")
 
 
+def test_settings_rejects_zone_signal_count_below_one():
+    with pytest.raises(ValueError, match="zones.max_signal_count"):
+        Settings(max_signal_count_per_zone=0)
+
+
 def test_settings_rejects_breakeven_multiplier_below_one() -> None:
     with pytest.raises(ValueError, match="must be 0 or >= 1"):
         Settings(breakeven_spread_multiplier=0.5)
