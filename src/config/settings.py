@@ -306,8 +306,6 @@ def _sessions_from_config(raw: Any) -> dict[str, dict]:
 
 _STOP_BUFFER_PCT: float = 0.00001
 # 1 pip buffer — never needs tuning
-_STOP_PLACEMENT: str = "wick"
-# wick placement = High RRR // swing is more consistent and easier to explain to users
 _WS_CANDLE_BUFFER_MS: int = 1_100
 # ms after candle close for MT5 to settle
 _PIVOT_BARS: int = 1
@@ -400,10 +398,6 @@ class Settings:
         return _STOP_BUFFER_PCT
 
     @property
-    def stop_placement_method(self) -> str:
-        return _STOP_PLACEMENT
-
-    @property
     def ws_candle_buffer_ms(self) -> int:
         return _WS_CANDLE_BUFFER_MS
 
@@ -413,6 +407,7 @@ class Settings:
 
     # ── Signal quality ────────────────────────────────────────────────────────
     min_wick_ratio: float = 0.65
+    stop_placement_method: str = "wick"  # wick | range
     max_sl_zone_mult: float = 2.0
     min_rr: float = 1.5
     max_rr: float = 9.0  # 0 = disabled
@@ -498,6 +493,12 @@ class Settings:
         if self.crt_mode not in valid_crt_modes:
             raise ValueError(
                 f"crt.mode must be one of {valid_crt_modes}, got {self.crt_mode!r}."
+            )
+        valid_stop_models = {"wick", "range"}
+        if self.stop_placement_method not in valid_stop_models:
+            raise ValueError(
+                f"signal_quality.stop_model must be one of {valid_stop_models}, "
+                f"got {self.stop_placement_method!r}."
             )
         if self.max_signal_count_per_zone < 1:
             raise ValueError("zones.max_signal_count must be >= 1.")
@@ -626,6 +627,9 @@ class Settings:
             htf_lookback=int(_get(cfg, "timeframes.htf_lookback", 120)),
             htf_outputsize=int(_get(cfg, "timeframes.htf_outputsize", 1000)),
             min_wick_ratio=float(_get(cfg, "signal_quality.min_wick_ratio", 0.65)),
+            stop_placement_method=str(
+                _get(cfg, "signal_quality.stop_model", "wick")
+            ).strip().lower(),
             max_sl_zone_mult=float(_get(cfg, "signal_quality.max_sl_zone_mult", 2.0)),
             min_rr=float(_get(cfg, "signal_quality.min_rr", 1.5)),
             max_rr=float(_get(cfg, "signal_quality.max_rr", 9.0)),

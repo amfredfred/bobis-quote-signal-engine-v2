@@ -44,6 +44,8 @@ timeframes:
 signal_quality:
   # Rejection wick ratio from 0.0 to 1.0. Higher means stricter candle rejection.
   min_wick_ratio: 0.51
+  # Stop-loss placement variants: wick, range.
+  stop_model: wick
   max_sl_zone_mult: 3.0
   min_rr: 2.5
   # Set max_rr to 0 to disable the ceiling.

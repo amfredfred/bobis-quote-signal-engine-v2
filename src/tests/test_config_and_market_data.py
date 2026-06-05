@@ -24,6 +24,8 @@ features:
   entry_model: crt
 crt:
   mode: both
+signal_quality:
+  stop_model: range
 timeframes:
   pairs:
     - htf: 1h
@@ -40,6 +42,7 @@ timeframes:
 
     assert settings.entry_model == "crt"
     assert settings.crt_mode == "both"
+    assert settings.stop_placement_method == "range"
     assert settings.tf_pairs == (("1h", "5min"),)
     assert settings.entry_model_for("1h", "5min") == "candle_pattern"
     assert settings.entry_model_for("30min", "5min") == "crt"
@@ -61,6 +64,11 @@ def test_settings_rejects_invalid_pair_entry_model():
 def test_settings_rejects_invalid_crt_mode():
     with pytest.raises(ValueError, match="crt.mode"):
         Settings(crt_mode="invalid")
+
+
+def test_settings_rejects_invalid_stop_model():
+    with pytest.raises(ValueError, match="signal_quality.stop_model"):
+        Settings(stop_placement_method="invalid")
 
 
 def test_settings_rejects_zone_signal_count_below_one():
