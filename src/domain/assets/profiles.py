@@ -45,6 +45,8 @@ class _ConfigProtocol(Protocol):
     tp1_trigger_pct: float
     tp1_close_pct: float
     move_sl_to_be_on_tp1: bool
+    breakeven_spread_multiplier: float
+    breakeven_max_buffer_pct_of_risk: float
     trade_management_tf_overrides: dict
     use_invalidation: bool
     signal_expiry_hours: float
@@ -90,6 +92,12 @@ class AssetProfile:
 
     # Multi-TF
     multi_tf_independent_positions: bool
+
+    # Protected breakeven. Spread is injected by backtests; live signal
+    # lifecycle falls back to entry breakeven because candles have no quote spread.
+    breakeven_spread_price_units: float = 0.0
+    breakeven_spread_multiplier: float = 1.5
+    breakeven_max_buffer_pct_of_risk: float = 10.0
 
 
 # ── Symbol → asset class ──────────────────────────────────────────────────────
@@ -275,6 +283,8 @@ class AssetRegistry:
             "tp1_trigger_pct": cfg.tp1_trigger_pct,
             "tp1_close_pct": cfg.tp1_close_pct,
             "move_sl_to_be_on_tp1": cfg.move_sl_to_be_on_tp1,
+            "breakeven_spread_multiplier": cfg.breakeven_spread_multiplier,
+            "breakeven_max_buffer_pct_of_risk": cfg.breakeven_max_buffer_pct_of_risk,
             "use_invalidation": cfg.use_invalidation,
             "signal_expiry_hours": cfg.signal_expiry_hours,
             "use_trend_filter": cfg.use_trend_filter,

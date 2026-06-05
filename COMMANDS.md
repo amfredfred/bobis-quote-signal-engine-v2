@@ -174,6 +174,7 @@ Disable optional filters during a backtest:
 
 ```powershell
 backtest --symbol XAUUSD --no-breakeven --no-invalidation --no-trend-filter --no-session-filter --output results\XAUUSD.csv
+backtest --symbol XAUUSD --spread-points 5 --breakeven-spread-multiplier 1.5 --output results\XAUUSD-buffered-be.csv
 ```
 
 Run the focused XAUUSD RBA basket:

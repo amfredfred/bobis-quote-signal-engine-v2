@@ -71,6 +71,10 @@ trade_management:
   tp1_trigger_pct: 10
   tp1_close_pct: 0.0
   move_sl_to_be_on_tp1: true
+  # 0 = entry BE; otherwise multiplier must be >= 1 to cover at least one spread.
+  breakeven_spread_multiplier: 1.2
+  # Soft cap on extra margin; the buffer will never be clipped below one spread.
+  breakeven_max_buffer_pct_of_risk: 10.0
   # Per-pair overrides use "HTF_minutes/LTF_minutes".
   tf_overrides:
     "5/5":

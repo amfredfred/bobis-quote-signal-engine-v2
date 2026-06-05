@@ -200,6 +200,9 @@ def make_candle(
 def make_service(
     *,
     use_breakeven: bool = True,
+    breakeven_spread_price_units: float = 0.0,
+    breakeven_spread_multiplier: float = 1.5,
+    breakeven_max_buffer_pct_of_risk: float = 10.0,
     use_invalidation: bool = True,
     signal_expiry_hours: float = 24.0,
 ):
@@ -207,6 +210,9 @@ def make_service(
 
     profile = MagicMock()
     profile.move_sl_to_be_on_tp1 = use_breakeven
+    profile.breakeven_spread_price_units = breakeven_spread_price_units
+    profile.breakeven_spread_multiplier = breakeven_spread_multiplier
+    profile.breakeven_max_buffer_pct_of_risk = breakeven_max_buffer_pct_of_risk
     profile.use_invalidation = use_invalidation
     profile.signal_expiry_hours = signal_expiry_hours
     profile.tp1_trigger_pct = TP1_TRIGGER_PCT
@@ -415,6 +421,74 @@ class TestSLHitAfterTP1Breakeven:
 # ═══════════════════════════════════════════════════════════════════════════════
 # TP2 scenarios
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestBufferedBreakevenAfterTP1:
+    def test_long_buffered_stop_locks_profit(self):
+        svc, _ = make_service(
+            use_breakeven=True,
+            breakeven_spread_price_units=RISK * 0.02,
+            breakeven_spread_multiplier=1.5,
+        )
+        candles = [
+            make_candle(
+                ts=BASE_TS + BAR_MS,
+                high=TP1 + 0.00010,
+                low=ENTRY - 0.00010,
+                close=TP1 - 0.00005,
+            ),
+            make_candle(
+                ts=BASE_TS + 2 * BAR_MS,
+                high=TP1 - 0.00010,
+                low=ENTRY + (RISK * 0.02),
+                close=ENTRY + (RISK * 0.06),
+            ),
+        ]
+
+        probe = simulate(svc, make_signal(), candles)
+
+        assert probe.outcome == SignalOutcome.BREAKEVEN
+        assert probe.close_price == pytest.approx(ENTRY + (RISK * 0.03))
+        assert probe.realized_rr == pytest.approx(0.03)
+
+    def test_short_buffered_stop_locks_profit(self):
+        entry = 1.10000
+        stop = 1.11000
+        tp1 = 1.09500
+        tp2 = 1.09000
+        risk = stop - entry
+        svc, _ = make_service(
+            use_breakeven=True,
+            breakeven_spread_price_units=risk * 0.02,
+            breakeven_spread_multiplier=1.5,
+        )
+        signal = make_signal(
+            direction=SignalDirection.SHORT,
+            entry=entry,
+            sl=stop,
+            tp1=tp1,
+            tp2=tp2,
+        )
+        candles = [
+            make_candle(
+                ts=BASE_TS + BAR_MS,
+                high=entry + 0.00010,
+                low=tp1 - 0.00010,
+                close=tp1 + 0.00005,
+            ),
+            make_candle(
+                ts=BASE_TS + 2 * BAR_MS,
+                high=entry - (risk * 0.02),
+                low=tp1 + 0.00010,
+                close=entry - (risk * 0.06),
+            ),
+        ]
+
+        probe = simulate(svc, signal, candles)
+
+        assert probe.outcome == SignalOutcome.BREAKEVEN
+        assert probe.close_price == pytest.approx(entry - (risk * 0.03))
+        assert probe.realized_rr == pytest.approx(0.03)
 
 
 class TestTP2Hit:

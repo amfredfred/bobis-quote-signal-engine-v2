@@ -708,6 +708,8 @@ class MetricsCollector:
             "max_rr": self._cfg.max_rr,
                     "tp1_trigger_pct": self._cfg.tp1_trigger_pct,
                     "tp1_close_pct": self._cfg.tp1_close_pct,
+                    "breakeven_spread_multiplier": self._cfg.breakeven_spread_multiplier,
+                    "breakeven_max_buffer_pct_of_risk": self._cfg.breakeven_max_buffer_pct_of_risk,
             "signal_expiry_hours": self._cfg.signal_expiry_hours,
             "max_htf_zones_per_dir": self._cfg.max_htf_zones_per_dir,
             "use_trend_filter": self._cfg.use_trend_filter,

@@ -84,7 +84,12 @@ from domain.entities.trade import TradeSignal
 from domain.market.structure import MarketStructure
 from domain.market.swings import SwingDetector, detect_displacement
 from domain.signals.entry import find_entry  # shared entry dispatcher
-from domain.trade_management import tp1_booked_rr, tp2_weighted_rr
+from domain.trade_management import (
+    breakeven_price,
+    protected_breakeven_rr,
+    tp1_booked_rr,
+    tp2_weighted_rr,
+)
 from infrastructure.data_providers.market_data import MarketDataClient
 
 logger = logging.getLogger(__name__)
@@ -1224,6 +1229,14 @@ class MultiPairBacktester:
         profile = self._registry.get(
             signal.symbol, signal.htf_interval, signal.ltf_interval
         )
+        try:
+            profile = dc_replace(
+                profile,
+                breakeven_spread_price_units=getattr(self, "spread_points", 0.0),
+            )
+        except TypeError:
+            profile = copy.copy(profile)
+            profile.breakeven_spread_price_units = getattr(self, "spread_points", 0.0)
         if self.trailing_giveback_pct > 0:
             return self._simulate_with_giveback_trailing(signal, future, profile)
 
@@ -1459,9 +1472,9 @@ class MultiPairBacktester:
                     return self._trailing_result(
                         probe,
                         SignalOutcome.BREAKEVEN,
-                        self._tp1_booked_rr(probe, profile),
+                        self._protected_be_rr(probe, profile),
                         candle.timestamp,
-                        entry,
+                        self._protected_be_price(probe, profile),
                         hit_entry_after_tp1,
                         trail_mfe_price,
                         trailed_sl,
@@ -1509,9 +1522,9 @@ class MultiPairBacktester:
                     return self._trailing_result(
                         probe,
                         SignalOutcome.BREAKEVEN,
-                        self._tp1_booked_rr(probe, profile),
+                        self._protected_be_rr(probe, profile),
                         candle.timestamp,
-                        entry,
+                        self._protected_be_price(probe, profile),
                         hit_entry_after_tp1,
                         trail_mfe_price,
                         trailed_sl,
@@ -1535,7 +1548,7 @@ class MultiPairBacktester:
                         probe,
                         SignalOutcome.BREAKEVEN,
                         max(
-                            self._tp1_booked_rr(probe, profile),
+                            self._protected_be_rr(probe, profile),
                             self._rr_at_price(probe, close_px),
                         ),
                         candle.timestamp,
@@ -1558,7 +1571,11 @@ class MultiPairBacktester:
             if tp1_now and not tp1_seen:
                 tp1_seen = True
                 probe.tp1_hit_at = candle.timestamp
-                current_sl = entry if profile.move_sl_to_be_on_tp1 else original_sl
+                current_sl = (
+                    self._protected_be_price(probe, profile)
+                    if profile.move_sl_to_be_on_tp1
+                    else original_sl
+                )
 
             if tp1_seen and profile.move_sl_to_be_on_tp1:
                 current_sl, trail_mfe_price, trailed_sl = self._advance_giveback_sl(
@@ -1645,6 +1662,27 @@ class MultiPairBacktester:
             full_rr=signal.risk_reward_ratio,
             tp1_trigger_pct=profile.tp1_trigger_pct,
             tp1_close_pct=profile.tp1_close_pct,
+        )
+
+    def _protected_be_price(self, signal: TradeSignal, profile: AssetProfile) -> float:
+        return breakeven_price(
+            direction=signal.direction,
+            entry_price=signal.entry_price,
+            risk_pips=signal.risk_pips,
+            spread_price_units=profile.breakeven_spread_price_units,
+            spread_multiplier=profile.breakeven_spread_multiplier,
+            max_buffer_pct_of_risk=profile.breakeven_max_buffer_pct_of_risk,
+        )
+
+    def _protected_be_rr(self, signal: TradeSignal, profile: AssetProfile) -> float:
+        return protected_breakeven_rr(
+            full_rr=signal.risk_reward_ratio,
+            tp1_trigger_pct=profile.tp1_trigger_pct,
+            tp1_close_pct=profile.tp1_close_pct,
+            risk_pips=signal.risk_pips,
+            spread_price_units=profile.breakeven_spread_price_units,
+            spread_multiplier=profile.breakeven_spread_multiplier,
+            max_buffer_pct_of_risk=profile.breakeven_max_buffer_pct_of_risk,
         )
 
     def _rr_at_price(self, signal: TradeSignal, price: float) -> float:
@@ -1812,6 +1850,13 @@ def main() -> None:
     p.add_argument("--stale-hours", type=float, default=None)
     p.add_argument("--max-sl-mult", type=float, default=None)
     p.add_argument("--no-breakeven", action="store_true")
+    p.add_argument(
+        "--breakeven-spread-multiplier",
+        type=float,
+        default=None,
+        metavar="MULTIPLIER",
+        help="Move breakeven beyond entry by configured spread times this multiplier",
+    )
     p.add_argument("--no-invalidation", action="store_true")
     p.add_argument("--no-trend-filter", action="store_true")
     p.add_argument("--no-session-filter", action="store_true")
@@ -1861,6 +1906,8 @@ def main() -> None:
     overrides: dict = {}
     if args.no_breakeven:
         overrides["move_sl_to_be_on_tp1"] = False
+    if args.breakeven_spread_multiplier is not None:
+        overrides["breakeven_spread_multiplier"] = args.breakeven_spread_multiplier
     if args.no_invalidation:
         overrides["use_invalidation"] = False
     if args.no_trend_filter:

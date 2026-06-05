@@ -11,7 +11,11 @@ from domain.assets.profiles import AssetProfile
 from domain.entities.candle import Candle
 from domain.entities.enums import SignalDirection, SignalOutcome, SignalStatus
 from domain.entities.trade import TradeSignal
-from domain.trade_management import tp1_booked_rr, tp2_weighted_rr
+from domain.trade_management import (
+    breakeven_price,
+    protected_breakeven_rr,
+    tp2_weighted_rr,
+)
 
 
 @dataclass(frozen=True)
@@ -19,6 +23,29 @@ class StepOutcome:
     terminal: bool
     emit_tp1: bool = False
     emit_inv_log: bool = False
+
+
+def _protected_be_price(signal: TradeSignal, profile: AssetProfile) -> float:
+    return breakeven_price(
+        direction=signal.direction,
+        entry_price=signal.entry_price,
+        risk_pips=signal.risk_pips,
+        spread_price_units=profile.breakeven_spread_price_units,
+        spread_multiplier=profile.breakeven_spread_multiplier,
+        max_buffer_pct_of_risk=profile.breakeven_max_buffer_pct_of_risk,
+    )
+
+
+def _protected_be_rr(signal: TradeSignal, profile: AssetProfile) -> float:
+    return protected_breakeven_rr(
+        full_rr=signal.risk_reward_ratio,
+        tp1_trigger_pct=profile.tp1_trigger_pct,
+        tp1_close_pct=profile.tp1_close_pct,
+        risk_pips=signal.risk_pips,
+        spread_price_units=profile.breakeven_spread_price_units,
+        spread_multiplier=profile.breakeven_spread_multiplier,
+        max_buffer_pct_of_risk=profile.breakeven_max_buffer_pct_of_risk,
+    )
 
 
 def normalize_candle(candle: Candle) -> Candle:
@@ -70,12 +97,8 @@ def step_signal_state(
         elif signal.status == SignalStatus.TP1_HIT:
             if profile.move_sl_to_be_on_tp1:
                 signal.outcome = SignalOutcome.BREAKEVEN
-                signal.realized_rr = tp1_booked_rr(
-                    full_rr=signal.risk_reward_ratio,
-                    tp1_trigger_pct=profile.tp1_trigger_pct,
-                    tp1_close_pct=profile.tp1_close_pct,
-                )
-                signal.close_price = signal.entry_price
+                signal.realized_rr = _protected_be_rr(signal, profile)
+                signal.close_price = _protected_be_price(signal, profile)
             else:
                 signal.outcome = SignalOutcome.EXPIRED
                 signal.realized_rr = 0.0
@@ -85,11 +108,10 @@ def step_signal_state(
         signal.closed_at = now
         return StepOutcome(terminal=True)
 
-    sl_hit = (
-        candle.high >= signal.stop_loss
-        if is_short
-        else candle.low <= signal.stop_loss
-    )
+    effective_sl = signal.stop_loss
+    if signal.status == SignalStatus.TP1_HIT and profile.move_sl_to_be_on_tp1:
+        effective_sl = _protected_be_price(signal, profile)
+    sl_hit = candle.high >= effective_sl if is_short else candle.low <= effective_sl
     tp1_chk = candle.low <= signal.tp1 if is_short else candle.high >= signal.tp1
     tp2_hit = candle.low <= signal.tp2 if is_short else candle.high >= signal.tp2
     inv_now = (
@@ -163,12 +185,8 @@ def step_signal_state(
             signal.closed_at = now
             if profile.move_sl_to_be_on_tp1:
                 signal.outcome = SignalOutcome.BREAKEVEN
-                signal.realized_rr = tp1_booked_rr(
-                    full_rr=signal.risk_reward_ratio,
-                    tp1_trigger_pct=profile.tp1_trigger_pct,
-                    tp1_close_pct=profile.tp1_close_pct,
-                )
-                signal.close_price = signal.entry_price
+                signal.realized_rr = _protected_be_rr(signal, profile)
+                signal.close_price = _protected_be_price(signal, profile)
             else:
                 signal.outcome = SignalOutcome.LOSS
                 signal.realized_rr = -(abs(signal.entry_price - candle.close) / signal.risk_pips)
@@ -185,12 +203,8 @@ def step_signal_state(
             signal.status = SignalStatus.SL_HIT
             if profile.move_sl_to_be_on_tp1:
                 signal.outcome = SignalOutcome.BREAKEVEN
-                signal.realized_rr = tp1_booked_rr(
-                    full_rr=signal.risk_reward_ratio,
-                    tp1_trigger_pct=profile.tp1_trigger_pct,
-                    tp1_close_pct=profile.tp1_close_pct,
-                )
-                signal.close_price = signal.entry_price
+                signal.realized_rr = _protected_be_rr(signal, profile)
+                signal.close_price = effective_sl
             else:
                 signal.outcome = SignalOutcome.LOSS
                 signal.realized_rr = -1.0
