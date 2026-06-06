@@ -158,10 +158,10 @@ Connect to:
 
 ```text
 ws://<host>:<port>
-ws://<host>:<port>?token=<WS_SECRET>
+ws://<host>:<port>?token=<SIGNAL_ENGINE_WS_SECRET>
 ```
 
-The `WS_SECRET` value is optional and comes from `.env`. When it is empty, WebSocket auth is disabled.
+The `SIGNAL_ENGINE_WS_SECRET` value comes from `.env`. When it is empty, WebSocket auth is disabled.
 
 Client actions:
 

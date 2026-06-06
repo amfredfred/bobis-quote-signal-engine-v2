@@ -558,8 +558,8 @@ class Settings:
             import logging as _logging
 
             _logging.getLogger(__name__).warning(
-                "WS_SECRET is not set — WebSocket server is unauthenticated. "
-                "Set the WS_SECRET environment variable before deploying to production."
+                "SIGNAL_ENGINE_WS_SECRET is not set — WebSocket server is unauthenticated. "
+                "Set SIGNAL_ENGINE_WS_SECRET before deploying to production."
             )
 
     # ── Factory ───────────────────────────────────────────────────────────────
@@ -596,7 +596,7 @@ class Settings:
             log_dir=str(_get(cfg, "logging.dir", "logs")),
             ws_host=str(_get(cfg, "websocket.host", "0.0.0.0")),
             ws_port=int(_get(cfg, "websocket.port", 8765)),
-            ws_secret=os.getenv("WS_SECRET", ""),
+            ws_secret=os.getenv("SIGNAL_ENGINE_WS_SECRET", ""),
             max_ws_clients=int(_get(cfg, "websocket.max_clients", 10)),
             mt5_terminal_path=str(_get(cfg, "mt5.terminal_path", "")),
             mt5_login=int(os.getenv("MT5_LOGIN", "0") or "0"),

@@ -114,7 +114,7 @@ signal-engine
 Run with WebSocket auth enabled:
 
 ```powershell
-$env:WS_SECRET = "change-me"
+$env:SIGNAL_ENGINE_WS_SECRET = "change-me"
 signal-engine
 ```
 
