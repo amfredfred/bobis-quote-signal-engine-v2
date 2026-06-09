@@ -35,9 +35,6 @@ timeframes:
     - htf: 5min
       ltf: 5min
       entry_model: crt
-    - htf: 30min
-      ltf: 30min
-      entry_model: all
   htf_lookback: 240
   htf_outputsize: 1000
 
@@ -46,7 +43,7 @@ signal_quality:
   min_wick_ratio: 0.51
   # Stop-loss placement variants: wick, range.
   stop_model: wick
-  max_sl_zone_mult: 3.0
+  max_sl_zone_mult: 1.0
   # Backtest execution-parity gate. Reject when spread exceeds this fraction of SL distance.
   # Set to 0 to disable.
   max_spread_to_sl_ratio: 0.35
@@ -56,7 +53,6 @@ signal_quality:
   # Per-pair max RR caps use "HTF_minutes/LTF_minutes".
   tf_max_rr:
     "5/5": 3
-    "30/30": 3
 
 signal_lifetime:
   expiry_hours: 120
@@ -73,7 +69,7 @@ features:
   # Boolean variants: true, false.
   use_trend_filter: true
   use_invalidation: false
-  multi_tf_independent_positions: true
+  multi_tf_independent_positions: false
   # Variants: candle_pattern, crt, all.
   entry_model: crt
 
@@ -82,7 +78,7 @@ crt:
   mode: previous_candle
 
 trade_management:
-  tp1_trigger_pct: 10
+  tp1_trigger_pct: 55
   tp1_close_pct: 0.0
   move_sl_to_be_on_tp1: true
   # 0 = entry BE; otherwise multiplier must be >= 1 to cover at least one spread.
@@ -93,8 +89,6 @@ trade_management:
   tf_overrides:
     "5/5":
       tp1_trigger_pct: 45.0
-    "30/30":
-      tp1_trigger_pct: 45.0
 
 displacement_filter:
   enabled: false
@@ -102,7 +96,6 @@ displacement_filter:
   atr_mult: 1.0
   tf_mult:
     "5/5": 1.0
-    "30/30": 1.0
 
 circuit_breaker:
   max_consecutive_losses: 10
