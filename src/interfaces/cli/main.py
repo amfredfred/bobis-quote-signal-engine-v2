@@ -137,8 +137,13 @@ class SignalEngine:
                 self._cfg.dt_ms(analysis_close),
                 ltf_ms,
             )
-            await self._service.analyze(symbol, fired_at=analysis_close)
+            # update_watchlist MUST run before analyze so that any positions
+            # closed on the previous bar release their direction lock before
+            # the new-signal scan runs.  If analyze runs first, a Z2 re-entry
+            # on the same zone is blocked by the still-open lock even though
+            # the preceding trade already hit SL.
             await self._service.update_watchlist(symbol)
+            await self._service.analyze(symbol, fired_at=analysis_close)
         except Exception as exc:
             self._metrics.increment("scanner.tick_errors")
             self._metrics.record_error("signal_engine.main", "ERROR", str(exc))
