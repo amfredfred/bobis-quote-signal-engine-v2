@@ -18,7 +18,7 @@ mt5:
 
 market:
   weekend_sleep:
-    enabled: true
+    enabled: false
     # Evaluated in broker/chart time. Saturday 00:00 -> Monday 00:00 avoids
     # unnecessary MT5 calls while the market is closed.
     close_weekday: saturday

@@ -1,11 +1,22 @@
-# install_service.ps1 - Run as Administrator
+# install_service.ps1
+#
+# Registers the Signal Engine as a Windows Task Scheduler task that runs
+# under your user account at logon. This replaces the old NSSM service.
+#
+# WHY TASK SCHEDULER INSTEAD OF A SERVICE:
+#   Windows services run in Session 0 (no desktop). The Signal Engine uses
+#   the MT5 Python API, which cannot attach to a terminal running in the
+#   user's session from Session 0. A scheduled task runs as the logged-in
+#   user in their own session — MT5 is fully visible and accessible.
+#
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File install_service.ps1
 #   powershell -ExecutionPolicy Bypass -File install_service.ps1 uninstall
+#   powershell -ExecutionPolicy Bypass -File install_service.ps1 update
 #   powershell -ExecutionPolicy Bypass -File install_service.ps1 -VenvName .venv
 
 param(
-    [ValidateSet("install","uninstall")]
+    [ValidateSet("install", "uninstall", "update")]
     [string]$Action = "install",
 
     [string]$VenvName = "venv"
@@ -13,143 +24,152 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ServiceName = "BobiFXSignalEngineV2"
+$TaskName    = "AQ Signal Engine"
+$TaskFolder  = "\Apex Quantel\"
+$Description = "Apex Quantel Signal Engine - real-time forex signal generation and broadcast"
 $EngineDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$VenvDir     = Join-Path $EngineDir $VenvName
-$PythonExe   = Join-Path $VenvDir "Scripts\python.exe"
-$AppExe      = Join-Path $VenvDir "Scripts\signal-engine.exe"
-$NssmExe     = Join-Path $EngineDir "nssm\nssm-2.24\win64\nssm.exe"
-$LogDir      = Join-Path $EngineDir "logs"
 
-function Ensure-Nssm {
-    if (Test-Path -LiteralPath $NssmExe) {
-        return
-    }
+# Use pythonw.exe (no console window) so the process is fully detached from
+# any terminal session and cannot receive CTRL_CLOSE events when a terminal closes.
+$AppExe      = Join-Path $EngineDir "$VenvName\Scripts\pythonw.exe"
+$AppArg      = "-c `"from interfaces.cli.main import main; main()`""
 
-    $zip = Join-Path $EngineDir "nssm.zip"
-
-    if (-not (Test-Path -LiteralPath $zip)) {
-        Write-Host "Downloading NSSM..."
-        Invoke-WebRequest `
-            -Uri "https://nssm.cc/release/nssm-2.24.zip" `
-            -OutFile $zip
-    }
-
-    Expand-Archive $zip -DestinationPath (Join-Path $EngineDir "nssm") -Force
-
-    if (-not (Test-Path -LiteralPath $NssmExe)) {
-        Write-Error "NSSM executable not found after extraction: $NssmExe"
-        exit 1
+# ── Helpers ───────────────────────────────────────────────────────────────────
+function Stop-Task {
+    $t = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskFolder -ErrorAction SilentlyContinue
+    if ($t -and $t.State -eq "Running") {
+        Write-Host "  Stopping running task..."
+        Stop-ScheduledTask -TaskName $TaskName -TaskPath $TaskFolder -ErrorAction SilentlyContinue
+        Start-Sleep 3
     }
 }
 
-function Stop-ServiceSafe {
-    $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
-
-    if ($svc -and $svc.Status -eq "Running") {
-        Write-Host "Stopping service..."
-        & $NssmExe stop $ServiceName confirm | Out-Null
+function Remove-Task {
+    Stop-Task
+    if (Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskFolder -ErrorAction SilentlyContinue) {
+        Write-Host "  Removing existing task..."
+        Unregister-ScheduledTask -TaskName $TaskName -TaskPath $TaskFolder -Confirm:$false
     }
+}
 
-    for ($i = 0; $i -lt 15; $i++) {
-        $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
-        if (-not $svc -or $svc.Status -eq "Stopped") {
-            return
+function Remove-OldNssmService {
+    # Migrate: remove the old NSSM service if it is still installed
+    $OldService = "BobiFXSignalEngineV2"
+    $NssmExe    = Join-Path $EngineDir "nssm\nssm-2.24\win64\nssm.exe"
+    if (Get-Service $OldService -ErrorAction SilentlyContinue) {
+        Write-Host "  Removing legacy NSSM service ($OldService)..." -ForegroundColor DarkYellow
+        if (Test-Path -LiteralPath $NssmExe) {
+            try { & $NssmExe stop   $OldService confirm 2>$null | Out-Null } catch {}
+            try { & $NssmExe remove $OldService confirm 2>$null | Out-Null } catch {}
         }
-        Start-Sleep 1
-    }
-}
-
-function Remove-ServiceSafe {
-    Stop-ServiceSafe
-
-    if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
-        Write-Host "Removing service..."
-        & $NssmExe remove $ServiceName confirm 2>$null | Out-Null
-        sc.exe delete $ServiceName 2>$null | Out-Null
+        try { sc.exe delete $OldService 2>$null | Out-Null } catch {}
         Start-Sleep 2
     }
 }
 
 function Cleanup-Orphans {
-    $escapedEngineDir = [regex]::Escape($EngineDir)
-    $escapedServiceName = [regex]::Escape($ServiceName)
-
+    $escapedDir = [regex]::Escape($EngineDir)
     Get-CimInstance Win32_Process | Where-Object {
         $_.ProcessId -ne $PID -and
         $_.CommandLine -and
-        (
-            $_.CommandLine -match $escapedEngineDir -or
-            $_.CommandLine -match $escapedServiceName
-        )
+        $_.CommandLine -match $escapedDir -and
+        ($_.Name -like "signal-engine*" -or $_.Name -like "python*")
     } | ForEach-Object {
-        Write-Host "Stopping orphan process PID $($_.ProcessId): $($_.Name)"
+        Write-Host "  Stopping orphan PID $($_.ProcessId): $($_.Name)"
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     }
 }
 
-function Validate-InstallInputs {
-    if (-not (Test-Path -LiteralPath $PythonExe)) {
-        Write-Error "Virtual environment Python not found: $PythonExe"
-        Write-Error "Create it with: py -3.12 -m venv $VenvName"
-        exit 1
-    }
-
+function Validate-Exe {
     if (-not (Test-Path -LiteralPath $AppExe)) {
-        Write-Error "Executable not found: $AppExe"
-        Write-Error "Run: $VenvName\Scripts\python.exe -m pip install -e ."
+        Write-Host ""
+        Write-Host "ERROR: pythonw.exe not found: $AppExe" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Create the venv and install:" -ForegroundColor Yellow
+        Write-Host "    py -3.12 -m venv $VenvName" -ForegroundColor Yellow
+        Write-Host "    $VenvName\Scripts\pip install -e ." -ForegroundColor Yellow
         exit 1
     }
 }
 
-Ensure-Nssm
-
-if ($Action -eq "uninstall") {
-    Remove-ServiceSafe
+# ── Install ───────────────────────────────────────────────────────────────────
+function _install {
+    Validate-Exe
+    Remove-OldNssmService
+    Remove-Task
     Cleanup-Orphans
-    Write-Host "Uninstall complete."
-    exit 0
+
+    Write-Host ""
+    Write-Host "  Registering scheduled task..."
+    Write-Host "    Task : $TaskFolder$TaskName"
+    Write-Host "    Exe  : $AppExe"
+    Write-Host "    CWD  : $EngineDir"
+    Write-Host "    User : $env:USERDOMAIN\$env:USERNAME"
+
+    # Action: run via pythonw.exe (no console window — fully detached from terminals)
+    $action = New-ScheduledTaskAction `
+        -Execute          $AppExe `
+        -Argument         $AppArg `
+        -WorkingDirectory $EngineDir
+
+    # Trigger: at logon for this user, 30-second delay
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+    $trigger.Delay = "PT30S"
+
+    # Settings: no execution time limit, restart up to 10x on failure
+    $settings = New-ScheduledTaskSettingsSet `
+        -MultipleInstances      IgnoreNew `
+        -ExecutionTimeLimit     ([TimeSpan]::Zero) `
+        -RestartCount           10 `
+        -RestartInterval        (New-TimeSpan -Minutes 1) `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable
+
+    # Principal: the logged-in user, highest available privilege
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId    "$env:USERDOMAIN\$env:USERNAME" `
+        -LogonType Interactive `
+        -RunLevel  Highest
+
+    Register-ScheduledTask `
+        -TaskName    $TaskName `
+        -TaskPath    $TaskFolder `
+        -Action      $action `
+        -Trigger     $trigger `
+        -Settings    $settings `
+        -Principal   $principal `
+        -Description $Description `
+        -Force | Out-Null
+
+    Write-Host ""
+    Write-Host "  Starting task now..."
+    Start-ScheduledTask -TaskName $TaskName -TaskPath $TaskFolder
+
+    Start-Sleep 3
+    $state = (Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskFolder).State
+    Write-Host "  Task state: $state" -ForegroundColor $(if ($state -eq "Running") { "Green" } else { "Yellow" })
+
+    Write-Host ""
+    Write-Host "  AQ Signal Engine will start automatically 30 s after each login."
+    Write-Host "  Logs: $EngineDir\logs\signal_engine.log"
 }
 
-Validate-InstallInputs
-Remove-ServiceSafe
+# ── Update ────────────────────────────────────────────────────────────────────
+function _update {
+    Validate-Exe
+    # Full re-register so the exe path is always current
+    _install
+}
 
-Write-Host "Installing service..."
-Write-Host "  Service: $ServiceName"
-Write-Host "  App:     $AppExe"
-Write-Host "  CWD:     $EngineDir"
-
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-
-& $NssmExe install $ServiceName $AppExe
-
-& $NssmExe set $ServiceName AppDirectory $EngineDir
-& $NssmExe set $ServiceName AppEnvironmentExtra "PYTHONNOUSERSITE=1" "PYTHONPATH=$EngineDir\src"
-
-& $NssmExe set $ServiceName AppStdout (Join-Path $LogDir "stdout.log")
-& $NssmExe set $ServiceName AppStderr (Join-Path $LogDir "stderr.log")
-& $NssmExe set $ServiceName AppRotateFiles 1
-& $NssmExe set $ServiceName AppRotateBytes 10485760
-
-& $NssmExe set $ServiceName AppStopMethodConsole 15000
-& $NssmExe set $ServiceName AppStopMethodWindow  15000
-& $NssmExe set $ServiceName AppStopMethodThreads 15000
-
-& $NssmExe set $ServiceName AppThrottle 5000
-& $NssmExe set $ServiceName AppExit Default Restart
-
-& $NssmExe set $ServiceName Start SERVICE_AUTO_START
-& $NssmExe set $ServiceName DisplayName "BobiFX Signal Engine"
-& $NssmExe set $ServiceName Description "Real-time forex signal engine (HTF zones + WebSocket broadcast)"
-
-sc.exe failure $ServiceName reset= 300 actions= restart/5000/restart/15000/""/0 | Out-Null
-
-Write-Host "Starting service..."
-& $NssmExe start $ServiceName
-
-Start-Sleep 3
-& $NssmExe status $ServiceName
-
-Write-Host ""
-Write-Host "Logs:"
-Write-Host "  Get-Content '$LogDir\stderr.log' -Tail 50 -Wait"
+# ── Entry point ───────────────────────────────────────────────────────────────
+switch ($Action) {
+    "uninstall" {
+        Remove-OldNssmService
+        Remove-Task
+        Cleanup-Orphans
+        Write-Host "Uninstall complete."
+    }
+    "update"  { _update }
+    default   { _install }
+}

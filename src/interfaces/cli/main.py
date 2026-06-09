@@ -58,11 +58,12 @@ def _setup_logging(log_level: str, log_dir: str) -> None:
     root = logging.getLogger()
     root.setLevel(level)
 
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt)
-    root.addHandler(sh)
+    if sys.stdout is not None:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
 
     if log_dir:
         log_path = Path(log_dir)
