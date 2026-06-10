@@ -52,7 +52,7 @@ signal_quality:
   max_rr: 5.0
   # Per-pair max RR caps use "HTF_minutes/LTF_minutes".
   tf_max_rr:
-    "5/5": 3
+    "5/5": 2.5
 
 signal_lifetime:
   expiry_hours: 120

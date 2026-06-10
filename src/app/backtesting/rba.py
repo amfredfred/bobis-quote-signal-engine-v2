@@ -13,9 +13,11 @@ from pathlib import Path
 
 from domain.assets.profiles import SUPPORTED_SYMBOLS, normalize_symbol
 
-ALL_SYMBOLS = [
-    "XAUUSD",
-]
+# ALL_SYMBOLS = [
+#     "XAUUSD",
+# ]
+
+ALL_SYMBOLS = sorted(SUPPORTED_SYMBOLS)
 
 FAILED_STATE_FILE = ".backtest_failed.json"
 
