@@ -1,36 +1,24 @@
 websocket:
-  # Bind host. Common variants: 0.0.0.0 (all interfaces), 127.0.0.1 (local only).
   host: 0.0.0.0
   port: 8765
   max_clients: 10
 
 mt5:
-  # Optional path to terminal64.exe. Leave empty to use the default installed MT5 terminal.
   terminal_path: "c:\\Program Files\\FBS MetaTrader 5\\terminal64.exe"
   timeout_ms: 60000
-  # Variants: false (normal install), true (portable terminal install).
   portable: false
-  # FBS-Demo chart/server time is UTC+3. Live MT5 ticks auto-calibrate this,
-  # but the configured value lets weekend sleep work after a cold restart.
+  # FBS-Demo server time is UTC+3.
   broker_time_offset_hours: 3
-  # MT5 broker/server chart time is auto-calibrated from a live tick.
-  # Internal signal timestamps stay UTC; logs/backtest output display broker time.
 
 market:
   weekend_sleep:
     enabled: false
-    # Evaluated in broker/chart time. Saturday 00:00 -> Monday 00:00 avoids
-    # unnecessary MT5 calls while the market is closed.
     close_weekday: saturday
     close_time: "00:00"
     reopen_weekday: monday
     reopen_time: "00:00"
 
 timeframes:
-  # Supported intervals: 1min, 2min, 3min, 4min, 5min, 6min, 10min, 12min,
-  # 15min, 20min, 30min, 1h, 2h, 3h, 4h, 6h, 8h, 12h, 1day, 1week, 1month.
-  # Same-timeframe CRT lanes are preferred; mixed HTF:LTF pairs are disabled.
-  # Optional entry_model per pair overrides features.entry_model.
   pairs:
     - htf: 5min
       ltf: 5min
@@ -39,33 +27,30 @@ timeframes:
   htf_outputsize: 1000
 
 signal_quality:
-  # Rejection wick ratio from 0.0 to 1.0. Higher means stricter candle rejection.
   min_wick_ratio: 0.51
-  # Stop-loss placement variants: wick, range.
   stop_model: wick
-  max_sl_zone_mult: 3.0
-  # Backtest execution-parity gate. Reject when spread exceeds this fraction of SL distance.
-  # Set to 0 to disable.
+  max_sl_zone_mult: 1.0
+  # Reject when spread exceeds this fraction of SL distance. 0 = disabled.
   max_spread_to_sl_ratio: 0.35
+  # Global fallbacks — overridden per symbol below.
   min_rr: 2.5
-  # Set max_rr to 0 to disable the ceiling.
-  max_rr: 5.0
-  # Per-pair max RR caps use "HTF_minutes/LTF_minutes".
-  tf_max_rr:
-    "5/5": 3
-  # Per-symbol, per-TF RR overrides. Use "*" for symbol or TF to match all.
-  # min_rr and max_rr are optional within each entry and resolve independently.
-  # Priority (most specific wins): symbol+TF > symbol+* > *+TF > *+* > global defaults.
-  # rrr:
-  #   XAUUSD:
-  #     "60/5":
-  #       min_rr: 2.0
-  #       max_rr: 8.0
-  #     "*":
-  #       min_rr: 1.5
-  #   "*":
-  #     "*":
-  #       max_rr: 5.0
+  max_rr: 0  # disabled globally; controlled per symbol via rrr
+  # Per-symbol, per-TF RR. min_rr and max_rr resolve independently.
+  # Priority: symbol+TF > symbol+* > *+TF > *+* > global.
+  # COMMODITY class hardcodes max_rr: 8.0 in profiles.py before this runs.
+  rrr:
+    XAUUSD:
+      "5/5":
+        min_rr: 2.5
+        max_rr: 2.5
+    US100:
+      "5/5":
+        min_rr: 2.5
+        max_rr: 3
+    US500:
+      "5/5":
+        min_rr: 2.5
+        max_rr: 3
 
 signal_lifetime:
   expiry_hours: 120
@@ -75,30 +60,24 @@ signals:
 
 zones:
   max_htf_zones_per_dir: 2
-  # Number of distinct emitted signals allowed before a BOS zone is discarded.
   max_signal_count: 3
 
 features:
-  # Boolean variants: true, false.
   use_trend_filter: true
   use_invalidation: false
   multi_tf_independent_positions: false
-  # Variants: candle_pattern, crt, all.
   entry_model: crt
 
 crt:
-  # Variants: previous_candle, structural_range, both.
   mode: previous_candle
 
 trade_management:
   tp1_trigger_pct: 55
   tp1_close_pct: 0.0
   move_sl_to_be_on_tp1: true
-  # 0 = entry BE; otherwise multiplier must be >= 1 to cover at least one spread.
+  # 0 = entry BE; >= 1 = multiplier applied to spread.
   breakeven_spread_multiplier: 1.2
-  # Soft cap on extra margin; the buffer will never be clipped below one spread.
   breakeven_max_buffer_pct_of_risk: 10.0
-  # Per-pair overrides use "HTF_minutes/LTF_minutes".
   tf_overrides:
     "5/5":
       tp1_trigger_pct: 45.0
@@ -115,16 +94,14 @@ circuit_breaker:
   pause_after_streak_h: 12
 
 session_filter:
-  # Session windows are evaluated in UTC.
   enabled: true
-  # Session keys may be tokyo, london, new_york, or another custom name.
+  # XAUUSD uses hardcoded COMMODITY sessions from profiles.py (Tokyo+London+NY).
+  # This block is the fallback for any symbol not in ASSET_CLASS_MAP.
   sessions:
     tokyo:
-      # Time format: "HH:MM" in UTC.
       start: "00:00"
       end: "08:00"
       enabled: true
-      # Blocked UTC hours, 0-23.
       blocked_hours: []
     london:
       start: "08:00"
@@ -133,12 +110,10 @@ session_filter:
       blocked_hours: []
     new_york:
       start: "16:00"
-      # "00:00" means the session crosses midnight.
       end: "00:00"
       enabled: true
       blocked_hours: []
 
 logging:
-  # Variants: DEBUG, INFO, WARNING, ERROR, CRITICAL.
   level: INFO
   dir: logs

@@ -42,7 +42,7 @@ signal_quality:
     XAUUSD:
       "5/5":
         min_rr: 2.5
-        max_rr: 2.0
+        max_rr: 2.5
     US100:
       "5/5":
         min_rr: 2.5
@@ -50,7 +50,7 @@ signal_quality:
     US500:
       "5/5":
         min_rr: 2.5
-        max_rr: 2
+        max_rr: 3
 
 signal_lifetime:
   expiry_hours: 120
