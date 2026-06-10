@@ -382,6 +382,7 @@ class WebSocketServer:
             "payload": {
                 "clientId": client_id,
                 "message": "Connected to Signal Engine. Send {action: subscribe, symbols: [...]} to start.",
+                "supported_symbols": sorted(SUPPORTED_SYMBOLS),
             },
         })
 
