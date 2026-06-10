@@ -407,7 +407,11 @@ class WebSocketServer:
             # writer, and transport are actually cleaned up.  Without this
             # every natural disconnect left a zombie queue task and an
             # unclosed socket.
-            asyncio.get_event_loop().create_task(client.close())
+            # BUG-11: asyncio.get_event_loop() is deprecated in Python 3.10+
+            # (emits DeprecationWarning, raises RuntimeError in 3.12 when there
+            # is no current event loop). Use get_running_loop() instead — this
+            # method is always called from within a running coroutine context.
+            asyncio.get_running_loop().create_task(client.close())
             logger.info("[%s] Disconnected — %d clients remain", client_id, len(self._clients))
 
     async def _handshake(
