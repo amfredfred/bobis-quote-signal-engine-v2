@@ -36,6 +36,10 @@ _OP_PONG         = 0xA
 MAX_FRAME_SIZE          = 1024 * 1024
 MAX_SYMBOLS_PER_CLIENT  = 100
 MAX_MESSAGE_QUEUE_SIZE  = 100
+# 6.1 — Abuse protection: subscribe churn hits the scheduler much harder than
+# other messages, and connection churn bypasses the concurrent-client cap.
+MAX_SUBSCRIBES_PER_MINUTE = 12
+MAX_CONNECTS_PER_MINUTE_PER_IP = 12
 
 
 # ── Frame codec ───────────────────────────────────────────────────────────────
@@ -79,6 +83,20 @@ class _RateLimiter:
     def remove(self, client_id: str) -> None:
         """Discard tracking state for a disconnected client to prevent memory growth."""
         self._calls.pop(client_id, None)
+
+    def prune_stale(self) -> None:
+        """
+        6.1 — Drop keys with no calls in the last window. Needed for limiters
+        keyed by IP, where remove() is never called for a specific key.
+        """
+        now = time.time()
+        stale = [
+            key
+            for key, calls in self._calls.items()
+            if not any(now - t < 60 for t in calls)
+        ]
+        for key in stale:
+            del self._calls[key]
 
 
 # ── WsClient ──────────────────────────────────────────────────────────────────
@@ -220,6 +238,10 @@ class WebSocketServer:
         self._bg_tasks:     list[asyncio.Task]           = []
         self._conn_tasks:   set[asyncio.Task]            = set()
         self._rate_limiter  = _RateLimiter()
+        # 6.1 — Tighter limiter for subscribe/unsubscribe (scheduler churn)
+        self._sub_limiter   = _RateLimiter(MAX_SUBSCRIBES_PER_MINUTE)
+        # 6.1 — Per-IP connection-attempt limiter (keyed by peer address)
+        self._conn_limiter  = _RateLimiter(MAX_CONNECTS_PER_MINUTE_PER_IP)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -292,6 +314,9 @@ class WebSocketServer:
         try:
             while True:
                 await asyncio.sleep(30)
+                # 6.1 — The per-IP limiter has no per-client remove() hook;
+                # prune idle IPs here so the map cannot grow without bound.
+                self._conn_limiter.prune_stale()
                 dead, ping_tasks = [], []
                 for cid, client in list(self._clients.items()):
                     if not client.connected:
@@ -340,6 +365,20 @@ class WebSocketServer:
         peer      = writer.get_extra_info("peername", ("?", 0))
         client_id = str(uuid.uuid4())[:8]
         logger.info("[%s] Connection from %s:%s", client_id, *peer)
+
+        # 6.1 — Per-IP connection-attempt rate limit: the concurrent-client cap
+        # below does not stop rapid connect/disconnect churn from one host.
+        peer_ip = str(peer[0]) if peer else "?"
+        if not self._conn_limiter.is_allowed(peer_ip):
+            logger.warning("[%s] Rejected — connection rate limit for %s", client_id, peer_ip)
+            writer.write(
+                b"HTTP/1.1 429 Too Many Requests\r\n"
+                b"Content-Type: text/plain\r\n\r\n"
+                b"Too many connection attempts\n"
+            )
+            await writer.drain()
+            writer.close()
+            return
 
         if len(self._clients) >= self._cfg.max_ws_clients:
             logger.warning("[%s] Rejected — connection cap reached", client_id)
@@ -401,6 +440,7 @@ class WebSocketServer:
             self._scheduler.unsubscribe(client_id)
             self._metrics_subs.discard(client_id)
             self._rate_limiter.remove(client_id)   # FIX 5: prevent memory growth
+            self._sub_limiter.remove(client_id)
             if self._metrics:
                 self._metrics.record_ws_event(client_id, "disconnected")
             # FIX 1: schedule async teardown so the queue processor task,
@@ -530,6 +570,17 @@ class WebSocketServer:
             for s in msg.get("symbols", [])
             if isinstance(s, str)
         ]
+
+        if action in ("subscribe", "unsubscribe") and not self._sub_limiter.is_allowed(
+            client.client_id
+        ):
+            # 6.1 — Subscribe flood guard: subscribe/unsubscribe churn drives
+            # scheduler work, so it gets a tighter budget than other messages.
+            await client.send_json({
+                "event": "error",
+                "payload": {"message": "Subscribe rate limit exceeded."},
+            })
+            return
 
         if action == "subscribe":
             if not symbols:

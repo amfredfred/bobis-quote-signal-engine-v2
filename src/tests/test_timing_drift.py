@@ -25,7 +25,11 @@ def test_scheduler_passes_analysis_close_without_double_subtract() -> None:
     cfg = _SchedulerCfg(now=BASE + M5 + 1_000)
     service = _Service()
     md = _MarketDataClock(now=BASE + M5 + 1_000)
-    fake_engine = type("FakeEngine", (), {"_cfg": cfg, "_md": md, "_service": service})()
+    fake_engine = type(
+        "FakeEngine",
+        (),
+        {"_cfg": cfg, "_md": md, "_service": service, "_metrics": _Metrics()},
+    )()
     expected_analysis_close = (cfg.now_ms() // M5) * M5
 
     asyncio.run(SignalEngine._on_candle_close(fake_engine, "XAUUSD"))
@@ -124,6 +128,16 @@ class _Service:
 
     async def update_watchlist(self, symbol: str):
         self.update_calls.append(symbol)
+
+
+class _Metrics:
+    """No-op metrics stub — absorbs any recorder call _on_candle_close makes."""
+
+    def __getattr__(self, name: str):
+        def _noop(*args, **kwargs):
+            return None
+
+        return _noop
 
 
 class _MarketDataClock:
