@@ -53,6 +53,19 @@ signal_quality:
   # Per-pair max RR caps use "HTF_minutes/LTF_minutes".
   tf_max_rr:
     "5/5": 3
+  # Per-symbol, per-TF RR overrides. Use "*" for symbol or TF to match all.
+  # min_rr and max_rr are optional within each entry and resolve independently.
+  # Priority (most specific wins): symbol+TF > symbol+* > *+TF > *+* > global defaults.
+  # rrr:
+  #   XAUUSD:
+  #     "60/5":
+  #       min_rr: 2.0
+  #       max_rr: 8.0
+  #     "*":
+  #       min_rr: 1.5
+  #   "*":
+  #     "*":
+  #       max_rr: 5.0
 
 signal_lifetime:
   expiry_hours: 120

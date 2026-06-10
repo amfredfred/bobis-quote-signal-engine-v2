@@ -77,6 +77,51 @@ def _parse_pair_map(raw: Any) -> dict:
     return result
 
 
+def _parse_symbol_rr_filter(raw: Any) -> dict:
+    """Parse signal_quality.rrr — per-symbol, per-TF RR overrides.
+
+    YAML form:
+      signal_quality:
+        rrr:
+          XAUUSD:
+            "60/5":
+              min_rr: 2.0
+              max_rr: 8.0
+            "*":
+              min_rr: 1.5
+          "*":
+            "60/5":
+              max_rr: 5.0
+
+    Symbol keys are uppercased and "/" stripped; "*" is kept as-is.
+    TF keys ("60/5", "*") are stored as-is.
+    Only min_rr / max_rr keys are accepted inside each entry.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, dict[str, dict[str, float]]] = {}
+    for raw_symbol, tf_map in raw.items():
+        if not isinstance(tf_map, dict):
+            continue
+        symbol = str(raw_symbol)
+        if symbol != "*":
+            symbol = symbol.upper().replace("/", "")
+        parsed_tf: dict[str, dict[str, float]] = {}
+        for tf_key, rr_values in tf_map.items():
+            if not isinstance(rr_values, dict):
+                continue
+            entry: dict[str, float] = {}
+            if "min_rr" in rr_values:
+                entry["min_rr"] = float(rr_values["min_rr"])
+            if "max_rr" in rr_values:
+                entry["max_rr"] = float(rr_values["max_rr"])
+            if entry:
+                parsed_tf[str(tf_key)] = entry
+        if parsed_tf:
+            result[symbol] = parsed_tf
+    return result
+
+
 def _parse_trade_management_tf_overrides(raw: Any) -> dict:
     """Parse per-timeframe trade-management overrides.
 
@@ -418,6 +463,12 @@ class Settings:
     # Falls back to max_rr when a pair has no explicit entry.
     tf_max_rr: dict = field(default_factory=dict)
 
+    # Per-symbol, per-TF RR overrides (signal_quality.rrr).
+    # Structure: {symbol_or_*: {tf_key_or_*: {min_rr?, max_rr?}}}
+    # Resolution order (most specific wins, independently for min and max):
+    #   symbol+TF  >  symbol+*  >  *+TF  >  *+*  >  prior layers
+    symbol_rr_filter: dict = field(default_factory=dict)
+
     # ── Signal lifetime ───────────────────────────────────────────────────────
     signal_expiry_hours: float = 120.0
 
@@ -554,6 +605,15 @@ class Settings:
                     f"trade_management.tf_overrides.{key}.breakeven_max_buffer_pct_of_risk "
                     "must be between 0 and 100."
                 )
+        for sym_key, tf_map in self.symbol_rr_filter.items():
+            for tf_key, entry in tf_map.items():
+                loc = f"signal_quality.rrr.{sym_key}.{tf_key}"
+                min_v = entry.get("min_rr")
+                max_v = entry.get("max_rr")
+                if min_v is not None and min_v <= 0:
+                    raise ValueError(f"{loc}.min_rr must be > 0.")
+                if max_v is not None and max_v < 0:
+                    raise ValueError(f"{loc}.max_rr must be >= 0 (0 = disabled).")
         if not self.ws_secret:
             import logging as _logging
 
@@ -641,6 +701,7 @@ class Settings:
             max_rr=float(_get(cfg, "signal_quality.max_rr", 9.0)),
             max_emit_lag_ms=int(_get(cfg, "signals.max_emit_lag_ms", 90_000)),
             tf_max_rr=_parse_pair_map(_get(cfg, "signal_quality.tf_max_rr")),
+            symbol_rr_filter=_parse_symbol_rr_filter(_get(cfg, "signal_quality.rrr")),
             signal_expiry_hours=float(_get(cfg, "signal_lifetime.expiry_hours", 120)),
             max_htf_zones_per_dir=int(_get(cfg, "zones.max_htf_zones_per_dir", 3)),
             max_signal_count_per_zone=int(_get(cfg, "zones.max_signal_count", 1)),

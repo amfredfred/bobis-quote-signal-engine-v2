@@ -54,6 +54,7 @@ class _ConfigProtocol(Protocol):
     htf_lookback: int
     multi_tf_independent_positions: bool
     tf_max_rr: dict
+    symbol_rr_filter: dict
 
 
 # ── Asset profile ─────────────────────────────────────────────────────────────
@@ -311,6 +312,11 @@ class AssetRegistry:
                 self._resolve_tf_trade_management(htf_interval, ltf_interval)
             )
 
+        # 6. Per-symbol / per-TF RR filter (highest priority).
+        base["min_rr"], base["max_rr"] = self._resolve_symbol_rr(
+            symbol, htf_interval, ltf_interval, base["min_rr"], base["max_rr"]
+        )
+
         return AssetProfile(**base)
 
     def _resolve_tf_max_rr(
@@ -328,3 +334,56 @@ class AssetRegistry:
 
         key = f"{interval_to_minutes(htf_interval)}/{interval_to_minutes(ltf_interval)}"
         return dict(self._cfg.trade_management_tf_overrides.get(key, {}))
+
+    def _resolve_symbol_rr(
+        self,
+        symbol: str,
+        htf_interval: Optional[str],
+        ltf_interval: Optional[str],
+        current_min: float,
+        current_max: float,
+    ) -> tuple[float, float]:
+        """
+        Apply symbol_rr_filter on top of already-resolved min/max RR.
+
+        Each of min_rr and max_rr resolves independently (most specific wins):
+          symbol+TF  >  symbol+*  >  *+TF  >  *+*  >  current (no change)
+        """
+        filters = self._cfg.symbol_rr_filter
+        if not filters:
+            return current_min, current_max
+
+        tf_key: Optional[str] = None
+        if htf_interval and ltf_interval:
+            from config.settings import interval_to_minutes
+            tf_key = f"{interval_to_minutes(htf_interval)}/{interval_to_minutes(ltf_interval)}"
+
+        candidates: list[tuple[str, str]] = []
+        if tf_key:
+            candidates.append((symbol, tf_key))
+        candidates.append((symbol, "*"))
+        if tf_key:
+            candidates.append(("*", tf_key))
+        candidates.append(("*", "*"))
+
+        resolved_min = current_min
+        resolved_max = current_max
+        min_found = max_found = False
+
+        for sym, tf in candidates:
+            if min_found and max_found:
+                break
+            sym_map = filters.get(sym)
+            if not sym_map:
+                continue
+            entry = sym_map.get(tf)
+            if not entry:
+                continue
+            if not min_found and "min_rr" in entry:
+                resolved_min = entry["min_rr"]
+                min_found = True
+            if not max_found and "max_rr" in entry:
+                resolved_max = entry["max_rr"]
+                max_found = True
+
+        return resolved_min, resolved_max

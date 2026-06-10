@@ -114,6 +114,138 @@ def test_asset_profile_applies_timeframe_trade_management_overrides():
     assert registry.get("XAUUSD", "5min", "5min").tp1_trigger_pct == 10.0
 
 
+def test_symbol_rr_filter_symbol_plus_tf_wins():
+    settings = Settings(
+        min_rr=1.5,
+        max_rr=9.0,
+        symbol_rr_filter={
+            "XAUUSD": {"60/5": {"min_rr": 2.0, "max_rr": 7.0}},
+            "*": {"60/5": {"min_rr": 1.8, "max_rr": 5.0}},
+        },
+    )
+    registry = AssetRegistry(settings)
+
+    profile = registry.get("XAUUSD", "1h", "5min")
+    assert profile.min_rr == 2.0
+    assert profile.max_rr == 7.0
+
+
+def test_symbol_rr_filter_symbol_wildcard_tf_fallback():
+    settings = Settings(
+        min_rr=1.5,
+        max_rr=9.0,
+        symbol_rr_filter={
+            "XAUUSD": {"*": {"min_rr": 2.5, "max_rr": 6.0}},
+        },
+    )
+    registry = AssetRegistry(settings)
+
+    # TF not listed → falls to symbol+*
+    profile = registry.get("XAUUSD", "4h", "5min")
+    assert profile.min_rr == 2.5
+    assert profile.max_rr == 6.0
+
+
+def test_symbol_rr_filter_global_wildcard_applies_to_other_symbols():
+    settings = Settings(
+        min_rr=1.5,
+        max_rr=9.0,
+        symbol_rr_filter={
+            "XAUUSD": {"*": {"max_rr": 6.0}},
+            "*": {"*": {"min_rr": 2.0}},
+        },
+    )
+    registry = AssetRegistry(settings)
+
+    # US100 has no specific entry → *+* applies for min_rr
+    # max_rr unchanged: INDICES class override gives 8.0, *+* didn't set max_rr
+    profile = registry.get("US100", "1h", "5min")
+    assert profile.min_rr == 2.0
+    assert profile.max_rr == 8.0
+
+
+def test_symbol_rr_filter_independent_resolution_per_value():
+    # min_rr comes from symbol+*, max_rr comes from *+TF — independent lookup
+    settings = Settings(
+        min_rr=1.5,
+        max_rr=9.0,
+        symbol_rr_filter={
+            "XAUUSD": {"*": {"min_rr": 3.0}},        # only min_rr
+            "*": {"60/5": {"max_rr": 4.0}},           # only max_rr
+        },
+    )
+    registry = AssetRegistry(settings)
+
+    profile = registry.get("XAUUSD", "1h", "5min")
+    assert profile.min_rr == 3.0   # from XAUUSD+*
+    assert profile.max_rr == 4.0   # from *+60/5
+
+
+def test_symbol_rr_filter_no_tf_falls_back_to_symbol_wildcard():
+    settings = Settings(
+        min_rr=1.5,
+        max_rr=9.0,
+        symbol_rr_filter={
+            "XAUUSD": {
+                "60/5": {"min_rr": 2.0},
+                "*": {"min_rr": 1.8},
+            },
+        },
+    )
+    registry = AssetRegistry(settings)
+
+    # Different TF — not 60/5, so falls to symbol+*
+    profile = registry.get("XAUUSD", "4h", "15min")
+    assert profile.min_rr == 1.8
+
+
+def test_symbol_rr_filter_parsed_from_yaml(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        """
+signal_quality:
+  min_rr: 1.5
+  max_rr: 9.0
+  rrr:
+    XAUUSD:
+      "60/5":
+        min_rr: 2.0
+        max_rr: 7.5
+      "*":
+        min_rr: 1.8
+    "*":
+      "*":
+        max_rr: 5.0
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("APEX_CONFIG", str(cfg))
+    monkeypatch.setenv("APEX_ENV", "paper")
+
+    settings = Settings.from_env()
+
+    assert settings.symbol_rr_filter["XAUUSD"]["60/5"]["min_rr"] == 2.0
+    assert settings.symbol_rr_filter["XAUUSD"]["60/5"]["max_rr"] == 7.5
+    assert settings.symbol_rr_filter["XAUUSD"]["*"]["min_rr"] == 1.8
+    assert settings.symbol_rr_filter["*"]["*"]["max_rr"] == 5.0
+
+
+def test_symbol_rr_filter_allows_max_rr_below_min_rr():
+    # max_rr is a TP cap (adjusts tp2), not a filter — so max_rr < min_rr is valid:
+    # require >= 3R natural setup, cap TP at 2R.
+    settings = Settings(
+        symbol_rr_filter={"XAUUSD": {"*": {"min_rr": 3.0, "max_rr": 2.0}}}
+    )
+    assert settings.symbol_rr_filter["XAUUSD"]["*"]["max_rr"] == 2.0
+
+
+def test_symbol_rr_filter_rejects_zero_min_rr():
+    with pytest.raises(ValueError, match="min_rr must be > 0"):
+        Settings(
+            symbol_rr_filter={"XAUUSD": {"*": {"min_rr": 0.0}}}
+        )
+
+
 def test_metrics_active_zones_are_timeframe_aware_and_pruned(tmp_path):
     metrics = MetricsCollector(Settings(base_dir=tmp_path))
     old_ts = 1_700_000_000_000
