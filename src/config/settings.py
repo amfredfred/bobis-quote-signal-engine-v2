@@ -123,11 +123,20 @@ def _parse_symbol_rr_filter(raw: Any) -> dict:
 
 
 def _parse_trade_management_tf_overrides(raw: Any) -> dict:
-    """Parse per-timeframe trade-management overrides.
+    """Parse per-symbol, per-timeframe trade-management overrides.
 
     YAML form:
-      "5/5":
-        tp1_trigger_pct: 5.0
+      XAUUSD:
+        "5/5":
+          tp1_trigger_pct: 55.0
+        "*":          # wildcard TF for this symbol
+          tp1_trigger_pct: 52.0
+      "*":            # wildcard symbol
+        "30/30":
+          tp1_trigger_pct: 50.0
+
+    Resolution priority: symbol+TF > symbol+* > *+TF > *+* > global default.
+    Symbol keys are uppercased; "*" is kept as-is.
     """
     if raw is None:
         return {}
@@ -141,24 +150,36 @@ def _parse_trade_management_tf_overrides(raw: Any) -> dict:
         "breakeven_spread_multiplier",
         "breakeven_max_buffer_pct_of_risk",
     }
-    parsed: dict[str, dict[str, Any]] = {}
-    for pair, values in raw.items():
-        if not isinstance(values, dict):
+    result: dict[str, dict[str, dict[str, Any]]] = {}
+    for raw_symbol, tf_map in raw.items():
+        if not isinstance(tf_map, dict):
             raise ValueError(
-                f"trade_management.tf_overrides.{pair} must be a mapping."
+                f"trade_management.tf_overrides.{raw_symbol} must be a mapping."
             )
-        override: dict[str, Any] = {}
-        for key, value in values.items():
-            if key not in allowed:
+        symbol = str(raw_symbol)
+        if symbol != "*":
+            symbol = symbol.upper().replace("/", "")
+        parsed_tf: dict[str, dict[str, Any]] = {}
+        for tf_key, values in tf_map.items():
+            if not isinstance(values, dict):
                 raise ValueError(
-                    f"trade_management.tf_overrides.{pair}.{key} is not supported."
+                    f"trade_management.tf_overrides.{raw_symbol}.{tf_key} must be a mapping."
                 )
-            if key == "move_sl_to_be_on_tp1":
-                override[key] = _as_bool(value)
-            else:
-                override[key] = float(value)
-        parsed[str(pair)] = override
-    return parsed
+            override: dict[str, Any] = {}
+            for key, value in values.items():
+                if key not in allowed:
+                    raise ValueError(
+                        f"trade_management.tf_overrides.{raw_symbol}.{tf_key}.{key} is not supported."
+                    )
+                if key == "move_sl_to_be_on_tp1":
+                    override[key] = _as_bool(value)
+                else:
+                    override[key] = float(value)
+            if override:
+                parsed_tf[str(tf_key)] = override
+        if parsed_tf:
+            result[symbol] = parsed_tf
+    return result
 
 
 def _int_set(value: Any, default: set[int] | None = None) -> set[int]:

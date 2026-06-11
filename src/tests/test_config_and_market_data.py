@@ -88,30 +88,78 @@ def test_settings_rejects_breakeven_multiplier_below_one() -> None:
         Settings(breakeven_spread_multiplier=0.5)
 
 
-def test_asset_profile_applies_timeframe_trade_management_overrides():
+def test_asset_profile_applies_per_symbol_tf_trade_management_overrides():
     settings = Settings(
         tp1_trigger_pct=10.0,
         tp1_close_pct=0.0,
         trade_management_tf_overrides={
-            "1/1": {"tp1_trigger_pct": 5.0},
-            "30/30": {
-                "tp1_trigger_pct": 7.5,
-                "tp1_close_pct": 25.0,
-                "breakeven_spread_multiplier": 2.0,
-                "breakeven_max_buffer_pct_of_risk": 15.0,
+            "XAUUSD": {
+                "1/1": {
+                    "tp1_trigger_pct": 5.0,
+                },
+                "30/30": {
+                    "tp1_trigger_pct": 7.5,
+                    "tp1_close_pct": 25.0,
+                    "breakeven_spread_multiplier": 2.0,
+                    "breakeven_max_buffer_pct_of_risk": 15.0,
+                },
             },
         },
     )
 
     registry = AssetRegistry(settings)
 
+    # Exact symbol + exact TF
     assert registry.get("XAUUSD", "1min", "1min").tp1_trigger_pct == 5.0
     thirty = registry.get("XAUUSD", "30min", "30min")
     assert thirty.tp1_trigger_pct == 7.5
     assert thirty.tp1_close_pct == 25.0
     assert thirty.breakeven_spread_multiplier == 2.0
     assert thirty.breakeven_max_buffer_pct_of_risk == 15.0
+    # Symbol present but no matching TF → global default
     assert registry.get("XAUUSD", "5min", "5min").tp1_trigger_pct == 10.0
+    # Different symbol → global default
+    assert registry.get("US100", "1min", "1min").tp1_trigger_pct == 10.0
+
+
+def test_asset_profile_tf_overrides_wildcard_tf_fallback():
+    settings = Settings(
+        tp1_trigger_pct=10.0,
+        tp1_close_pct=0.0,
+        trade_management_tf_overrides={
+            "XAUUSD": {
+                "1/1": {"tp1_trigger_pct": 5.0},
+                "*":   {"tp1_trigger_pct": 8.0},  # wildcard TF
+            },
+        },
+    )
+    registry = AssetRegistry(settings)
+
+    # Exact TF wins
+    assert registry.get("XAUUSD", "1min", "1min").tp1_trigger_pct == 5.0
+    # Other TF falls back to "*"
+    assert registry.get("XAUUSD", "5min", "5min").tp1_trigger_pct == 8.0
+    # Different symbol → global default
+    assert registry.get("US100", "5min", "5min").tp1_trigger_pct == 10.0
+
+
+def test_asset_profile_tf_overrides_wildcard_symbol_fallback():
+    settings = Settings(
+        tp1_trigger_pct=10.0,
+        tp1_close_pct=0.0,
+        trade_management_tf_overrides={
+            "XAUUSD": {"1/1": {"tp1_trigger_pct": 5.0}},
+            "*":       {"1/1": {"tp1_trigger_pct": 7.0}},  # wildcard symbol
+        },
+    )
+    registry = AssetRegistry(settings)
+
+    # Exact symbol+TF
+    assert registry.get("XAUUSD", "1min", "1min").tp1_trigger_pct == 5.0
+    # Unknown symbol falls back to "*"
+    assert registry.get("US100", "1min", "1min").tp1_trigger_pct == 7.0
+    # Unknown symbol, unmatched TF → global default
+    assert registry.get("US100", "5min", "5min").tp1_trigger_pct == 10.0
 
 
 def test_symbol_rr_filter_symbol_plus_tf_wins():

@@ -309,7 +309,7 @@ class AssetRegistry:
                 htf_interval, ltf_interval, base["max_rr"]
             )
             base.update(
-                self._resolve_tf_trade_management(htf_interval, ltf_interval)
+                self._resolve_tf_trade_management(symbol, htf_interval, ltf_interval)
             )
 
         # 6. Per-symbol / per-TF RR filter (highest priority).
@@ -328,12 +328,33 @@ class AssetRegistry:
         return float(self._cfg.tf_max_rr.get(key, fallback))
 
     def _resolve_tf_trade_management(
-        self, htf_interval: str, ltf_interval: str
+        self, symbol: str, htf_interval: str, ltf_interval: str
     ) -> dict[str, Any]:
+        """Return the most-specific trade-management override for (symbol, TF).
+
+        Priority: symbol+TF > symbol+* > *+TF > *+* > {} (no override).
+        """
         from config.settings import interval_to_minutes
 
-        key = f"{interval_to_minutes(htf_interval)}/{interval_to_minutes(ltf_interval)}"
-        return dict(self._cfg.trade_management_tf_overrides.get(key, {}))
+        overrides = self._cfg.trade_management_tf_overrides
+        if not overrides:
+            return {}
+
+        tf_key = f"{interval_to_minutes(htf_interval)}/{interval_to_minutes(ltf_interval)}"
+        candidates = [
+            (symbol, tf_key),
+            (symbol, "*"),
+            ("*", tf_key),
+            ("*", "*"),
+        ]
+        for sym, tf in candidates:
+            sym_map = overrides.get(sym)
+            if not sym_map:
+                continue
+            entry = sym_map.get(tf)
+            if entry:
+                return dict(entry)
+        return {}
 
     def _resolve_symbol_rr(
         self,
