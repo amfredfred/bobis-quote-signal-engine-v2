@@ -107,13 +107,6 @@ def main():
     p.add_argument("--to-date")
     p.add_argument("--start-balance", dest="start_balance", type=float, default=None)
     p.add_argument("--risk-percent", dest="risk_percent", type=float, default=None)
-    p.add_argument("--spread-points", dest="spread_points", type=float, default=None)
-    p.add_argument(
-        "--breakeven-spread-multiplier",
-        dest="breakeven_spread_multiplier",
-        type=float,
-        default=None,
-    )
 
     args = p.parse_args()
 
@@ -126,13 +119,6 @@ def main():
         extra += ["--start-balance", str(args.start_balance)]
     if args.risk_percent is not None:
         extra += ["--risk-percent", str(args.risk_percent)]
-    if args.spread_points is not None:
-        extra += ["--spread-points", str(args.spread_points)]
-    if args.breakeven_spread_multiplier is not None:
-        extra += [
-            "--breakeven-spread-multiplier",
-            str(args.breakeven_spread_multiplier),
-        ]
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

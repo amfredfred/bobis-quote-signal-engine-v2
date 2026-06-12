@@ -717,8 +717,6 @@ class MetricsCollector:
             "tp1_trigger_pct": self._cfg.tp1_trigger_pct,
             "tp1_close_pct": self._cfg.tp1_close_pct,
             "move_sl_to_be_on_tp1": self._cfg.move_sl_to_be_on_tp1,
-            "breakeven_spread_multiplier": self._cfg.breakeven_spread_multiplier,
-            "breakeven_max_buffer_pct_of_risk": self._cfg.breakeven_max_buffer_pct_of_risk,
             "trade_management_tf_overrides": dict(
                 self._cfg.trade_management_tf_overrides
             ),

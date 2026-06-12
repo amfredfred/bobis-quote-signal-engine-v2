@@ -163,8 +163,6 @@ def _parse_trade_management_tf_overrides(raw: Any) -> dict:
         "tp1_trigger_pct",
         "tp1_close_pct",
         "move_sl_to_be_on_tp1",
-        "breakeven_spread_multiplier",
-        "breakeven_max_buffer_pct_of_risk",
     }
     result: dict[str, dict[str, dict[str, Any]]] = {}
     for raw_symbol, tf_map in raw.items():
@@ -532,8 +530,6 @@ class Settings:
     tp1_trigger_pct: float = 50.0
     tp1_close_pct: float = 0.0
     move_sl_to_be_on_tp1: bool = True
-    breakeven_spread_multiplier: float = 1.5
-    breakeven_max_buffer_pct_of_risk: float = 10.0
     trade_management_tf_overrides: dict = field(default_factory=dict)
     use_invalidation: bool = False
     multi_tf_independent_positions: bool = True
@@ -617,20 +613,6 @@ class Settings:
             raise ValueError("trade_management.tp1_trigger_pct must be > 0 and < 100.")
         if self.tp1_close_pct < 0.0 or self.tp1_close_pct > 100.0:
             raise ValueError("trade_management.tp1_close_pct must be between 0 and 100.")
-        if (
-            self.breakeven_spread_multiplier < 0.0
-            or 0.0 < self.breakeven_spread_multiplier < 1.0
-        ):
-            raise ValueError(
-                "trade_management.breakeven_spread_multiplier must be 0 or >= 1."
-            )
-        if (
-            self.breakeven_max_buffer_pct_of_risk < 0.0
-            or self.breakeven_max_buffer_pct_of_risk > 100.0
-        ):
-            raise ValueError(
-                "trade_management.breakeven_max_buffer_pct_of_risk must be between 0 and 100."
-            )
         for key, override in self.trade_management_tf_overrides.items():
             trigger = override.get("tp1_trigger_pct")
             if trigger is not None and (trigger <= 0.0 or trigger >= 100.0):
@@ -641,20 +623,6 @@ class Settings:
             if close_pct is not None and (close_pct < 0.0 or close_pct > 100.0):
                 raise ValueError(
                     f"trade_management.tf_overrides.{key}.tp1_close_pct must be between 0 and 100."
-                )
-            spread_multiplier = override.get("breakeven_spread_multiplier")
-            if spread_multiplier is not None and (
-                spread_multiplier < 0.0 or 0.0 < spread_multiplier < 1.0
-            ):
-                raise ValueError(
-                    f"trade_management.tf_overrides.{key}.breakeven_spread_multiplier "
-                    "must be 0 or >= 1."
-                )
-            buffer_pct = override.get("breakeven_max_buffer_pct_of_risk")
-            if buffer_pct is not None and (buffer_pct < 0.0 or buffer_pct > 100.0):
-                raise ValueError(
-                    f"trade_management.tf_overrides.{key}.breakeven_max_buffer_pct_of_risk "
-                    "must be between 0 and 100."
                 )
         for sym_key, tf_map in self.symbol_rr_filter.items():
             for tf_key, entry in tf_map.items():
@@ -765,12 +733,6 @@ class Settings:
                     "trade_management.move_sl_to_be_on_tp1",
                     _get(cfg, "features.use_breakeven", True),
                 )
-            ),
-            breakeven_spread_multiplier=float(
-                _get(cfg, "trade_management.breakeven_spread_multiplier", 1.5)
-            ),
-            breakeven_max_buffer_pct_of_risk=float(
-                _get(cfg, "trade_management.breakeven_max_buffer_pct_of_risk", 10.0)
             ),
             trade_management_tf_overrides=_parse_trade_management_tf_overrides(
                 _get(cfg, "trade_management.tf_overrides")

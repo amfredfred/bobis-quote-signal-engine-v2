@@ -29,10 +29,6 @@ def _protected_be_price(signal: TradeSignal, profile: AssetProfile) -> float:
     return breakeven_price(
         direction=signal.direction,
         entry_price=signal.entry_price,
-        risk_pips=signal.risk_pips,
-        spread_price_units=profile.breakeven_spread_price_units,
-        spread_multiplier=profile.breakeven_spread_multiplier,
-        max_buffer_pct_of_risk=profile.breakeven_max_buffer_pct_of_risk,
     )
 
 
@@ -41,10 +37,6 @@ def _protected_be_rr(signal: TradeSignal, profile: AssetProfile) -> float:
         full_rr=signal.risk_reward_ratio,
         tp1_trigger_pct=profile.tp1_trigger_pct,
         tp1_close_pct=profile.tp1_close_pct,
-        risk_pips=signal.risk_pips,
-        spread_price_units=profile.breakeven_spread_price_units,
-        spread_multiplier=profile.breakeven_spread_multiplier,
-        max_buffer_pct_of_risk=profile.breakeven_max_buffer_pct_of_risk,
     )
 
 

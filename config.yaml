@@ -76,9 +76,6 @@ trade_management:
   tp1_trigger_pct: 55
   tp1_close_pct: 0.0
   move_sl_to_be_on_tp1: true
-  # 0 = entry BE; >= 1 = multiplier applied to spread.
-  breakeven_spread_multiplier: 1.2
-  breakeven_max_buffer_pct_of_risk: 10.0
   tf_overrides:
     XAUUSD:
       "5/5":

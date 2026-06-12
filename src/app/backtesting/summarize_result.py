@@ -56,7 +56,7 @@ TRADE_COLUMNS = [
     "wick_ratio", "htf_high", "htf_low", "tp_level", "ltf_high", "ltf_low",
     "balance_before", "risk_amount", "pnl", "balance_after",
     "peak_balance_after", "drawdown_after", "drawdown_pct_after",
-    "theoretical_rr", "executed_rr", "spread_points",
+    "theoretical_rr", "executed_rr",
     "raw_entry_price", "executed_entry_price", "raw_exit_price",
     "executed_exit_price",
 ]
@@ -66,7 +66,7 @@ NUMERIC_TRADE_FIELDS = {
     "htf_high", "htf_low", "tp_level", "ltf_high", "ltf_low",
     "balance_before", "risk_amount", "pnl", "balance_after",
     "peak_balance_after", "drawdown_after", "drawdown_pct_after",
-    "theoretical_rr", "executed_rr", "spread_points",
+    "theoretical_rr", "executed_rr",
     "raw_entry_price", "executed_entry_price", "raw_exit_price",
     "executed_exit_price",
 }
@@ -1401,7 +1401,7 @@ function fmtTradeVal(t,col){
   if(['rr','realized_rr','theoretical_rr','executed_rr','wick_ratio','drawdown_pct_after'].includes(col)){
     const n=Number(v); return Number.isFinite(n)?n.toFixed(4):v;
   }
-  if(['balance_before','risk_amount','pnl','balance_after','peak_balance_after','drawdown_after','spread_points'].includes(col)){
+  if(['balance_before','risk_amount','pnl','balance_after','peak_balance_after','drawdown_after'].includes(col)){
     const n=Number(v); return Number.isFinite(n)?n.toFixed(2):v;
   }
   return v;

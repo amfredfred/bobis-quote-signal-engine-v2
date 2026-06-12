@@ -99,47 +99,7 @@ interval_to_minutes: callable = lru_cache(maxsize=64)(_interval_to_minutes)
 # ── Account simulation defaults ───────────────────────────────────────────────
 DEFAULT_START_BALANCE: float = 5_000.0
 DEFAULT_RISK_PERCENT: float = 1.0
-DEFAULT_SPREAD_POINTS: float = 0.0
 DEFAULT_TRAILING_GIVEBACK_PCT: float = 0.0
-
-# CLI spread values are broker-style points. Internally the backtester uses
-# price units, so XAUUSD 3 points becomes 0.3 while indices stay 3.0.
-SPREAD_POINT_SIZE_BY_SYMBOL: dict[str, float] = {
-    "XAUUSD": 0.1,
-    "XAU/USD": 0.1,
-    "GOLD": 0.1,
-}
-
-
-def spread_points_to_price_units(symbol: str, spread_points: float) -> float:
-    point_size = SPREAD_POINT_SIZE_BY_SYMBOL.get(symbol.upper().replace("/", ""), 1.0)
-    return spread_points * point_size
-
-
-def spread_adjusted_rr(
-    raw_rr: float,
-    raw_risk_distance: float,
-    spread_price_units: float,
-) -> float:
-    """Return R after sizing against the entry-to-stop distance plus spread."""
-    if spread_price_units <= 0.0 or raw_risk_distance <= 0.0:
-        return raw_rr
-    executed_risk = raw_risk_distance + spread_price_units
-    return (raw_rr * raw_risk_distance - spread_price_units) / executed_risk
-
-
-def passes_spread_quality_gate(
-    spread_price_units: float,
-    stop_distance: float,
-    max_spread_to_sl_ratio: float,
-) -> bool:
-    """Mirror live execution's spread-to-SL quality rejection."""
-    if max_spread_to_sl_ratio <= 0.0 or spread_price_units <= 0.0:
-        return True
-    if stop_distance <= 0.0:
-        return False
-    return spread_price_units / stop_distance <= max_spread_to_sl_ratio
-
 
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 GREEN = "\033[92m"
@@ -388,7 +348,6 @@ class BacktestReport:
         cfg: Settings,
         start_balance: float = DEFAULT_START_BALANCE,
         risk_percent: float = DEFAULT_RISK_PERCENT,
-        spread_points: float = DEFAULT_SPREAD_POINTS,
         trailing_giveback_pct: float = DEFAULT_TRAILING_GIVEBACK_PCT,
     ) -> None:
         self.symbol = symbol
@@ -396,7 +355,6 @@ class BacktestReport:
         self.cfg = cfg
         self.start_balance = start_balance
         self.risk_percent = risk_percent
-        self.spread_points = spread_points
         self.trailing_giveback_pct = trailing_giveback_pct
         self._registry = AssetRegistry(cfg)
         self.profile = self._registry.get(symbol)  # base (combined summary)
@@ -409,37 +367,17 @@ class BacktestReport:
         peak = self.start_balance
         max_dd = 0.0
         max_dd_pct = 0.0
-        spread_points = self.spread_points
-        EXP = SignalOutcome.EXPIRED
 
         per_trade: list[dict] = []
         for r in results:
             raw_rr = r.realized_rr
             s = r.signal
-
-            # EXPIRED trades are never entered — no spread is paid.
-            if spread_points > 0 and r.outcome != EXP:
-                executed_rr = spread_adjusted_rr(raw_rr, s.risk_pips, spread_points)
-            else:
-                executed_rr = raw_rr
-
-            # Executed entry / exit prices (informational): spread in price = risk * pct
-            raw_entry = s.entry_price
-            raw_exit = r.close_price or raw_entry
-            if spread_points > 0 and r.outcome != EXP:
-                if s.direction == SignalDirection.LONG:
-                    exec_entry = raw_entry + spread_points
-                    exec_exit = raw_exit
-                else:
-                    exec_entry = raw_entry
-                    exec_exit = raw_exit + spread_points
-            else:
-                exec_entry = raw_entry
-                exec_exit = raw_exit
+            entry = s.entry_price
+            exit_px = r.close_price or entry
 
             acct = calculate_trade_accounting(
                 balance_before=balance,
-                result_r=executed_rr,
+                result_r=raw_rr,
                 risk_percent=self.risk_percent,
                 peak_balance_before=peak,
             )
@@ -447,12 +385,11 @@ class BacktestReport:
                 "balance_before": balance,
                 **acct,
                 "theoretical_rr": raw_rr,
-                "executed_rr": executed_rr,
-                "spread_points": spread_points,
-                "raw_entry_price": raw_entry,
-                "executed_entry_price": exec_entry,
-                "raw_exit_price": raw_exit,
-                "executed_exit_price": exec_exit,
+                "executed_rr": raw_rr,
+                "raw_entry_price": entry,
+                "executed_entry_price": entry,
+                "raw_exit_price": exit_px,
+                "executed_exit_price": exit_px,
             })
             balance = acct["balance_after"]
             peak = acct["peak_balance_after"]
@@ -576,10 +513,9 @@ class BacktestReport:
         if not compact:
             # ── Account performance (primary) ──────────────────────────────
             risk_label = f"{self.risk_percent:g}% risk/trade"
-            spread_label = f" · Spread {self.spread_points:g} points" if self.spread_points > 0 else ""
             net_col = GREEN if acct["net_pnl"] >= 0 else RED
             dd_col = RED if acct["max_drawdown"] > 0 else DIM
-            print(f" {'ACCOUNT SIMULATION':<32} {DIM}({risk_label}{spread_label}){R}")
+            print(f" {'ACCOUNT SIMULATION':<32} {DIM}({risk_label}){R}")
             print(
                 f" {'  Start Balance':<32} "
                 f"{BOLD}{_fmt_currency_plain(acct['start_balance'])}{R}"
@@ -729,7 +665,6 @@ class BacktestReport:
             "drawdown_pct_after",
             "theoretical_rr",
             "executed_rr",
-            "spread_points",
             "raw_entry_price",
             "executed_entry_price",
             "raw_exit_price",
@@ -761,7 +696,6 @@ class BacktestReport:
             "drawdown_pct_after",
             "theoretical_rr",
             "executed_rr",
-            "spread_points",
             "raw_entry_price",
             "executed_entry_price",
             "raw_exit_price",
@@ -780,7 +714,6 @@ class BacktestReport:
                 for k, v in summary.items()
             },
             "risk_percent": self.risk_percent,
-            "spread_points": self.spread_points,
             "trailing_giveback_pct": self.trailing_giveback_pct,
             "equity_curve": equity_curve,
             "trades": trades,
@@ -802,7 +735,6 @@ class MultiPairBacktester:
         htf_lookback: Optional[int] = None,
         start_balance: float = DEFAULT_START_BALANCE,
         risk_percent: float = DEFAULT_RISK_PERCENT,
-        spread_points: float = DEFAULT_SPREAD_POINTS,
         trailing_giveback_pct: float = DEFAULT_TRAILING_GIVEBACK_PCT,
         trace_out: Optional[str] = None,
     ) -> None:
@@ -817,10 +749,6 @@ class MultiPairBacktester:
             raise ValueError(
                 "riskPercent must be greater than 0 and less than or equal to 100"
             )
-        if not math.isfinite(spread_points):
-            raise ValueError("spreadPoints must be a valid number")
-        if spread_points < 0:
-            raise ValueError("spreadPoints must be >= 0")
         if not math.isfinite(trailing_giveback_pct):
             raise ValueError("trailingGivebackPct must be a valid number")
         if trailing_giveback_pct < 0:
@@ -836,11 +764,9 @@ class MultiPairBacktester:
         self._lookback_override = htf_lookback  # CLI int override, or None
         self.start_balance = start_balance
         self.risk_percent = risk_percent
-        self.spread_points = spread_points
         self.trailing_giveback_pct = trailing_giveback_pct
         self.trace_out = trace_out
         self._trace_writer: Optional[ParityTraceWriter] = None
-        self.spread_quality_blocked = 0
         self._registry = AssetRegistry(cfg)
         self._decision_engine = DecisionEngine()
 
@@ -961,7 +887,6 @@ class MultiPairBacktester:
         total_steps = n - ltf_lb
         pairs_str = " | ".join(f"{h}/{l}" for h, l in self.pairs)
 
-        spread_header = f"  Spread: {self.spread_points:g} points" if self.spread_points > 0 else ""
         trail_header = (
             f"  Giveback trail: {self.trailing_giveback_pct:g}%"
             if self.trailing_giveback_pct > 0
@@ -971,7 +896,7 @@ class MultiPairBacktester:
         print(f"{BOLD} BACKTEST · {symbol} · {pairs_str}{RESET}")
         print(
             f" Master LTF : {master_ltf} ({n:,} bars) warm-up={ltf_lb}"
-            f"{spread_header}{trail_header}"
+            f"{trail_header}"
         )
         print(f"{'='*64}\n")
 
@@ -1226,32 +1151,6 @@ class MultiPairBacktester:
                     signal.setup_candle_close_at = rejection.timestamp + ltf_interval_ms
                     signal.zone_attempt = zone_signal_counts.get(zone_key, 0) + 1
 
-                    if not passes_spread_quality_gate(
-                        self.spread_points,
-                        signal.risk_pips,
-                        cfg.max_spread_to_sl_ratio,
-                    ):
-                        spread_to_sl_ratio = (
-                            self.spread_points / signal.risk_pips
-                            if signal.risk_pips > 0.0
-                            else math.inf
-                        )
-                        self.spread_quality_blocked += 1
-                        seen_ltf.add(ltf_key)
-                        seen_rej.add(rej_key)
-                        logger.debug(
-                            "[%s %s/%s] spread quality blocked: %.5f spread / "
-                            "%.5f SL = %.2f > %.2f",
-                            symbol,
-                            htf_interval,
-                            ltf_interval,
-                            self.spread_points,
-                            signal.risk_pips,
-                            spread_to_sl_ratio,
-                            cfg.max_spread_to_sl_ratio,
-                        )
-                        continue
-
                     cur_ltf_i = ltf_hi_idx - 1
                     future_np = self.ltf_candles_np[ltf_interval][cur_ltf_i + 1 :]
                     result = _simulate(signal, future_np)
@@ -1277,7 +1176,6 @@ class MultiPairBacktester:
                                 cfg=cfg,
                                 decision_reason=decision.decision_reason,
                                 blocked_reason=decision.blocked_reason,
-                                spread_pct=self.spread_points,
                                 account_balance=self.start_balance,
                                 risk_percent=self.risk_percent,
                                 outcome=result.outcome,
@@ -1286,12 +1184,7 @@ class MultiPairBacktester:
                     _print_result(result)
                     break  # one signal per LTF tick per HTF zone scan
 
-        blocked_label = (
-            f" spread-blocked={self.spread_quality_blocked}"
-            if self.spread_quality_blocked
-            else ""
-        )
-        print(f"\r [{'█'*20}] 100.0% signals={len(self.results)}{blocked_label}\n")
+        print(f"\r [{'█'*20}] 100.0% signals={len(self.results)}\n")
         trace_ctx.__exit__(None, None, None)
         self._trace_writer = None
 
@@ -1301,7 +1194,6 @@ class MultiPairBacktester:
             cfg,
             start_balance=self.start_balance,
             risk_percent=self.risk_percent,
-            spread_points=self.spread_points,
             trailing_giveback_pct=self.trailing_giveback_pct,
         )
         report.print()
@@ -1338,14 +1230,6 @@ class MultiPairBacktester:
         profile = self._registry.get(
             signal.symbol, signal.htf_interval, signal.ltf_interval
         )
-        try:
-            profile = dc_replace(
-                profile,
-                breakeven_spread_price_units=getattr(self, "spread_points", 0.0),
-            )
-        except TypeError:
-            profile = copy.copy(profile)
-            profile.breakeven_spread_price_units = getattr(self, "spread_points", 0.0)
         if self.trailing_giveback_pct > 0:
             return self._simulate_with_giveback_trailing(signal, future, profile)
 
@@ -1777,10 +1661,6 @@ class MultiPairBacktester:
         return breakeven_price(
             direction=signal.direction,
             entry_price=signal.entry_price,
-            risk_pips=signal.risk_pips,
-            spread_price_units=profile.breakeven_spread_price_units,
-            spread_multiplier=profile.breakeven_spread_multiplier,
-            max_buffer_pct_of_risk=profile.breakeven_max_buffer_pct_of_risk,
         )
 
     def _protected_be_rr(self, signal: TradeSignal, profile: AssetProfile) -> float:
@@ -1788,10 +1668,6 @@ class MultiPairBacktester:
             full_rr=signal.risk_reward_ratio,
             tp1_trigger_pct=profile.tp1_trigger_pct,
             tp1_close_pct=profile.tp1_close_pct,
-            risk_pips=signal.risk_pips,
-            spread_price_units=profile.breakeven_spread_price_units,
-            spread_multiplier=profile.breakeven_spread_multiplier,
-            max_buffer_pct_of_risk=profile.breakeven_max_buffer_pct_of_risk,
         )
 
     def _rr_at_price(self, signal: TradeSignal, price: float) -> float:
@@ -1809,13 +1685,7 @@ class MultiPairBacktester:
         # FIX: hit_entry_after_tp1 is always set via __init__ — direct access.
         retrace_marker = f" {YELLOW}↺{RESET}" if r.hit_entry_after_tp1 else ""
 
-        raw_rr = r.realized_rr
-        spread_points = self.spread_points
-        EXP = SignalOutcome.EXPIRED
-        if spread_points > 0 and r.outcome != EXP:
-            executed_rr = spread_adjusted_rr(raw_rr, s.risk_pips, spread_points)
-        else:
-            executed_rr = raw_rr
+        executed_rr = r.realized_rr
 
         def _rr_label(rr: float) -> str:
             return f"+{rr:.2f}R" if rr >= 0 else f"{rr:.2f}R"
@@ -1837,7 +1707,7 @@ class MultiPairBacktester:
         close_label = (
             self.cfg.dt_ms(r.close_ts)
             if r.close_ts
-            else ("EXPIRED" if r.outcome == EXP else "OPEN")
+            else ("EXPIRED" if r.outcome == SignalOutcome.EXPIRED else "OPEN")
         )
 
         print(f"\r{' '*80}\r", end="")
@@ -1955,13 +1825,6 @@ def main() -> None:
     p.add_argument("--stale-hours", type=float, default=None)
     p.add_argument("--max-sl-mult", type=float, default=None)
     p.add_argument("--no-breakeven", action="store_true")
-    p.add_argument(
-        "--breakeven-spread-multiplier",
-        type=float,
-        default=None,
-        metavar="MULTIPLIER",
-        help="Move breakeven beyond entry by configured spread times this multiplier",
-    )
     p.add_argument("--no-invalidation", action="store_true")
     p.add_argument("--no-trend-filter", action="store_true")
     p.add_argument("--no-session-filter", action="store_true")
@@ -1984,14 +1847,6 @@ def main() -> None:
         help=f"Risk percent per trade (default: {DEFAULT_RISK_PERCENT}%%)",
     )
     p.add_argument(
-        "--spread-points",
-        dest="spread_points",
-        type=float,
-        default=None,
-        metavar="POINTS",
-        help=f"Spread in price units (default: {DEFAULT_SPREAD_POINTS})",
-    )
-    p.add_argument(
         "--trailing-giveback-pct",
         dest="trailing_giveback_pct",
         type=float,
@@ -2011,8 +1866,6 @@ def main() -> None:
     overrides: dict = {}
     if args.no_breakeven:
         overrides["move_sl_to_be_on_tp1"] = False
-    if args.breakeven_spread_multiplier is not None:
-        overrides["breakeven_spread_multiplier"] = args.breakeven_spread_multiplier
     if args.no_invalidation:
         overrides["use_invalidation"] = False
     if args.no_trend_filter:
@@ -2105,22 +1958,6 @@ def main() -> None:
         htf_cache = {tf_pairs_to_run[0][0]: load_csv(args.csv_htf)}
         ltf_cache = {tf_pairs_to_run[0][1]: load_csv(args.csv_ltf)}
 
-    # Validate spread_points before constructing backtester
-    spread_points = (
-        args.spread_points
-        if args.spread_points is not None
-        else DEFAULT_SPREAD_POINTS
-    )
-    if not math.isfinite(spread_points):
-        p.error("--spread-points must be a finite number")
-    if spread_points < 0:
-        p.error("--spread-points must be >= 0")
-    spread_price_units = spread_points_to_price_units(symbol, spread_points)
-    if spread_points != spread_price_units:
-        print(
-            f"Spread {spread_points:g} broker points for {symbol} "
-            f"= {spread_price_units:g} price units"
-        )
     trailing_giveback_pct = (
         args.trailing_giveback_pct
         if args.trailing_giveback_pct is not None
@@ -2150,7 +1987,6 @@ def main() -> None:
             if args.risk_percent is not None
             else DEFAULT_RISK_PERCENT
         ),
-        spread_points=spread_price_units,
         trailing_giveback_pct=trailing_giveback_pct,
         trace_out=args.trace_out,
     )

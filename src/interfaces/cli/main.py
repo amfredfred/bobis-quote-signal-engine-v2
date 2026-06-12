@@ -165,7 +165,6 @@ class SignalEngine:
                         mode="live",
                         signal=signal,
                         cfg=self._cfg,
-                        spread_pct=0.0,
                         outcome=signal.outcome,
                     )
                 )

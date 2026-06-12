@@ -24,7 +24,6 @@ class ParityTraceRecord:
     symbol: str
     timeframe: str
     timestamp: str
-    spread_pct: float
     strategy: str
     signal: str
     entry: float | None
@@ -61,7 +60,6 @@ def trace_from_signal(
     cfg: Any,
     decision_reason: str = "valid_signal",
     blocked_reason: str | None = None,
-    spread_pct: float = 0.0,
     account_balance: float | None = None,
     risk_percent: float | None = None,
     outcome: SignalOutcome | None = None,
@@ -77,7 +75,6 @@ def trace_from_signal(
         symbol=signal.symbol,
         timeframe=signal.ltf_interval,
         timestamp=_iso_ms(signal.triggered_at or signal.created_at),
-        spread_pct=spread_pct,
         strategy="shared_decision_engine",
         signal=signal.direction.value,
         entry=signal.entry_price,

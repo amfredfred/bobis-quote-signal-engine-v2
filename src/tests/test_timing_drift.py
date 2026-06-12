@@ -83,7 +83,6 @@ def test_backtest_print_separates_setup_actionable_entry_and_never_closed_open(c
     )
     bt = object.__new__(MultiPairBacktester)
     bt.cfg = _PrintCfg()
-    bt.spread_points = 0
 
     MultiPairBacktester._print_result(bt, result)
 

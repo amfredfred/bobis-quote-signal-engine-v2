@@ -48,8 +48,6 @@ timeframes:
     assert settings.tf_pairs == (("1h", "5min"),)
     assert settings.entry_model_for("1h", "5min") == "candle_pattern"
     assert settings.entry_model_for("30min", "5min") == "crt"
-    assert settings.breakeven_spread_multiplier == 1.5
-    assert settings.breakeven_max_buffer_pct_of_risk == 10.0
 
 
 def test_settings_allows_equal_timeframe_pairs():
@@ -83,11 +81,6 @@ def test_settings_rejects_negative_spread_to_sl_ratio():
         Settings(max_spread_to_sl_ratio=-0.01)
 
 
-def test_settings_rejects_breakeven_multiplier_below_one() -> None:
-    with pytest.raises(ValueError, match="must be 0 or >= 1"):
-        Settings(breakeven_spread_multiplier=0.5)
-
-
 def test_asset_profile_applies_per_symbol_tf_trade_management_overrides():
     settings = Settings(
         tp1_trigger_pct=10.0,
@@ -100,8 +93,6 @@ def test_asset_profile_applies_per_symbol_tf_trade_management_overrides():
                 "30/30": {
                     "tp1_trigger_pct": 7.5,
                     "tp1_close_pct": 25.0,
-                    "breakeven_spread_multiplier": 2.0,
-                    "breakeven_max_buffer_pct_of_risk": 15.0,
                 },
             },
         },
@@ -114,8 +105,6 @@ def test_asset_profile_applies_per_symbol_tf_trade_management_overrides():
     thirty = registry.get("XAUUSD", "30min", "30min")
     assert thirty.tp1_trigger_pct == 7.5
     assert thirty.tp1_close_pct == 25.0
-    assert thirty.breakeven_spread_multiplier == 2.0
-    assert thirty.breakeven_max_buffer_pct_of_risk == 15.0
     # Symbol present but no matching TF → global default
     assert registry.get("XAUUSD", "5min", "5min").tp1_trigger_pct == 10.0
     # Different symbol → global default

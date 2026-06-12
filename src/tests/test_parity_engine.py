@@ -71,7 +71,7 @@ def _result(signal: TradeSignal, outcome: SignalOutcome, rr: float) -> BacktestR
     return BacktestResult(signal, outcome, rr, TS + 60_000, signal.tp2)
 
 
-def _report(result: BacktestResult, spread_points: float) -> BacktestReport:
+def _report(result: BacktestResult) -> BacktestReport:
     registry = MagicMock()
     registry.get.return_value = _profile()
     with patch("app.backtesting.backtest.AssetRegistry", return_value=registry):
@@ -81,7 +81,6 @@ def _report(result: BacktestResult, spread_points: float) -> BacktestReport:
             cfg=MagicMock(),
             start_balance=5_000.0,
             risk_percent=1.0,
-            spread_points=spread_points,
         )
 
 
@@ -154,24 +153,6 @@ def test_live_backtest_same_daily_budget_calculation():
     )
 
     assert live.daily_budget == pytest.approx(backtest.daily_budget)
-
-
-def test_live_backtest_same_spread_adjustment_for_sell():
-    signal = _signal(SignalDirection.SHORT)
-    report = _report(_result(signal, SignalOutcome.WIN_FULL, 2.0), spread_points=0.25)
-    per_trade, _ = report._compute_accounting(report.results)
-
-    assert per_trade[0]["executed_rr"] == pytest.approx((2.0 * 5.0 - 0.25) / 5.25)
-    assert per_trade[0]["executed_exit_price"] == pytest.approx(signal.tp2 + 0.25)
-
-
-def test_live_backtest_same_spread_adjustment_for_buy():
-    signal = _signal(SignalDirection.LONG)
-    report = _report(_result(signal, SignalOutcome.WIN_FULL, 2.0), spread_points=0.25)
-    per_trade, _ = report._compute_accounting(report.results)
-
-    assert per_trade[0]["executed_rr"] == pytest.approx((2.0 * 5.0 - 0.25) / 5.25)
-    assert per_trade[0]["executed_entry_price"] == pytest.approx(signal.entry_price + 0.25)
 
 
 def test_live_backtest_trace_diff_fails_on_discrepancy():

@@ -6,7 +6,7 @@ from unittest.mock import patch
 from app.backtesting import rba
 
 
-def test_rba_accepts_singular_symbol_and_forwards_breakeven_multiplier(tmp_path) -> None:
+def test_rba_forwards_risk_percent(tmp_path) -> None:
     argv = [
         "rba.py",
         "--symbol",
@@ -17,10 +17,6 @@ def test_rba_accepts_singular_symbol_and_forwards_breakeven_multiplier(tmp_path)
         "5000",
         "--risk-percent",
         "0.25",
-        "--spread-points",
-        "3",
-        "--breakeven-spread-multiplier",
-        "1.2",
         "--output-dir",
         str(tmp_path),
     ]
@@ -33,5 +29,5 @@ def test_rba_accepts_singular_symbol_and_forwards_breakeven_multiplier(tmp_path)
         rba.main()
 
     extra_args = run.call_args.args[2]
-    assert "--breakeven-spread-multiplier" in extra_args
-    assert extra_args[extra_args.index("--breakeven-spread-multiplier") + 1] == "1.2"
+    assert "--risk-percent" in extra_args
+    assert extra_args[extra_args.index("--risk-percent") + 1] == "0.25"

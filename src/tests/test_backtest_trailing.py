@@ -83,24 +83,6 @@ def test_disabled_backtester_uses_existing_replay_path() -> None:
     assert result.trailed_sl is None
 
 
-def test_backtester_injects_configured_spread_into_breakeven() -> None:
-    bt = _backtester(0.0)
-    bt.spread_points = 0.5
-    signal = _signal(SignalDirection.LONG)
-    future_np = bt._candles_to_np(
-        [
-            _candle(1, high=130.0, low=101.0, close=129.0),
-            _candle(2, high=129.0, low=100.5, close=101.0),
-        ]
-    )
-
-    result = bt._simulate(signal, future_np)
-
-    assert result.outcome == SignalOutcome.BREAKEVEN
-    assert result.close_price == pytest.approx(100.75)
-    assert result.realized_rr == pytest.approx(0.075)
-
-
 @pytest.mark.parametrize("pct", [-1.0, 100.0, math.inf, math.nan])
 def test_constructor_rejects_invalid_trailing_giveback_pct(pct: float) -> None:
     with pytest.raises(ValueError, match="trailingGivebackPct"):
@@ -124,9 +106,6 @@ def _backtester(trailing_giveback_pct: float) -> MultiPairBacktester:
 def _profile() -> SimpleNamespace:
     return SimpleNamespace(
         move_sl_to_be_on_tp1=True,
-        breakeven_spread_price_units=0.0,
-        breakeven_spread_multiplier=1.5,
-        breakeven_max_buffer_pct_of_risk=10.0,
         use_invalidation=False,
         signal_expiry_hours=120.0,
         tp1_trigger_pct=50.0,
