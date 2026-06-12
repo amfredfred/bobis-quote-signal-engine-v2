@@ -47,6 +47,22 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() not in ("false", "0", "no", "off")
 
 
+def _parse_htf_lookback(raw: Any) -> Any:
+    """Parse htf_lookback as int (global) or dict[str, int] (per TF-pair).
+
+    Scalar : 120
+    Per-pair: {"5/5": 60, "60/5": 120}   (HTF_min/LTF_min keys)
+    """
+    if raw is None:
+        return 120
+    if isinstance(raw, dict):
+        return {str(k): int(v) for k, v in raw.items()}
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return 120
+
+
 def _parse_pair_map(raw: Any) -> dict:
     """Parse per-timeframe mapping values.
 
@@ -431,7 +447,7 @@ class Settings:
     # ── Timeframes ────────────────────────────────────────────────────────────
     tf_pairs: tuple = (("1h", "5min"),)
     tf_entry_models: dict = field(default_factory=dict)
-    htf_lookback: int = 120
+    htf_lookback: Any = 120  # int (global) or dict[str, int] (per HTF_min/LTF_min pair)
     htf_outputsize: int = 1000
 
     @property
@@ -466,6 +482,20 @@ class Settings:
     @property
     def ws_candle_buffer_ms(self) -> int:
         return _WS_CANDLE_BUFFER_MS
+
+    def resolve_htf_lookback(self, htf_interval: str, ltf_interval: str) -> int:
+        """Return the effective htf_lookback for a TF pair.
+
+        Dict config: looks up "HTF_min/LTF_min", then "*", then falls back to 120.
+        Scalar config: returned as-is for every pair.
+        """
+        lb = self.htf_lookback
+        if isinstance(lb, int):
+            return lb
+        if htf_interval == "*" or ltf_interval == "*":
+            return int(lb.get("*", 120))
+        key = f"{interval_to_minutes(htf_interval)}/{interval_to_minutes(ltf_interval)}"
+        return int(lb.get(key, lb.get("*", 120)))
 
     def rejection_stale_hours(self, ltf_interval: str) -> float:
         """2 LTF candles back from fired_at."""
@@ -708,7 +738,7 @@ class Settings:
             apex_disable_trading=_bool_env("APEX_DISABLE_TRADING", False),
             tf_pairs=_parse_tf_pairs(_get(cfg, "timeframes.pairs")),
             tf_entry_models=_parse_tf_entry_models(_get(cfg, "timeframes.pairs")),
-            htf_lookback=int(_get(cfg, "timeframes.htf_lookback", 120)),
+            htf_lookback=_parse_htf_lookback(_get(cfg, "timeframes.htf_lookback", 120)),
             htf_outputsize=int(_get(cfg, "timeframes.htf_outputsize", 1000)),
             min_wick_ratio=float(_get(cfg, "signal_quality.min_wick_ratio", 0.65)),
             stop_placement_method=str(

@@ -51,10 +51,11 @@ class _ConfigProtocol(Protocol):
     use_invalidation: bool
     signal_expiry_hours: float
     use_trend_filter: bool
-    htf_lookback: int
     multi_tf_independent_positions: bool
     tf_max_rr: dict
     symbol_rr_filter: dict
+
+    def resolve_htf_lookback(self, htf_interval: str, ltf_interval: str) -> int: ...
 
 
 # ── Asset profile ─────────────────────────────────────────────────────────────
@@ -291,7 +292,9 @@ class AssetRegistry:
             "use_invalidation": cfg.use_invalidation,
             "signal_expiry_hours": cfg.signal_expiry_hours,
             "use_trend_filter": cfg.use_trend_filter,
-            "htf_lookback": cfg.htf_lookback,
+            "htf_lookback": cfg.resolve_htf_lookback(
+                htf_interval or "*", ltf_interval or "*"
+            ),
             "multi_tf_independent_positions": cfg.multi_tf_independent_positions,
         }
 

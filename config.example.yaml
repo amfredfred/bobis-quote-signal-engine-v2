@@ -23,6 +23,11 @@ timeframes:
     - htf: 5min
       ltf: 5min
       entry_model: crt
+  # Scalar applies to all pairs. Dict form for per-pair control:
+  # htf_lookback:
+  #   "5/5": 60     # 5min HTF / 5min LTF
+  #   "60/5": 120   # 1h HTF / 5min LTF
+  #   "*": 120      # fallback for unlisted pairs
   htf_lookback: 240
   htf_outputsize: 1000
 

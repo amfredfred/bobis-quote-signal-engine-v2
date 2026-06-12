@@ -23,7 +23,8 @@ timeframes:
     - htf: 5min
       ltf: 5min
       entry_model: crt
-  htf_lookback: 240
+  htf_lookback:
+    "5/5": 60
   htf_outputsize: 1000
 
 signal_quality:

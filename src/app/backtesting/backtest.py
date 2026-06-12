@@ -833,7 +833,7 @@ class MultiPairBacktester:
         self.pairs = pairs
         self.htf_candles = htf_candles
         self.ltf_candles = ltf_candles
-        self.htf_lookback = htf_lookback or cfg.htf_lookback
+        self._lookback_override = htf_lookback  # CLI int override, or None
         self.start_balance = start_balance
         self.risk_percent = risk_percent
         self.spread_points = spread_points
@@ -916,6 +916,11 @@ class MultiPairBacktester:
         )
         logger.info("[%s] Entry models: %s", symbol, pair_models)
 
+    def _resolve_lookback(self, htf_interval: str, ltf_interval: str) -> int:
+        if self._lookback_override is not None:
+            return self._lookback_override
+        return self.cfg.resolve_htf_lookback(htf_interval, ltf_interval)
+
     def _candles_to_np(self, candles: list[Candle]) -> np.ndarray:
         dtype = [
             ("timestamp", "i8"),
@@ -937,7 +942,9 @@ class MultiPairBacktester:
         cfg = self.cfg
         profile = self.profile  # base profile — non-rr attrs only
         _pair_profiles = self._pair_profiles
-        htf_lookback = self.htf_lookback
+        _pair_lookbacks = {
+            (htf, ltf): self._resolve_lookback(htf, ltf) for htf, ltf in self.pairs
+        }
         use_tf = profile.use_trend_filter
         use_mtp = profile.multi_tf_independent_positions
         symbol = self.symbol
@@ -948,7 +955,8 @@ class MultiPairBacktester:
         max_htf_mins = max(interval_to_minutes(htf) for htf, _ in self.pairs)
         min_ltf_mins = interval_to_minutes(master_ltf)
         master_ltf_ms = min_ltf_mins * 60_000
-        ltf_lb = max(100, htf_lookback * (max_htf_mins // min_ltf_mins))
+        max_lookback = max(_pair_lookbacks.values())
+        ltf_lb = max(100, max_lookback * (max_htf_mins // min_ltf_mins))
         n = len(master_candles)
         total_steps = n - ltf_lb
         pairs_str = " | ".join(f"{h}/{l}" for h, l in self.pairs)
@@ -1034,16 +1042,17 @@ class MultiPairBacktester:
                 entry_model = _entry_models[(htf_interval, ltf_interval)]
                 htf_all = self.htf_candles[htf_interval]
                 htf_ts_idx = self._htf_ts[htf_interval]
+                pair_lookback = _pair_lookbacks[(htf_interval, ltf_interval)]
 
                 # O(log n) HTF window. HTF timestamps are candle opens; only
                 # include bars whose close is known at this analysis point.
                 hi_htf = _bisect_right(
                     htf_ts_idx, analysis_close - _htf_int_ms[htf_interval]
                 )
-                lo_htf = max(0, hi_htf - htf_lookback)
+                lo_htf = max(0, hi_htf - pair_lookback)
                 htf_visible_all = htf_all[:hi_htf]
                 htf_w = htf_all[lo_htf:hi_htf]
-                if len(htf_w) < htf_lookback // 3:
+                if len(htf_w) < pair_lookback // 3:
                     continue
 
                 last_htf_ts = htf_w[-1].timestamp
