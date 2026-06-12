@@ -20,7 +20,7 @@ from domain.entities.enums import (
     SignalOutcome,
     SignalStatus,
 )
-from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
+from domain.entities.ranges import HtfRange, RejectionCandle
 
 
 def _interval_to_ms(interval: str) -> int:
@@ -61,7 +61,6 @@ class TradeSignal:
 
     # ── Structure ─────────────────────────────────────────────────────────────
     htf_range:        HtfRange
-    ltf_range:        LtfRange
     rejection_candle: RejectionCandle
 
     # ── Risk metrics ─────────────────────────────────────────────────────────
@@ -84,14 +83,7 @@ class TradeSignal:
     tp1_hit_at:   Optional[int] = None
     tp2_hit_at:   Optional[int] = None
     sl_hit_at:    Optional[int] = None
-
-    # invalidated_at         — trade closed because price crossed LTF range
-    #                          (USE_INVALIDATION=True)
-    # invalidation_logged_at — price crossed but trade kept open
-    #                          (USE_INVALIDATION=False; only SL/TP closes it)
     invalidated_at:         Optional[int] = None
-    invalidation_logged_at: Optional[int] = None
-
     expired_at:  Optional[int] = None
     closed_at:   Optional[int] = None
 
@@ -138,13 +130,6 @@ class TradeSignal:
                 "htfCandleOpen":  self.htf_range.htf_candle_open,
                 "htfCandleClose": self.htf_range.htf_candle_close,
             },
-            "ltfRange": {
-                "rangeHigh": self.ltf_range.range_high,
-                "rangeLow":  self.ltf_range.range_low,
-                "timestamp": self.ltf_range.timestamp,
-                "direction": self.ltf_range.direction.value,
-                "slLevel":   self.ltf_range.sl_level,
-            },
             "rejectionCandle": {
                 "open":      self.rejection_candle.open,
                 "high":      self.rejection_candle.high,
@@ -168,7 +153,6 @@ class TradeSignal:
             "tp2HitAt":             self.tp2_hit_at,
             "slHitAt":              self.sl_hit_at,
             "invalidatedAt":        self.invalidated_at,
-            "invalidationLoggedAt": self.invalidation_logged_at,
             "expiredAt":            self.expired_at,
             "closedAt":             self.closed_at,
             "outcome":              self.outcome.value if self.outcome else None,
@@ -181,7 +165,6 @@ class TradeSignal:
     @classmethod
     def from_dict(cls, d: dict) -> TradeSignal:
         hr = d["htfRange"]
-        lr = d["ltfRange"]
         rc = d["rejectionCandle"]
         return cls(
             id                     = d["id"],
@@ -207,12 +190,6 @@ class TradeSignal:
                 htf_candle_open  = hr.get("htfCandleOpen")  or 0,
                 htf_candle_close = hr.get("htfCandleClose") or 0,
             ),
-            ltf_range = LtfRange(
-                range_high = lr["rangeHigh"],
-                range_low  = lr["rangeLow"],
-                timestamp  = lr["timestamp"],
-                direction  = SignalDirection(lr["direction"]),
-            ),
             rejection_candle = RejectionCandle(
                 open       = rc["open"],
                 high       = rc["high"],
@@ -233,7 +210,6 @@ class TradeSignal:
             tp2_hit_at             = d.get("tp2HitAt"),
             sl_hit_at              = d.get("slHitAt"),
             invalidated_at         = d.get("invalidatedAt"),
-            invalidation_logged_at = d.get("invalidationLoggedAt"),
             expired_at             = d.get("expiredAt"),
             closed_at              = d.get("closedAt"),
             outcome    = SignalOutcome(d["outcome"]) if d.get("outcome") else None,

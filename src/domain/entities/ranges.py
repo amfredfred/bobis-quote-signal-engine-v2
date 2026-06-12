@@ -5,12 +5,9 @@ HTF Range:  One HTF swing candle confirmed by a Break of Structure.
             Defines the supply/demand zone box (range_high / range_low)
             and the far TP target (tp_level = the broken swing level).
 
-LTF Range:  The most extreme LTF swing that formed INSIDE the HTF swing
-            candle's time window. Entry price returns to this level.
-
 RejectionCandle:
-            A candle that tapped into the LTF range and closed back out.
-            Confirms the re-test and becomes the entry bar.
+            A candle that tapped into the HTF zone and closed back out
+            via a CRT sweep of the previous candle's range.
 
 No external imports — pure value objects.
 """
@@ -61,39 +58,13 @@ class HtfRange:
     def height(self) -> float:
         return self.range_high - self.range_low
 
-
-# ── LTF Range ─────────────────────────────────────────────────────────────────
-
-@dataclass(slots=True)
-class LtfRange:
-    """
-    The LTF swing that formed INSIDE the HTF swing candle's time window.
-
-    sl_level / invalidation_level
-    ─────────────────────────────
-    SHORT → range_high  (stop above the swing high)
-    LONG  → range_low   (stop below the swing low)
-
-    A confirmed close beyond sl_level invalidates the trade.
-    """
-
-    range_high: float
-    range_low:  float
-    timestamp:  int
-    direction:  SignalDirection
-
     @property
-    def sl_level(self) -> float:
+    def signal_direction(self) -> SignalDirection:
         return (
-            self.range_high
-            if self.direction == SignalDirection.SHORT
-            else self.range_low
+            SignalDirection.SHORT
+            if self.bos_direction == BosDirection.BEARISH
+            else SignalDirection.LONG
         )
-
-    @property
-    def invalidation_level(self) -> float:
-        """Alias — a closed candle beyond this voids the setup."""
-        return self.sl_level
 
 
 # ── Rejection Candle ──────────────────────────────────────────────────────────
@@ -101,14 +72,15 @@ class LtfRange:
 @dataclass(slots=True)
 class RejectionCandle:
     """
-    A candle that tapped into the LTF range and closed back outside it.
+    A candle that swept the previous candle's range and closed back inside it
+    (CRT entry pattern).
 
-    SHOOTING_STAR (SHORT): upper wick into zone, close < range_low.
-    HAMMER        (LONG):  lower wick into zone, close > range_high.
+    CRT_SELL (SHORT): wick sweeps above prev high, close returns below it.
+    CRT_BUY  (LONG):  wick sweeps below prev low,  close returns above it.
 
-    wick_tip — SL reference for the "wick" stop-placement method:
-        SHOOTING_STAR → candle.high
-        HAMMER        → candle.low
+    wick_tip — SL reference for the wick stop-placement method:
+        CRT_SELL → candle.high
+        CRT_BUY  → candle.low
     """
 
     open:       float

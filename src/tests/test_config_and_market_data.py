@@ -23,15 +23,15 @@ def test_settings_loads_yaml_config(tmp_path, monkeypatch):
 features:
   entry_model: crt
 crt:
-  mode: both
+  mode: previous_candle
 signal_quality:
-  stop_model: range
+  stop_model: wick
   max_spread_to_sl_ratio: 0.4
 timeframes:
   pairs:
     - htf: 1h
       ltf: 5min
-      entry_model: candle_pattern
+      entry_model: crt
 """,
         encoding="utf-8",
     )
@@ -42,11 +42,11 @@ timeframes:
     settings = Settings.from_env()
 
     assert settings.entry_model == "crt"
-    assert settings.crt_mode == "both"
-    assert settings.stop_placement_method == "range"
+    assert settings.crt_mode == "previous_candle"
+    assert settings.stop_placement_method == "wick"
     assert settings.max_spread_to_sl_ratio == 0.4
     assert settings.tf_pairs == (("1h", "5min"),)
-    assert settings.entry_model_for("1h", "5min") == "candle_pattern"
+    assert settings.entry_model_for("1h", "5min") == "crt"
     assert settings.entry_model_for("30min", "5min") == "crt"
 
 

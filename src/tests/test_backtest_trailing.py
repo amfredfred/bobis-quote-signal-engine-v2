@@ -17,7 +17,7 @@ from domain.entities.enums import (
     SignalOutcome,
     SignalStatus,
 )
-from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
+from domain.entities.ranges import HtfRange, RejectionCandle
 from domain.entities.trade import TradeSignal
 
 
@@ -116,7 +116,7 @@ def _profile() -> SimpleNamespace:
 def _cfg() -> SimpleNamespace:
     return SimpleNamespace(
         htf_lookback=120,
-        entry_model="candle_pattern",
+        entry_model="crt",
         rejection_stale_hours=lambda _ltf: 0.5,
         pivot_bars=1,
         max_htf_zones_per_dir=1,
@@ -133,12 +133,6 @@ def _signal(direction: SignalDirection) -> TradeSignal:
     stop = 210.0 if is_short else 90.0
     tp1 = 170.0 if is_short else 130.0
     tp2 = 140.0 if is_short else 160.0
-    ltf_range = LtfRange(
-        range_high=230.0 if is_short else 130.0,
-        range_low=170.0 if is_short else 70.0,
-        timestamp=0,
-        direction=direction,
-    )
     return TradeSignal(
         id="sig",
         symbol="XAUUSD",
@@ -155,7 +149,6 @@ def _signal(direction: SignalDirection) -> TradeSignal:
             timestamp=0,
             tp_level=tp2,
         ),
-        ltf_range=ltf_range,
         rejection_candle=RejectionCandle(
             open=entry,
             high=entry + 1,

@@ -23,7 +23,7 @@ Optimizations (cumulative, newest batch annotated with ★):
       Combined per-zone cache keyed by (zone_key, ltf_hi_idx).
       Both domain calls are skipped on cache hit (identical ltf_zone).
       Win rate ≈ 1 − (1 / ticks_per_ltf_bar); e.g. 98 % for 1 m master / 1 h LTF.
-      Even for master == ltf: inactive zones (None ltf_range) cost O(1) lookup
+      Even for master == ltf: inactive zones (no entry result) cost O(1) lookup
       instead of O(zone_len) list-copy + domain call.
 
   ★ TIER 2 — Zone lo-index precomputed once per zone lifetime
@@ -42,8 +42,7 @@ Optimizations (cumulative, newest batch annotated with ★):
       • cumsum + shift replaced by: tp1_first = argmax(tp1_tgt); index compare
       • tp1_before = (tp1_first < stop_idx)  — no shifted array allocation
       • np.nonzero → np.argmax + .any() guard (avoids allocating index arrays)
-      • inv_hit array skipped entirely when use_inv is False
-      • Profile scalars (use_be, use_inv, expiry_ms, tp1_mult) hoisted to
+      • Profile scalars (use_be, expiry_ms, tp1_mult) hoisted to
         __init__; eliminated per-call attribute dereference
 """
 
@@ -159,99 +158,6 @@ def _fmt_r(value: float) -> str:
     return f"{value:+.2f}R"
 
 
-# ── ★ TIER 3: Optional Numba JIT ─────────────────────────────────────────────
-# If numba is not installed the NumPy fallback is used automatically.
-try:
-    import numba as _numba
-
-    @_numba.njit(cache=True, fastmath=True)
-    def _njit_simulate_with_retrace(
-        ts: np.ndarray,
-        high: np.ndarray,
-        low: np.ndarray,
-        close: np.ndarray,
-        is_short: bool,
-        use_be: bool,
-        use_inv: bool,
-        entry: float,
-        sl: float,
-        tp1: float,
-        tp2: float,
-        rng_hi: float,
-        rng_lo: float,
-        expiry_cutoff: np.int64,
-        rr: float,
-        risk_pips: float,
-        tp1_mult: float,
-    ):
-        """Single O(n) pass — tracks if price revisits entry after TP1.
-
-        tp1 "strictly prior" semantics: tp1_prev is updated AFTER the SL/INV
-        checks for the current bar, so SL and TP1 on the same bar resolve in
-        favour of SL.  The hit_entry_after_tp1 flag is evaluated on bars where
-        tp1_prev is already True, i.e. starting from the bar AFTER TP1 fired.
-
-        Return tuple: (outcome_code, bar_index, close_px, realized_rr, hit_entry_after_tp1)
-        """
-        n = len(ts)
-        tp1_prev = False
-        hit_entry_after_tp1 = False
-
-        for i in range(n):
-            if ts[i] > expiry_cutoff:
-                break
-
-            h = high[i]
-            l = low[i]
-            c = close[i]
-
-            if is_short:
-                tp1_now = l <= tp1
-                tp2_now = l <= tp2
-                sl_now = h >= sl
-                inv_now = use_inv and (c > rng_hi)
-                entry_now = h >= entry  # retrace UP to entry after TP1
-            else:
-                tp1_now = h >= tp1
-                tp2_now = h >= tp2
-                sl_now = l <= sl
-                inv_now = use_inv and (c < rng_lo)
-                entry_now = l <= entry  # retrace DOWN to entry after TP1
-
-            # Track entry revisit after TP1.
-            # Checked BEFORE updating tp1_prev — a same-bar retrace on the TP1
-            # bar is intentionally excluded to match "strictly prior" semantics.
-            if tp1_prev and entry_now and not hit_entry_after_tp1:
-                hit_entry_after_tp1 = True
-
-            # TP2: tp1 at-or-before this bar wins (highest priority)
-            if (tp1_prev or tp1_now) and tp2_now:
-                return 3, i, tp2, rr, hit_entry_after_tp1
-
-            # INV: higher priority than SL on same-bar conflict
-            if inv_now:
-                if tp1_prev and use_be:
-                    return 2, i, entry, rr * tp1_mult, hit_entry_after_tp1
-                return 1, i, c, -(abs(entry - c) / risk_pips), hit_entry_after_tp1
-
-            # SL
-            if sl_now:
-                if tp1_prev and use_be:
-                    return 2, i, entry, rr * tp1_mult, hit_entry_after_tp1
-                return 1, i, sl, -1.0, hit_entry_after_tp1
-
-            # Update AFTER checks — preserves "strictly prior" semantics
-            if tp1_now and not tp1_prev:
-                tp1_prev = True
-
-        return 0, n, 0.0, 0.0, False
-
-    _NUMBA_AVAILABLE = True
-    logger.debug("Numba JIT simulation enabled (single-pass O(n))")
-
-except ImportError:
-    _NUMBA_AVAILABLE = False
-    logger.debug("Numba not installed — NumPy vectorised simulation active")
 
 
 # ── BacktestResult ────────────────────────────────────────────────────────────
@@ -334,8 +240,6 @@ class BacktestResult:
             "htf_high": round(s.htf_range.range_high, 5),
             "htf_low": round(s.htf_range.range_low, 5),
             "tp_level": round(s.htf_range.tp_level, 5),
-            "ltf_high": round(s.ltf_range.range_high, 5),
-            "ltf_low": round(s.ltf_range.range_low, 5),
         }
 
 
@@ -798,10 +702,10 @@ class MultiPairBacktester:
 
         # ★ TIER 1: Zone-level combined cache
         #   key  → zone_key (htf_range.timestamp, bos_direction.value)
-        #   value → (ltf_hi_idx, ltf_range_or_None, rej_result_or_None)
+        #   value → (ltf_hi_idx, rej_result_or_None)
         #
         #   A cache hit (same ltf_hi_idx) means ltf_zone is byte-identical to
-        #   the previous call, so find_ltf and find_entry results are reused.
+        #   the previous call, so find_entry result is reused.
         #   Hit rate ≈ 1 − (1 / ticks_per_ltf_bar); e.g. 98 % for 1 m / 1 h.
         self._zone_cache: dict[tuple, tuple] = {}
 
@@ -813,7 +717,6 @@ class MultiPairBacktester:
         # ★ TIER 4: Profile scalars hoisted to instance (no per-call dereference)
         profile = self.profile
         self._use_be: bool = profile.move_sl_to_be_on_tp1
-        self._use_inv: bool = profile.use_invalidation
         self._expiry_ms: int = int(profile.signal_expiry_hours * 3_600_000)
         self._tp1_protected_rr: float = tp1_booked_rr(
             full_rr=1.0,
@@ -830,17 +733,6 @@ class MultiPairBacktester:
             htf: interval_to_minutes(htf) * 60_000 for htf, _ in pairs
         }
 
-        pair_models = {}
-        for htf, ltf in pairs:
-            model = cfg.entry_model_for(htf, ltf)
-            pair_models[(htf, ltf)] = (
-                model if isinstance(model, str) else cfg.entry_model
-            )
-        assert all(
-            model in ("candle_pattern", "crt", "all")
-            for model in pair_models.values()
-        )
-        logger.info("[%s] Entry models: %s", symbol, pair_models)
 
     def _resolve_lookback(self, htf_interval: str, ltf_interval: str) -> int:
         if self._lookback_override is not None:
@@ -902,7 +794,6 @@ class MultiPairBacktester:
 
         dead_zones: set[tuple] = set()
         zone_signal_counts: dict[tuple, int] = {}
-        seen_ltf: set[tuple] = set()
         seen_rej: set[tuple] = set()
         open_dir: dict[tuple, int] = {}
         expiry_ms = int(profile.signal_expiry_hours * 3_600_000)
@@ -926,20 +817,10 @@ class MultiPairBacktester:
         _bisect_right = bisect.bisect_right
         _bisect_left = bisect.bisect_left
         _find_htf = SwingDetector.find_htf_ranges
-        _find_ltf = SwingDetector.find_ltf_range
         _detect_struct = MarketStructure.detect
         _simulate = self._simulate
         _print_result = self._print_result
 
-        # Entry model args (captured once per pair, passed to shared dispatcher)
-        _entry_models = {}
-        for htf, ltf in self.pairs:
-            model = cfg.entry_model_for(htf, ltf)
-            _entry_models[(htf, ltf)] = (
-                model if isinstance(model, str) else cfg.entry_model
-            )
-        _min_wick_ratio = cfg.min_wick_ratio
-        _crt_mode = cfg.crt_mode
 
         trace_ctx = ParityTraceWriter(self.trace_out)
         self._trace_writer = trace_ctx.__enter__()
@@ -964,7 +845,6 @@ class MultiPairBacktester:
                     del open_dir[dk]
 
             for htf_interval, ltf_interval in self.pairs:
-                entry_model = _entry_models[(htf_interval, ltf_interval)]
                 htf_all = self.htf_candles[htf_interval]
                 htf_ts_idx = self._htf_ts[htf_interval]
                 pair_lookback = _pair_lookbacks[(htf_interval, ltf_interval)]
@@ -1063,49 +943,23 @@ class MultiPairBacktester:
                         _zone_lo[cache_key] = _bisect_left(ltf_ts_idx, zone_start)
                     ltf_lo_idx = _zone_lo[cache_key]
 
-                    # ★ TIER 1: Zone-level find_ltf + find_entry cache
-                    #   Key: ltf_hi_idx — changes only when a new LTF bar arrives.
-                    #   On a cache hit the ltf_zone list is NEVER constructed.
-                    cached = _zone_cache.get(cache_key)
-                    if cached is not None and cached[0] == ltf_hi_idx:
-                        # Fast path — reuse previously computed results
-                        ltf_range = cached[1]
-                        if not ltf_range:
-                            continue
-                        rej_result = cached[2]
-                    else:
-                        # Slow path — compute and store
-                        ltf_zone = ltf_visible[ltf_lo_idx:ltf_hi_idx]
-                        ltf_range = _find_ltf(ltf_zone, htf_range, ltf_visible)
-                        rej_result = (
-                            find_entry(
-                                ltf_zone,
-                                ltf_range,
-                                htf_range,
-                                entry_model,
-                                _min_wick_ratio,
-                                _crt_mode,
-                            )
-                            if ltf_range
-                            else None
-                        )
-                        _zone_cache[cache_key] = (ltf_hi_idx, ltf_range, rej_result)
-                        if not ltf_range:
-                            continue
-
-                    direction = ltf_range.direction.value
+                    direction = htf_range.signal_direction.value
                     if structure is not None and not structure.allows(direction):
                         continue
 
-                    ltf_key = (
-                        symbol,
-                        htf_interval,
-                        ltf_interval,
-                        ltf_range.timestamp,
-                        direction,
-                    )
-                    if max_signal_count == 1 and ltf_key in seen_ltf:
-                        continue
+                    # ★ TIER 1: Zone-level find_entry cache
+                    #   Key: ltf_hi_idx — changes only when a new LTF bar arrives.
+                    cached = _zone_cache.get(cache_key)
+                    if cached is not None and cached[0] == ltf_hi_idx:
+                        rej_result = cached[1]
+                    else:
+                        ltf_zone = ltf_visible[ltf_lo_idx:ltf_hi_idx]
+                        rej_result = find_entry(
+                            ltf_zone,
+                            htf_range.signal_direction,
+                            htf_range,
+                        )
+                        _zone_cache[cache_key] = (ltf_hi_idx, rej_result)
 
                     if not rej_result:
                         continue
@@ -1136,7 +990,6 @@ class MultiPairBacktester:
                         htf_interval=htf_interval,
                         ltf_interval=ltf_interval,
                         htf_range=htf_range,
-                        ltf_range=ltf_range,
                         rejection=rejection,
                         signal_id=(
                             f"{symbol}_{htf_interval}_{ltf_interval}"
@@ -1155,7 +1008,6 @@ class MultiPairBacktester:
                     future_np = self.ltf_candles_np[ltf_interval][cur_ltf_i + 1 :]
                     result = _simulate(signal, future_np)
 
-                    seen_ltf.add(ltf_key)
                     seen_rej.add(rej_key)
                     zone_signal_counts[zone_key] = signal.zone_attempt
 
@@ -1245,193 +1097,6 @@ class MultiPairBacktester:
             hit_entry_after_tp1=False,
         )
 
-        # ★ TIER 4: Hoisted scalars — no attribute dereference in hot path
-        is_short = signal.direction == SignalDirection.SHORT
-        use_be = self._use_be
-        use_inv = self._use_inv
-        entry = signal.entry_price
-        sl = signal.stop_loss
-        tp1 = signal.tp1
-        tp2 = signal.tp2
-        rng_hi = signal.ltf_range.range_high
-        rng_lo = signal.ltf_range.range_low
-        birth = signal.created_at
-        expiry_cutoff = np.int64(birth + self._expiry_ms)
-        rr = signal.risk_reward_ratio
-        risk_pips = signal.risk_pips
-        tp1_protected_rr = self._tp1_protected_rr
-
-        ts = future_np["timestamp"]
-
-        # ★ TIER 4: O(log n) expiry trim — timestamps are monotonically increasing
-        first_exp = int(np.searchsorted(ts, expiry_cutoff, side="right"))
-        if first_exp == 0:
-            return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
-        if first_exp < len(ts):
-            future_np = future_np[:first_exp]
-            ts = ts[:first_exp]
-
-        # ── ★ TIER 3: Numba single-pass path ────────────────────────────────────
-        if _NUMBA_AVAILABLE:
-            code, idx, close_px, realized, hit_entry_after_tp1 = (
-                _njit_simulate_with_retrace(
-                    ts,
-                    future_np["high"],
-                    future_np["low"],
-                    future_np["close"],
-                    is_short,
-                    use_be,
-                    use_inv,
-                    entry,
-                    sl,
-                    tp1,
-                    tp2,
-                    rng_hi,
-                    rng_lo,
-                    expiry_cutoff,
-                    rr,
-                    risk_pips,
-                    tp1_protected_rr,
-                )
-            )
-            if code == 0:
-                return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
-            close_ts = int(ts[idx])
-            if code == 3:
-                outcome = SignalOutcome.WIN_FULL
-            elif code == 2:
-                outcome = SignalOutcome.BREAKEVEN
-            else:
-                outcome = SignalOutcome.LOSS
-
-            return BacktestResult(
-                signal,
-                outcome,
-                realized,
-                close_ts,
-                float(close_px),
-                hit_entry_after_tp1=hit_entry_after_tp1,
-            )
-
-        # ── ★ TIER 4: NumPy fallback ─────────────────────────────────────────────
-        high = future_np["high"]
-        low = future_np["low"]
-        close = future_np["close"]
-        n = len(ts)
-
-        if is_short:
-            tp1_tgt = low <= tp1
-            tp2_tgt = low <= tp2
-            sl_hit = high >= sl
-            inv_hit = (close > rng_hi) if use_inv else None
-            entry_hit = high >= entry  # SHORT retrace: price goes back UP to entry
-        else:
-            tp1_tgt = high >= tp1
-            tp2_tgt = high >= tp2
-            sl_hit = low <= sl
-            inv_hit = (close < rng_lo) if use_inv else None
-            entry_hit = low <= entry  # LONG retrace: price comes back DOWN to entry
-
-        # First TP1 hit
-        tp1_any = bool(tp1_tgt.any())
-        tp1_first = int(tp1_tgt.argmax()) if tp1_any else n
-
-        # Track whether price revisited entry after TP1.
-        # Slice starts at tp1_first + 1 to match the Numba kernel's "strictly
-        # prior" semantics: tp1_prev is False on the TP1 bar itself (updated
-        # AFTER per-bar checks), so a same-bar retrace on the TP1 bar is not
-        # detected in either path.
-        hit_entry_after_tp1 = False
-        if tp1_any and tp1_first < n:
-            entry_hit_after_tp1 = entry_hit[tp1_first + 1 :]
-            if entry_hit_after_tp1.any():
-                entry_hit_idx = tp1_first + 1 + int(entry_hit_after_tp1.argmax())
-                tp2_sub = tp2_tgt[tp1_first + 1 :]
-                if tp2_sub.any():
-                    tp2_idx_relative = int(tp2_sub.argmax())
-                    tp2_absolute = tp1_first + 1 + tp2_idx_relative
-                    hit_entry_after_tp1 = entry_hit_idx < tp2_absolute
-                else:
-                    hit_entry_after_tp1 = True
-
-        # TP2: only search at/after tp1_first
-        if tp1_any:
-            tp2_sub = tp2_tgt[tp1_first:]
-            tp2_idx = tp1_first + int(tp2_sub.argmax()) if tp2_sub.any() else n
-        else:
-            tp2_idx = n
-
-        # First SL hit
-        sl_idx = int(sl_hit.argmax()) if sl_hit.any() else n
-
-        # First INV hit
-        if use_inv and inv_hit is not None:
-            inv_idx = int(inv_hit.argmax()) if inv_hit.any() else n
-        else:
-            inv_idx = n
-
-        stop_idx = min(tp2_idx, inv_idx, sl_idx)
-
-        if stop_idx == n:
-            return BacktestResult(signal, SignalOutcome.EXPIRED, 0.0, None, None)
-
-        close_ts = int(ts[stop_idx])
-        tp1_before = tp1_first < stop_idx
-
-        if stop_idx == tp2_idx:
-            return BacktestResult(
-                signal,
-                SignalOutcome.WIN_FULL,
-                rr,
-                close_ts,
-                tp2,
-                hit_entry_after_tp1=hit_entry_after_tp1,
-            )
-
-        if stop_idx == inv_idx:
-            if tp1_before and use_be:
-                return BacktestResult(
-                    signal,
-                    SignalOutcome.BREAKEVEN,
-                    rr * tp1_protected_rr,
-                    close_ts,
-                    entry,
-                    hit_entry_after_tp1=hit_entry_after_tp1,
-                )
-            inv_px = float(close[stop_idx])
-            return BacktestResult(
-                signal,
-                SignalOutcome.LOSS,
-                -(abs(entry - inv_px) / risk_pips),
-                close_ts,
-                inv_px,
-                hit_entry_after_tp1=hit_entry_after_tp1,
-            )
-
-        # Stop-loss.
-        # Same-bar SL vs TP1: SL wins (conservative). tp1_before excludes
-        # equality (tp1_first < stop_idx, not <=), so when SL and TP1 hit on
-        # the same bar tp1_before is False and we fall through to a full loss.
-        # This matches the Numba kernel's "strictly prior" behaviour.
-        if tp1_before and use_be:
-            return BacktestResult(
-                signal,
-                SignalOutcome.BREAKEVEN,
-                rr * tp1_protected_rr,
-                close_ts,
-                entry,
-                hit_entry_after_tp1=hit_entry_after_tp1,
-            )
-
-        return BacktestResult(
-            signal,
-            SignalOutcome.LOSS,
-            -1.0,
-            close_ts,
-            sl,
-            hit_entry_after_tp1=hit_entry_after_tp1,
-        )
-
     # ── console output ────────────────────────────────────────────────────────
     def _simulate_with_giveback_trailing(
         self,
@@ -1485,11 +1150,6 @@ class MultiPairBacktester:
 
             tp1_now = candle.low <= probe.tp1 if is_short else candle.high >= probe.tp1
             tp2_now = candle.low <= probe.tp2 if is_short else candle.high >= probe.tp2
-            inv_now = (
-                candle.close > probe.ltf_range.range_high
-                if is_short
-                else candle.close < probe.ltf_range.range_low
-            )
             effective_sl = current_sl if tp1_seen and profile.move_sl_to_be_on_tp1 else original_sl
             sl_now = candle.high >= effective_sl if is_short else candle.low <= effective_sl
             entry_now = candle.high >= entry if is_short else candle.low <= entry
@@ -1508,30 +1168,6 @@ class MultiPairBacktester:
                     trail_mfe_price,
                     trailed_sl,
                     tp2_hit=True,
-                )
-
-            if inv_now and profile.use_invalidation:
-                if tp1_seen and profile.move_sl_to_be_on_tp1:
-                    return self._trailing_result(
-                        probe,
-                        SignalOutcome.BREAKEVEN,
-                        self._protected_be_rr(probe, profile),
-                        candle.timestamp,
-                        self._protected_be_price(probe, profile),
-                        hit_entry_after_tp1,
-                        trail_mfe_price,
-                        trailed_sl,
-                    )
-                inv_rr = -(abs(entry - candle.close) / probe.risk_pips)
-                return self._trailing_result(
-                    probe,
-                    SignalOutcome.LOSS,
-                    inv_rr,
-                    candle.timestamp,
-                    candle.close,
-                    hit_entry_after_tp1,
-                    trail_mfe_price,
-                    trailed_sl,
                 )
 
             if sl_now:
@@ -1825,7 +1461,6 @@ def main() -> None:
     p.add_argument("--stale-hours", type=float, default=None)
     p.add_argument("--max-sl-mult", type=float, default=None)
     p.add_argument("--no-breakeven", action="store_true")
-    p.add_argument("--no-invalidation", action="store_true")
     p.add_argument("--no-trend-filter", action="store_true")
     p.add_argument("--no-session-filter", action="store_true")
     p.add_argument("--from-date", dest="from_date", metavar="YYYY-MM-DD")
@@ -1866,8 +1501,6 @@ def main() -> None:
     overrides: dict = {}
     if args.no_breakeven:
         overrides["move_sl_to_be_on_tp1"] = False
-    if args.no_invalidation:
-        overrides["use_invalidation"] = False
     if args.no_trend_filter:
         overrides["use_trend_filter"] = False
     if args.no_session_filter:

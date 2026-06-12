@@ -11,8 +11,8 @@ import logging
 from typing import Optional
 
 from domain.assets.profiles import AssetProfile, in_session
-from domain.entities.enums import SignalDirection, SignalStatus
-from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
+from domain.entities.enums import SignalStatus
+from domain.entities.ranges import HtfRange, RejectionCandle
 from domain.entities.trade import TradeSignal
 from domain.trade_management import tp1_level
 
@@ -40,7 +40,6 @@ def build_signal(
     htf_interval: str,
     ltf_interval: str,
     htf_range:    HtfRange,
-    ltf_range:    LtfRange,
     rejection:    RejectionCandle,
     signal_id:    str,
     profile:      AssetProfile,
@@ -60,16 +59,13 @@ def build_signal(
     5. RR cap — TP2 capped when rr > max_rr (not skipped; tp2 is adjusted).
     6. Session filter — rejection candle must be inside an allowed session.
     """
-    direction = ltf_range.direction
+    direction = htf_range.signal_direction
     entry     = rejection.close
 
-    # ── 1. Stop loss ──────────────────────────────────────────────────────────
-    sl_level = (
-        rejection.wick_tip
-        if profile.stop_placement == "wick"
-        else ltf_range.sl_level
-    )
+    # ── 1. Stop loss (always wick-based) ──────────────────────────────────────
+    sl_level = rejection.wick_tip
     buffer = sl_level * profile.stop_buffer_pct
+    from domain.entities.enums import SignalDirection
     sl = sl_level + buffer if direction == SignalDirection.SHORT else sl_level - buffer
 
     if direction == SignalDirection.SHORT and sl <= entry:
@@ -146,7 +142,6 @@ def build_signal(
         tp1              = tp1,
         tp2              = tp2,
         htf_range        = htf_range,
-        ltf_range        = ltf_range,
         rejection_candle = rejection,
         risk_reward_ratio = rr,
         risk_pips         = risk,

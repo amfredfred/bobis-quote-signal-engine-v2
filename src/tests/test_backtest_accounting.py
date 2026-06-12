@@ -104,7 +104,7 @@ class TestMultiPairBacktesterValidation:
         cfg = MagicMock(spec=Settings)
         cfg.htf_lookback = 120
         cfg.min_wick_ratio = 0.65
-        cfg.entry_model = "candle_pattern"
+        cfg.entry_model = "crt"
         cfg.use_trend_filter = False
         cfg.move_sl_to_be_on_tp1 = True
         cfg.tp1_trigger_pct = 50.0

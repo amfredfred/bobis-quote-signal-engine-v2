@@ -22,7 +22,6 @@ from domain.trade_management import (
 class StepOutcome:
     terminal: bool
     emit_tp1: bool = False
-    emit_inv_log: bool = False
 
 
 def _protected_be_price(signal: TradeSignal, profile: AssetProfile) -> float:
@@ -76,7 +75,7 @@ def normalize_candle(candle: Candle) -> Candle:
 def step_signal_state(
     signal: TradeSignal, candle: Candle, profile: AssetProfile, now: int
 ) -> StepOutcome:
-    """Single live/backtest lifecycle policy for SL, TP, invalidation and expiry."""
+    """Single live/backtest lifecycle policy for SL, TP, and expiry."""
     candle = normalize_candle(candle)
     is_short = signal.direction == SignalDirection.SHORT
     expiry_ms = int(profile.signal_expiry_hours * 3_600_000)
@@ -106,13 +105,7 @@ def step_signal_state(
     sl_hit = candle.high >= effective_sl if is_short else candle.low <= effective_sl
     tp1_chk = candle.low <= signal.tp1 if is_short else candle.high >= signal.tp1
     tp2_hit = candle.low <= signal.tp2 if is_short else candle.high >= signal.tp2
-    inv_now = (
-        candle.close > signal.ltf_range.range_high
-        if is_short
-        else candle.close < signal.ltf_range.range_low
-    )
 
-    emit_inv_log = False
     emit_tp1 = False
 
     if signal.status == SignalStatus.TRIGGERED:
@@ -130,19 +123,6 @@ def step_signal_state(
             signal.close_price = signal.tp2
             return StepOutcome(terminal=True)
 
-        if inv_now and profile.use_invalidation:
-            signal.invalidated_at = now
-            signal.status = SignalStatus.INVALIDATED
-            signal.outcome = SignalOutcome.LOSS
-            signal.realized_rr = -(abs(signal.entry_price - candle.close) / signal.risk_pips)
-            signal.closed_at = now
-            signal.close_price = candle.close
-            return StepOutcome(terminal=True)
-
-        if inv_now and not profile.use_invalidation and signal.invalidation_logged_at is None:
-            signal.invalidation_logged_at = now
-            emit_inv_log = True
-
         if sl_hit:
             signal.status = SignalStatus.SL_HIT
             signal.outcome = SignalOutcome.LOSS
@@ -150,7 +130,7 @@ def step_signal_state(
             signal.sl_hit_at = now
             signal.closed_at = now
             signal.close_price = signal.stop_loss
-            return StepOutcome(terminal=True, emit_inv_log=emit_inv_log)
+            return StepOutcome(terminal=True)
 
         if tp1_chk:
             signal.status = SignalStatus.TP1_HIT
@@ -171,24 +151,6 @@ def step_signal_state(
             signal.close_price = signal.tp2
             return StepOutcome(terminal=True, emit_tp1=emit_tp1)
 
-        if inv_now and profile.use_invalidation:
-            signal.invalidated_at = now
-            signal.status = SignalStatus.INVALIDATED
-            signal.closed_at = now
-            if profile.move_sl_to_be_on_tp1:
-                signal.outcome = SignalOutcome.BREAKEVEN
-                signal.realized_rr = _protected_be_rr(signal, profile)
-                signal.close_price = _protected_be_price(signal, profile)
-            else:
-                signal.outcome = SignalOutcome.LOSS
-                signal.realized_rr = -(abs(signal.entry_price - candle.close) / signal.risk_pips)
-                signal.close_price = candle.close
-            return StepOutcome(terminal=True, emit_tp1=emit_tp1)
-
-        if inv_now and not profile.use_invalidation and signal.invalidation_logged_at is None:
-            signal.invalidation_logged_at = now
-            emit_inv_log = True
-
         if sl_hit:
             signal.sl_hit_at = now
             signal.closed_at = now
@@ -201,9 +163,9 @@ def step_signal_state(
                 signal.outcome = SignalOutcome.LOSS
                 signal.realized_rr = -1.0
                 signal.close_price = signal.stop_loss
-            return StepOutcome(terminal=True, emit_tp1=emit_tp1, emit_inv_log=emit_inv_log)
+            return StepOutcome(terminal=True, emit_tp1=emit_tp1)
 
-    return StepOutcome(terminal=False, emit_tp1=emit_tp1, emit_inv_log=emit_inv_log)
+    return StepOutcome(terminal=False, emit_tp1=emit_tp1)
 
 
 def replay_signal_lifecycle(

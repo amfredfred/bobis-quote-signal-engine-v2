@@ -11,7 +11,7 @@ from app.engine.parity_trace import trace_from_signal
 from domain.assets.profiles import AssetProfile
 from domain.entities.candle import Candle
 from domain.entities.enums import BosDirection, CandlePattern, SignalDirection, SignalOutcome
-from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
+from domain.entities.ranges import HtfRange, RejectionCandle
 from domain.entities.trade import TradeSignal
 from tools.parity_check import compare_traces
 
@@ -39,26 +39,23 @@ def _profile() -> AssetProfile:
     )
 
 
-def _setup(direction: SignalDirection) -> tuple[HtfRange, LtfRange, RejectionCandle]:
+def _setup(direction: SignalDirection) -> tuple[HtfRange, RejectionCandle]:
     if direction == SignalDirection.SHORT:
         htf = HtfRange(106.0, 94.0, BosDirection.BEARISH, TS - 10_000, tp_level=90.0)
-        ltf = LtfRange(105.0, 99.0, TS - 5_000, SignalDirection.SHORT)
         rejection = RejectionCandle(101.0, 105.0, 99.0, 100.0, TS, 0.8, CandlePattern.SHOOTING_STAR)
     else:
         htf = HtfRange(106.0, 94.0, BosDirection.BULLISH, TS - 10_000, tp_level=110.0)
-        ltf = LtfRange(101.0, 95.0, TS - 5_000, SignalDirection.LONG)
         rejection = RejectionCandle(99.0, 101.0, 95.0, 100.0, TS, 0.8, CandlePattern.HAMMER)
-    return htf, ltf, rejection
+    return htf, rejection
 
 
 def _signal(direction: SignalDirection) -> TradeSignal:
-    htf, ltf, rejection = _setup(direction)
+    htf, rejection = _setup(direction)
     decision = DecisionEngine().evaluate_setup(
         symbol="XAUUSD",
         htf_interval="1h",
         ltf_interval="5min",
         htf_range=htf,
-        ltf_range=ltf,
         rejection=rejection,
         signal_id=f"sig-{direction.value}",
         profile=_profile(),
@@ -113,13 +110,13 @@ def test_live_backtest_same_buy_signal_same_data():
 
 
 def test_live_backtest_same_no_trade_decision_same_data():
+    htf, rejection = _setup(SignalDirection.SHORT)
     decision = DecisionEngine().evaluate_setup(
         symbol="XAUUSD",
         htf_interval="1h",
         ltf_interval="5min",
-        htf_range=_setup(SignalDirection.SHORT)[0],
-        ltf_range=_setup(SignalDirection.SHORT)[1],
-        rejection=_setup(SignalDirection.SHORT)[2],
+        htf_range=htf,
+        rejection=rejection,
         signal_id="blocked",
         profile=_profile(),
         blocked_reason="POSITION OPEN on XAUUSD SHORT",

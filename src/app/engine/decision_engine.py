@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from domain.assets.profiles import AssetProfile
-from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
+from domain.entities.ranges import HtfRange, RejectionCandle
 from domain.entities.trade import TradeSignal
 from domain.signals.builder import build_signal
 
@@ -27,7 +27,6 @@ class DecisionEngine:
         htf_interval: str,
         ltf_interval: str,
         htf_range: HtfRange,
-        ltf_range: LtfRange,
         rejection: RejectionCandle,
         signal_id: str,
         profile: AssetProfile,
@@ -40,7 +39,6 @@ class DecisionEngine:
             htf_interval=htf_interval,
             ltf_interval=ltf_interval,
             htf_range=htf_range,
-            ltf_range=ltf_range,
             rejection=rejection,
             signal_id=signal_id,
             profile=profile,
@@ -48,4 +46,3 @@ class DecisionEngine:
         if signal is None:
             return Decision(None, "blocked", "signal_quality_gate")
         return Decision(signal, "valid_signal")
-

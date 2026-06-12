@@ -21,20 +21,11 @@ class HtfRangePendingPayload(TypedDict):
     tpLevel:        float
 
 
-class LtfRangePendingPayload(TypedDict):
-    rangeHigh: float
-    rangeLow:  float
-    slLevel:   float
-    timestamp: int
-
-
 class SignalPendingPayload(TypedDict):
     symbol:       str
     direction:    str
     status:       Literal["PENDING"]
     htfRange:     HtfRangePendingPayload
-    ltfRange:     LtfRangePendingPayload
     pendingAt:    int
-    ltfTimestamp: int
     htfInterval:  str
     ltfInterval:  str

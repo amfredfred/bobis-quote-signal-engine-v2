@@ -14,16 +14,12 @@ Both methods are tested with the same scenario to prove they agree,
 and both are verified to match the Numba/NumPy backtest kernel's
 same-bar conflict priorities.
 
-Conflict priority table (all four paths must agree)
-────────────────────────────────────────────────────
-  State       Same-bar conflict          Winner
-  ──────────  ─────────────────────────  ──────────
-  TRIGGERED   SL  vs TP1                SL        (FIX #13)
-  TRIGGERED   INV vs SL                 INV       (FIX #22)
-  TRIGGERED   TP1+TP2 vs INV            TP2       (FIX #25)  ← new
-  TP1_HIT     TP2 vs INV                TP2       (FIX #19/#21)
-  TP1_HIT     INV vs SL  (use_be=True)  BREAKEVEN
-  TP1_HIT     INV vs SL  (use_be=False) LOSS at candle.close
+Conflict priority table (all paths must agree)
+──────────────────────────────────────────────
+  State       Same-bar conflict   Winner
+  ──────────  ─────────────────   ──────────
+  TRIGGERED   SL  vs TP1          SL        (FIX #13)
+  TRIGGERED   TP1+TP2 same bar    WIN_FULL  (FIX #25)
 """
 
 from __future__ import annotations
@@ -45,7 +41,7 @@ from domain.entities.enums import (
     SignalOutcome,
     SignalStatus,
 )
-from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
+from domain.entities.ranges import HtfRange, RejectionCandle
 from domain.entities.trade import TradeSignal
 from domain.signals.dedup import DedupState, should_emit
 
@@ -64,10 +60,6 @@ TP1_CLOSE_PCT = 0.0
 BASE_TS = 1_700_000_000_000
 BAR_MS = 60_000
 
-LTF_RANGE_HIGH = 1.10200
-LTF_RANGE_LOW = 1.09800
-
-
 # ── Domain builders ───────────────────────────────────────────────────────────
 
 
@@ -79,15 +71,6 @@ def _htf_range() -> HtfRange:
         timestamp=BASE_TS - 3_600_000,
         broken_at=BASE_TS - 1_800_000,
         tp_level=TP2,
-    )
-
-
-def _ltf_range(direction: SignalDirection = SignalDirection.LONG) -> LtfRange:
-    return LtfRange(
-        range_high=LTF_RANGE_HIGH,
-        range_low=LTF_RANGE_LOW,
-        timestamp=BASE_TS - 900_000,
-        direction=direction,
     )
 
 
@@ -105,7 +88,6 @@ def _rejection() -> RejectionCandle:
 
 def test_dedup_state_isolates_same_timestamps_by_timeframe_pair():
     htf = _htf_range()
-    ltf = _ltf_range()
     rejection = _rejection()
     state = DedupState()
 
@@ -113,7 +95,6 @@ def test_dedup_state_isolates_same_timestamps_by_timeframe_pair():
         symbol="XAUUSD",
         direction=SignalDirection.LONG,
         htf_range=htf,
-        ltf_range=ltf,
         rejection=rejection,
         htf_interval="5min",
         ltf_interval="5min",
@@ -123,7 +104,6 @@ def test_dedup_state_isolates_same_timestamps_by_timeframe_pair():
     blocked_same_pair = should_emit(
         state,
         htf_range=htf,
-        ltf_range=ltf,
         rejection=rejection,
         direction=SignalDirection.LONG,
         symbol="XAUUSD",
@@ -135,7 +115,6 @@ def test_dedup_state_isolates_same_timestamps_by_timeframe_pair():
     allowed_other_pair = should_emit(
         state,
         htf_range=htf,
-        ltf_range=ltf,
         rejection=rejection,
         direction=SignalDirection.LONG,
         symbol="XAUUSD",
@@ -151,7 +130,6 @@ def test_dedup_state_isolates_same_timestamps_by_timeframe_pair():
 
 def test_zone_can_emit_distinct_rejections_until_signal_limit():
     htf = _htf_range()
-    ltf = _ltf_range()
     first = _rejection()
     second = RejectionCandle(
         open=first.open,
@@ -177,7 +155,6 @@ def test_zone_can_emit_distinct_rejections_until_signal_limit():
         symbol="XAUUSD",
         direction=SignalDirection.LONG,
         htf_range=htf,
-        ltf_range=ltf,
         rejection=first,
         htf_interval="5min",
         ltf_interval="5min",
@@ -193,7 +170,6 @@ def test_zone_can_emit_distinct_rejections_until_signal_limit():
     second_result = should_emit(
         state,
         htf_range=htf,
-        ltf_range=ltf,
         rejection=second,
         direction=SignalDirection.LONG,
         symbol="XAUUSD",
@@ -207,7 +183,6 @@ def test_zone_can_emit_distinct_rejections_until_signal_limit():
         symbol="XAUUSD",
         direction=SignalDirection.LONG,
         htf_range=htf,
-        ltf_range=ltf,
         rejection=second,
         htf_interval="5min",
         ltf_interval="5min",
@@ -216,7 +191,6 @@ def test_zone_can_emit_distinct_rejections_until_signal_limit():
     third_result = should_emit(
         state,
         htf_range=htf,
-        ltf_range=ltf,
         rejection=third,
         direction=SignalDirection.LONG,
         symbol="XAUUSD",
@@ -236,14 +210,12 @@ def test_zone_can_emit_distinct_rejections_until_signal_limit():
 
 def test_zone_retry_cannot_reuse_same_rejection():
     htf = _htf_range()
-    ltf = _ltf_range()
     rejection = _rejection()
     state = DedupState()
     state.register(
         symbol="XAUUSD",
         direction=SignalDirection.LONG,
         htf_range=htf,
-        ltf_range=ltf,
         rejection=rejection,
         htf_interval="5min",
         ltf_interval="5min",
@@ -253,7 +225,6 @@ def test_zone_retry_cannot_reuse_same_rejection():
     result = should_emit(
         state,
         htf_range=htf,
-        ltf_range=ltf,
         rejection=rejection,
         direction=SignalDirection.LONG,
         symbol="XAUUSD",
@@ -291,7 +262,6 @@ def make_signal(
         tp1=tp1,
         tp2=tp2,
         htf_range=_htf_range(),
-        ltf_range=_ltf_range(direction),
         rejection_candle=_rejection(),
         risk_reward_ratio=rr,
         risk_pips=risk,
@@ -365,7 +335,6 @@ def simulate(svc, signal: TradeSignal, candles: list[Candle]) -> TradeSignal:
     probe.close_price = None
     probe.expired_at = None
     probe.invalidated_at = None
-    probe.invalidation_logged_at = None
     probe.tp1_hit_at = None
     probe.tp2_hit_at = None
     probe.sl_hit_at = None
@@ -419,7 +388,7 @@ class TestSLHit:
             ts=BASE_TS + BAR_MS,
             high=ENTRY + 0.00010,
             low=SL - 0.00020,
-            close=1.09850,  # above LTF_RANGE_LOW → no INV
+            close=1.09850,
         )
 
     def test_evaluate_outcome(self):
@@ -683,12 +652,11 @@ class TestTP2EarlyCheck:
                 low=ENTRY - 0.00010,
                 close=TP1 - 0.00005,
             ),
-            # high clears TP2; close breaks LTF range_low → INV for LONG
             make_candle(
                 ts=BASE_TS + 2 * BAR_MS,
                 high=TP2 + 0.00050,
                 low=ENTRY - 0.00010,
-                close=LTF_RANGE_LOW - 0.00100,
+                close=TP2 + 0.00020,
             ),
         )
 
@@ -723,15 +691,8 @@ class TestTP2TriggeredSameBarINV:
     """
     FIX #25 regression suite.
 
-    Scenario: while TRIGGERED, one large-range candle simultaneously:
-      • high >= TP2  (clears both TP1 and TP2)
-      • close < LTF range_low  (INV boundary for LONG)
-
-    Pre-fix:  INV block fires first → LOSS  (diverges from Numba kernel)
-    Post-fix: TP2 pre-check fires first → WIN_FULL  (matches Numba kernel)
-
-    Numba kernel priority:
-      (tp1_prev OR tp1_now) AND tp2_now → WIN_FULL, before INV is evaluated.
+    Scenario: while TRIGGERED, one large-range candle clears both TP1 and TP2
+    on the same bar. TP2 fires → WIN_FULL.
     """
 
     @staticmethod
@@ -739,8 +700,8 @@ class TestTP2TriggeredSameBarINV:
         return make_candle(
             ts=BASE_TS + BAR_MS,
             high=TP2 + 0.00500,  # clears TP1 and TP2
-            low=SL + 0.00100,  # above SL
-            close=LTF_RANGE_LOW - 0.00200,  # closes through range_low → INV
+            low=SL + 0.00100,   # above SL
+            close=TP1 - 0.00050,
         )
 
     # ── LONG ──────────────────────────────────────────────────────────────────
@@ -817,12 +778,6 @@ class TestTP2TriggeredSameBarINV:
                 broken_at=BASE_TS - 1_800_000,
                 tp_level=self.SHORT_TP2,
             ),
-            ltf_range=LtfRange(
-                range_high=LTF_RANGE_HIGH,
-                range_low=LTF_RANGE_LOW,
-                timestamp=BASE_TS - 900_000,
-                direction=SignalDirection.SHORT,
-            ),
             rejection_candle=_rejection(),
             risk_reward_ratio=self.SHORT_RR,
             risk_pips=risk,
@@ -833,16 +788,12 @@ class TestTP2TriggeredSameBarINV:
         )
 
     def _short_candle(self) -> Candle:
-        """
-        SHORT: INV fires when close > ltf_range.range_high.
-        TP2   fires when low <= tp2.
-        This candle does both.
-        """
+        """SHORT: same-bar TP1 + TP2 → WIN_FULL."""
         return make_candle(
             ts=BASE_TS + BAR_MS,
-            high=LTF_RANGE_HIGH + 0.00100,  # above range_high → INV
-            low=self.SHORT_TP2 - 0.00500,  # clears TP1 and TP2
-            close=LTF_RANGE_HIGH + 0.00050,  # closes through INV
+            high=self.SHORT_ENTRY + 0.00200,  # below SL
+            low=self.SHORT_TP2 - 0.00500,     # clears TP1 and TP2
+            close=self.SHORT_TP1 + 0.00050,
         )
 
     def test_short_evaluate_tp2_wins(self):
@@ -866,47 +817,6 @@ class TestTP2TriggeredSameBarINV:
         svc, _ = make_service(use_invalidation=True, use_breakeven=True)
         both_agree(svc, self._make_short_signal, [self._short_candle()], attr="outcome")
 
-    # ── Boundary: TP1 only (not TP2) fires on INV bar → LOSS ─────────────────
-
-    def test_tp1_only_no_tp2_inv_bar_loses(self):
-        """
-        TP1 fires same bar as INV, but TP2 does NOT.
-        Fix is precise — only the TP1+TP2 combination overrides INV.
-        """
-        candle = make_candle(
-            ts=BASE_TS + BAR_MS,
-            high=TP1 + 0.00050,  # reaches TP1 but NOT TP2
-            low=SL + 0.00100,  # above SL
-            close=LTF_RANGE_LOW - 0.00200,  # INV for LONG
-        )
-        svc, _ = make_service(use_invalidation=True)
-        signal = make_signal()
-        eval_signal(svc, signal, candle, BASE_TS + BAR_MS)
-
-        assert (
-            signal.outcome == SignalOutcome.LOSS
-        ), f"TP1+INV (no TP2) must still be LOSS, got {signal.outcome}"
-
-    def test_tp1_only_simulate_agrees(self):
-        candle = make_candle(
-            ts=BASE_TS + BAR_MS,
-            high=TP1 + 0.00050,
-            low=SL + 0.00100,
-            close=LTF_RANGE_LOW - 0.00200,
-        )
-        svc, _ = make_service(use_invalidation=True)
-        probe = simulate(svc, make_signal(), [candle])
-        assert probe.outcome == SignalOutcome.LOSS
-
-    def test_both_paths_agree_tp1_only_boundary(self):
-        candle = make_candle(
-            ts=BASE_TS + BAR_MS,
-            high=TP1 + 0.00050,
-            low=SL + 0.00100,
-            close=LTF_RANGE_LOW - 0.00200,
-        )
-        svc, _ = make_service(use_invalidation=True)
-        both_agree(svc, make_signal, [candle], attr="outcome")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1018,134 +928,6 @@ class TestExpiryAfterTP1Breakeven:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Invalidation
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-class TestInvalidation:
-    """INV while TRIGGERED — closes at candle.close."""
-
-    def _candle(self):
-        return make_candle(
-            ts=BASE_TS + BAR_MS,
-            high=ENTRY + 0.00010,
-            low=LTF_RANGE_LOW - 0.00100,
-            close=LTF_RANGE_LOW - 0.00050,
-        )
-
-    def test_evaluate_outcome(self):
-        svc, _ = make_service(use_invalidation=True)
-        signal = make_signal()
-        candle = self._candle()
-        eval_signal(svc, signal, candle, BASE_TS + BAR_MS)
-
-        assert signal.status == SignalStatus.INVALIDATED
-        assert signal.outcome == SignalOutcome.LOSS
-        assert signal.close_price == candle.close
-        assert signal.realized_rr < 0.0
-
-    def test_simulate_outcome(self):
-        svc, _ = make_service(use_invalidation=True)
-        probe = simulate(svc, make_signal(), [self._candle()])
-
-        assert probe.status == SignalStatus.INVALIDATED
-        assert probe.close_price == self._candle().close
-
-    def test_both_paths_agree(self):
-        svc, _ = make_service(use_invalidation=True)
-        both_agree(svc, make_signal, [self._candle()])
-
-    def test_inv_breakeven_after_tp1(self):
-        """INV while TP1_HIT + use_breakeven=True → BREAKEVEN at entry."""
-        svc, _ = make_service(use_invalidation=True, use_breakeven=True)
-        signal = make_signal()
-        tp1_bar = make_candle(
-            ts=BASE_TS + BAR_MS,
-            high=TP1 + 0.00010,
-            low=ENTRY - 0.00010,
-            close=TP1 - 0.00005,
-        )
-        inv_bar = make_candle(
-            ts=BASE_TS + 2 * BAR_MS,
-            high=ENTRY + 0.00010,
-            low=LTF_RANGE_LOW - 0.00100,
-            close=LTF_RANGE_LOW - 0.00050,
-        )
-        eval_signal(svc, signal, tp1_bar, tp1_bar.timestamp)
-        eval_signal(svc, signal, inv_bar, inv_bar.timestamp)
-
-        assert signal.outcome == SignalOutcome.BREAKEVEN
-        assert signal.close_price == ENTRY
-
-    def test_inv_loss_after_tp1_no_breakeven(self):
-        """INV while TP1_HIT + use_breakeven=False → LOSS at candle.close."""
-        svc, _ = make_service(use_invalidation=True, use_breakeven=False)
-        signal = make_signal()
-        tp1_bar = make_candle(
-            ts=BASE_TS + BAR_MS,
-            high=TP1 + 0.00010,
-            low=ENTRY - 0.00010,
-            close=TP1 - 0.00005,
-        )
-        inv_bar = make_candle(
-            ts=BASE_TS + 2 * BAR_MS,
-            high=ENTRY + 0.00010,
-            low=LTF_RANGE_LOW - 0.00100,
-            close=LTF_RANGE_LOW - 0.00050,
-        )
-        eval_signal(svc, signal, tp1_bar, tp1_bar.timestamp)
-        eval_signal(svc, signal, inv_bar, inv_bar.timestamp)
-
-        assert signal.outcome == SignalOutcome.LOSS
-        assert signal.close_price == inv_bar.close
-
-
-class TestInvalidationDisabled:
-    """use_invalidation=False — INV detected but trade stays open."""
-
-    def _candles(self):
-        return (
-            make_candle(
-                ts=BASE_TS + BAR_MS,
-                high=ENTRY + 0.00010,
-                low=LTF_RANGE_LOW - 0.00100,
-                close=LTF_RANGE_LOW - 0.00050,
-            ),
-            make_candle(
-                ts=BASE_TS + 2 * BAR_MS,
-                high=ENTRY + 0.00010,
-                low=SL - 0.00020,
-                close=SL + 0.00010,
-            ),
-        )
-
-    def test_trade_stays_open_after_inv(self):
-        svc, _ = make_service(use_invalidation=False)
-        signal = make_signal()
-        inv_bar, _ = self._candles()
-        eval_signal(svc, signal, inv_bar, inv_bar.timestamp)
-
-        assert signal.status in (SignalStatus.TRIGGERED, SignalStatus.TP1_HIT)
-        assert signal.invalidation_logged_at == inv_bar.timestamp
-
-    def test_sl_closes_after_inv_disabled(self):
-        svc, _ = make_service(use_invalidation=False)
-        signal = make_signal()
-        for c in self._candles():
-            eval_signal(svc, signal, c, c.timestamp)
-
-        assert signal.status == SignalStatus.SL_HIT
-        assert signal.close_price == SL
-
-    def test_simulate_inv_disabled_then_sl(self):
-        svc, _ = make_service(use_invalidation=False)
-        probe = simulate(svc, make_signal(), list(self._candles()))
-
-        assert probe.status == SignalStatus.SL_HIT
-        assert probe.close_price == SL
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # Same-bar conflict: SL vs TP1 while TRIGGERED — SL wins (FIX #13)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1158,7 +940,7 @@ class TestSLBeatsTP1SameBar:
             ts=BASE_TS + BAR_MS,
             high=TP1 + 0.00010,  # high >= TP1
             low=SL - 0.00010,  # low <= SL
-            close=1.09850,  # above LTF_RANGE_LOW → no INV
+            close=1.09850,
         )
 
     def test_evaluate_sl_wins(self):
@@ -1214,12 +996,6 @@ def make_short_signal() -> TradeSignal:
             broken_at=BASE_TS - 1_800_000,
             tp_level=_SHORT_TP2,
         ),
-        ltf_range=LtfRange(
-            range_high=LTF_RANGE_HIGH,
-            range_low=LTF_RANGE_LOW,
-            timestamp=BASE_TS - 900_000,
-            direction=SignalDirection.SHORT,
-        ),
         rejection_candle=_rejection(),
         risk_reward_ratio=rr,
         risk_pips=risk,
@@ -1238,7 +1014,7 @@ class TestShortSLHit:
             ts=BASE_TS + BAR_MS,
             high=_SHORT_SL + 0.00050,  # high >= SL for SHORT
             low=_SHORT_ENTRY - 0.00010,
-            close=1.10100,  # below range_high → no INV
+            close=1.10100,
         )
         eval_signal(svc, signal, candle, BASE_TS + BAR_MS)
 

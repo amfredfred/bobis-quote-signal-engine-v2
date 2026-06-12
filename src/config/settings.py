@@ -533,8 +533,8 @@ class Settings:
     trade_management_tf_overrides: dict = field(default_factory=dict)
     use_invalidation: bool = False
     multi_tf_independent_positions: bool = True
-    entry_model: str = "candle_pattern"  # candle_pattern | crt | all
-    crt_mode: str = "previous_candle"  # previous_candle | structural_range | both
+    entry_model: str = "crt"
+    crt_mode: str = "previous_candle"
 
     def entry_model_for(self, htf_interval: str, ltf_interval: str) -> str:
         """Return the entry model override for a TF pair, or the global default."""
@@ -577,26 +577,22 @@ class Settings:
                     f"tf_pairs: htf ({htf}={htf_m}min) must be at least as large as "
                     f"ltf ({ltf}={ltf_m}min)."
                 )
-        valid_models = {"candle_pattern", "crt", "all"}
-        if self.entry_model not in valid_models:
+        if self.entry_model != "crt":
             raise ValueError(
-                f"entry_model must be one of {valid_models}, got {self.entry_model!r}."
+                f"entry_model must be 'crt', got {self.entry_model!r}."
             )
         for pair, model in self.tf_entry_models.items():
-            if model not in valid_models:
+            if model != "crt":
                 raise ValueError(
-                    f"timeframes.pairs entry_model for {pair} must be one of "
-                    f"{valid_models}, got {model!r}."
+                    f"timeframes.pairs entry_model for {pair} must be 'crt', got {model!r}."
                 )
-        valid_crt_modes = {"previous_candle", "structural_range", "both"}
-        if self.crt_mode not in valid_crt_modes:
+        if self.crt_mode != "previous_candle":
             raise ValueError(
-                f"crt.mode must be one of {valid_crt_modes}, got {self.crt_mode!r}."
+                f"crt.mode must be 'previous_candle', got {self.crt_mode!r}."
             )
-        valid_stop_models = {"wick", "range"}
-        if self.stop_placement_method not in valid_stop_models:
+        if self.stop_placement_method != "wick":
             raise ValueError(
-                f"signal_quality.stop_model must be one of {valid_stop_models}, "
+                f"signal_quality.stop_model must be 'wick', "
                 f"got {self.stop_placement_method!r}."
             )
         if self.max_signal_count_per_zone < 1:
@@ -741,7 +737,7 @@ class Settings:
             multi_tf_independent_positions=_as_bool(
                 _get(cfg, "features.multi_tf_independent_positions", True)
             ),
-            entry_model=str(_get(cfg, "features.entry_model", "candle_pattern")).lower(),
+            entry_model=str(_get(cfg, "features.entry_model", "crt")).lower(),
             crt_mode=str(_get(cfg, "crt.mode", "previous_candle")).lower(),
             use_displacement_filter=_as_bool(
                 _get(cfg, "displacement_filter.enabled", True)

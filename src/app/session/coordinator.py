@@ -27,7 +27,7 @@ from domain.entities.enums import (
     SignalDirection, SignalOutcome,
     CLOSED_OUTCOMES, WIN_OUTCOMES, VOID_OUTCOMES,
 )
-from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
+from domain.entities.ranges import HtfRange, RejectionCandle
 from domain.entities.session import ClosedSignalRecord
 from domain.signals.dedup import DedupState, DedupResult, should_emit
 
@@ -74,7 +74,6 @@ class SessionCoordinator:
         self,
         *,
         htf_range:    HtfRange,
-        ltf_range:    LtfRange,
         rejection:    RejectionCandle,
         direction:    SignalDirection,
         symbol:       str,
@@ -102,7 +101,6 @@ class SessionCoordinator:
         result: DedupResult = should_emit(
             self._state,
             htf_range=htf_range,
-            ltf_range=ltf_range,
             rejection=rejection,
             direction=direction,
             symbol=symbol,
@@ -121,7 +119,6 @@ class SessionCoordinator:
         symbol:       str,
         direction:    SignalDirection,
         htf_range:    HtfRange,
-        ltf_range:    LtfRange,
         rejection:    RejectionCandle,
         htf_interval: str = "",
         ltf_interval: str = "",
@@ -131,7 +128,6 @@ class SessionCoordinator:
             symbol       = symbol,
             direction    = direction,
             htf_range    = htf_range,
-            ltf_range    = ltf_range,
             rejection    = rejection,
             htf_interval = htf_interval,
             ltf_interval = ltf_interval,
@@ -305,7 +301,6 @@ class SessionCoordinator:
             dead_zones=self._state.dead_zones,
             zone_signal_counts=self._state.zone_signal_counts,
             open_dir=open_dir,
-            seen_ltf=self._state.seen_ltf,
             seen_rej=self._state.seen_rej,
         )
         self._history.clear()

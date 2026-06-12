@@ -34,7 +34,6 @@ from domain.entities.enums import (
 )
 from domain.entities.payloads import (
     HtfRangePendingPayload,
-    LtfRangePendingPayload,
     SignalPendingPayload,
 )
 from domain.entities.session import ClosedSignalRecord
@@ -83,7 +82,6 @@ class _SessionCoordinator(Protocol):
         self,
         *,
         htf_range: object,
-        ltf_range: object,
         rejection: object,
         direction: SignalDirection,
         symbol: str,
@@ -98,7 +96,6 @@ class _SessionCoordinator(Protocol):
         symbol: str,
         direction: SignalDirection,
         htf_range: object,
-        ltf_range: object,
         rejection: object,
         htf_interval: str,
         ltf_interval: str,
@@ -134,7 +131,7 @@ class _PendingKey:
     symbol: str
     htf_interval: str
     ltf_interval: str
-    ltf_ts: int
+    htf_ts: int
     direction: str
 
 
@@ -174,7 +171,6 @@ class SignalService:
         self._last_htf: dict[tuple, list[Candle]] = {}
         self._last_ltf: dict[tuple, list[Candle]] = {}
         self._last_ranges: dict[tuple, list] = {}
-        self._last_ltf_ranges: dict[tuple, dict[tuple[int, str], object]] = {}
         self._current_fired: dict[str, int] = {}
         self._pending_emitted: dict[_PendingKey, int] = {}
         self._decision_engine = DecisionEngine()
@@ -213,7 +209,6 @@ class SignalService:
                     symbol=signal.symbol,
                     direction=signal.direction,
                     htf_range=signal.htf_range,
-                    ltf_range=signal.ltf_range,
                     rejection=signal.rejection_candle,
                     htf_interval=signal.htf_interval,
                     ltf_interval=signal.ltf_interval,
@@ -481,87 +476,29 @@ class SignalService:
             k: v for k, v in self._pending_emitted.items() if v > stale_cutoff
         }
 
-        # LTF range cache (single pass)
-        ltf_range_cache: dict[tuple[int, str], object] = {}
-        live_ltf_keys: set[tuple[int, str]] = set()
-
-        for htf_range in htf_ranges:
-            htf_key = (htf_range.timestamp, htf_range.bos_direction.value)
-            zone_start = htf_range.broken_at or htf_range.timestamp
-            lo = bisect.bisect_left(ltf_timestamps, zone_start)
-            lr = SwingDetector.find_ltf_range(
-                ltf_visible[lo:hi], htf_range, ltf_visible
-            )
-            ltf_range_cache[htf_key] = lr
-            if lr:
-                live_ltf_keys.add((lr.timestamp, lr.direction.value))
-
-        self._last_ltf_ranges[pair_key] = {
-            ts: lr for ts, lr in ltf_range_cache.items() if lr is not None
-        }
-
-        # Invalidate stale zones
-        invalidated = {
-            k
-            for k in self._pending_emitted
-            if (
-                k.symbol == symbol
-                and k.htf_interval == htf_interval
-                and k.ltf_interval == ltf_interval
-                and (k.ltf_ts, k.direction) not in live_ltf_keys
-            )
-        }
-        for inv_key in invalidated:
-            del self._pending_emitted[inv_key]
-            self._emit(
-                SignalEvent.SIGNAL_INVALIDATED,
-                {
-                    "symbol": inv_key.symbol,
-                    "htfInterval": inv_key.htf_interval,
-                    "ltfInterval": inv_key.ltf_interval,
-                    "timestamp": inv_key.ltf_ts,
-                    "direction": inv_key.direction,
-                    "reason": "zone_invalidated",
-                    "invalidatedAt": now,
-                },
-            )
-
         new_signals: list[TradeSignal] = []
 
         for htf_range in htf_ranges:
-            htf_key = (htf_range.timestamp, htf_range.bos_direction.value)
-            zone_start = htf_range.broken_at or htf_range.timestamp
-            lo = bisect.bisect_left(ltf_timestamps, zone_start)
-            ltf_zone = ltf_visible[lo:hi]
-
-            ltf_range = ltf_range_cache.get(htf_key)
-            if not ltf_range:
-                if self._metrics:
-                    self._metrics.increment("signals.no_ltf_range")
-                logger.info(
-                    "[%s] Zone htf_ts=%s dir=%s — no LTF range",
-                    pair_label,
-                    self._cfg.dt_ms(htf_range.timestamp),
-                    htf_range.bos_direction.value,
-                )
-                continue
-            if structure is not None and not structure.allows(
-                ltf_range.direction.value
-            ):
+            direction = htf_range.signal_direction
+            if structure is not None and not structure.allows(direction.value):
                 if self._metrics:
                     self._metrics.increment("signals.trend_blocked")
                     self._metrics.increment(
-                        f"signals.trend_blocked.{ltf_range.direction.value.lower()}"
+                        f"signals.trend_blocked.{direction.value.lower()}"
                     )
                 continue
+
+            zone_start = htf_range.broken_at or htf_range.timestamp
+            lo = bisect.bisect_left(ltf_timestamps, zone_start)
+            ltf_zone = ltf_visible[lo:hi]
 
             # Pending signal
             pending_key = _PendingKey(
                 symbol=symbol,
                 htf_interval=htf_interval,
                 ltf_interval=ltf_interval,
-                ltf_ts=ltf_range.timestamp,
-                direction=ltf_range.direction.value,
+                htf_ts=htf_range.timestamp,
+                direction=direction.value,
             )
             if pending_key not in self._pending_emitted:
                 self._pending_emitted[pending_key] = (
@@ -571,7 +508,7 @@ class SignalService:
                     SignalEvent.SIGNAL_PENDING,
                     SignalPendingPayload(
                         symbol=symbol,
-                        direction=ltf_range.direction.value,
+                        direction=direction.value,
                         status="PENDING",
                         htfRange=HtfRangePendingPayload(
                             rangeHigh=htf_range.range_high,
@@ -583,37 +520,22 @@ class SignalService:
                             brokenAt=htf_range.broken_at,
                             tpLevel=htf_range.tp_level,
                         ),
-                        ltfRange=LtfRangePendingPayload(
-                            rangeHigh=ltf_range.range_high,
-                            rangeLow=ltf_range.range_low,
-                            slLevel=ltf_range.sl_level,
-                            timestamp=ltf_range.timestamp,
-                        ),
                         pendingAt=now,
-                        ltfTimestamp=ltf_range.timestamp,
                         htfInterval=htf_interval,
                         ltfInterval=ltf_interval,
                     ),
                 )
 
             # Entry
-            rej_result = find_entry(
-                ltf_zone,
-                ltf_range,
-                htf_range,
-                entry_model,
-                self._cfg.min_wick_ratio,
-                self._cfg.crt_mode,
-            )
+            rej_result = find_entry(ltf_zone, direction, htf_range)
             if not rej_result:
                 if self._metrics:
                     self._metrics.increment("signals.no_rejection")
                 logger.info(
-                    "[%s] Zone htf_ts=%s ltf_ts=%s dir=%s — no entry pattern",
+                    "[%s] Zone htf_ts=%s dir=%s — no entry pattern",
                     pair_label,
                     self._cfg.dt_ms(htf_range.timestamp),
-                    self._cfg.dt_ms(ltf_range.timestamp),
-                    ltf_range.direction.value,
+                    direction.value,
                 )
                 continue
             rejection, _ = rej_result
@@ -649,9 +571,8 @@ class SignalService:
 
             allowed, reason = self._session.should_emit(
                 htf_range=htf_range,
-                ltf_range=ltf_range,
                 rejection=rejection,
-                direction=ltf_range.direction,
+                direction=direction,
                 symbol=symbol,
                 current_ts=pair_fired_at,
                 htf_interval=htf_interval,
@@ -667,7 +588,7 @@ class SignalService:
 
             signal_id = (
                 f"{symbol}_{htf_interval}_{ltf_interval}_"
-                f"{rejection.timestamp}_{ltf_range.direction.value}"
+                f"{rejection.timestamp}_{direction.value}"
             )
             if signal_id in self._watchlist:
                 if self._metrics:
@@ -679,7 +600,6 @@ class SignalService:
                 htf_interval=htf_interval,
                 ltf_interval=ltf_interval,
                 htf_range=htf_range,
-                ltf_range=ltf_range,
                 rejection=rejection,
                 signal_id=signal_id,
                 profile=profile,
@@ -711,9 +631,8 @@ class SignalService:
             signal.zone_attempt = self._session.register_signal(
                 signal_id=signal.id,
                 symbol=symbol,
-                direction=ltf_range.direction,
+                direction=direction,
                 htf_range=htf_range,
-                ltf_range=ltf_range,
                 rejection=rejection,
                 htf_interval=htf_interval,
                 ltf_interval=ltf_interval,
@@ -852,14 +771,6 @@ class SignalService:
             )
             prev_status = SignalStatus.TP1_HIT
 
-        if step.emit_inv_log:
-            self._emit(
-                SignalEvent.SIGNAL_INVALIDATED,
-                self._update_payload(
-                    signal, SignalEvent.SIGNAL_INVALIDATED, prev_status, candle.close
-                ),
-            )
-
         if step.terminal:
             self._close_signal(
                 signal, _STATUS_TO_CLOSE_EVENT[signal.status], prev_status
@@ -893,7 +804,6 @@ class SignalService:
             realized_rr=signal.realized_rr,
             closed_at=signal.closed_at,
             htf_ts=signal.htf_range.timestamp,
-            ltf_ts=signal.ltf_range.timestamp,
             rej_ts=signal.rejection_candle.timestamp,
             entry=signal.entry_price,
             entry_ts=signal.triggered_at or signal.created_at,
@@ -909,8 +819,6 @@ class SignalService:
             htf_high=signal.htf_range.range_high,
             htf_low=signal.htf_range.range_low,
             tp_level=signal.htf_range.tp_level,
-            ltf_high=signal.ltf_range.range_high,
-            ltf_low=signal.ltf_range.range_low,
         )
         self._session.record_outcome(rec)
 
@@ -971,22 +879,14 @@ class SignalService:
             htf_interval,
             ltf_interval,
         ), htf_ranges in self._last_ranges.items():
-            ltf_range_map = self._last_ltf_ranges.get(
-                (symbol, htf_interval, ltf_interval), {}
-            )
             for htf_range in htf_ranges:
-                lr = ltf_range_map.get(
-                    (htf_range.timestamp, htf_range.bos_direction.value)
-                )
-                if not lr:
-                    continue
+                direction = htf_range.signal_direction
                 armed.append(
                     {
                         "symbol": symbol,
-                        "direction": lr.direction.value,
+                        "direction": direction.value,
                         "htfInterval": htf_interval,
                         "ltfInterval": ltf_interval,
-                        "ltfTimestamp": lr.timestamp,
                         "pendingAt": fired_at,
                         "htfRange": {
                             "rangeHigh": htf_range.range_high,
@@ -997,12 +897,6 @@ class SignalService:
                             "brokenAt": htf_range.broken_at,
                             "htfCandleOpen": htf_range.htf_candle_open,
                             "htfCandleClose": htf_range.htf_candle_close,
-                        },
-                        "ltfRange": {
-                            "rangeHigh": lr.range_high,
-                            "rangeLow": lr.range_low,
-                            "slLevel": lr.sl_level,
-                            "timestamp": lr.timestamp,
                         },
                     }
                 )
@@ -1065,7 +959,6 @@ class SignalService:
         probe.close_price = None
         probe.expired_at = None
         probe.invalidated_at = None
-        probe.invalidation_logged_at = None
 
         replay_from = signal.triggered_at or signal.created_at
         self._simulate_lifecycle(

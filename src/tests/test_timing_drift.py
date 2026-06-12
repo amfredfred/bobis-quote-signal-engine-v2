@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.backtesting.backtest import BacktestResult, MultiPairBacktester
 from domain.assets.profiles import AssetProfile
 from domain.entities.enums import BosDirection, CandlePattern, SignalDirection, SignalOutcome
-from domain.entities.ranges import HtfRange, LtfRange, RejectionCandle
+from domain.entities.ranges import HtfRange, RejectionCandle
 from domain.signals.builder import build_signal
 from interfaces.cli.main import SignalEngine
 from interfaces.ws.scheduler import SignalScheduler
@@ -176,12 +176,6 @@ def _signal():
             broken_at=BASE - M5,
             tp_level=103.0,
         ),
-        ltf_range=LtfRange(
-            range_high=101.0,
-            range_low=99.0,
-            timestamp=BASE,
-            direction=SignalDirection.LONG,
-        ),
         rejection=RejectionCandle(
             open=100.0,
             high=101.0,
@@ -197,7 +191,7 @@ def _signal():
             max_rr=0.0,
             use_session_filter=False,
             sessions={},
-            stop_placement="range",
+            stop_placement="wick",
             stop_buffer_pct=0.0,
             max_sl_zone_mult=10.0,
             tp1_trigger_pct=50.0,

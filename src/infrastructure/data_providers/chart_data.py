@@ -47,9 +47,8 @@ def build_chart_data(
     htf_interval: str = "30min",
     ltf_interval: str = "1min",
 ) -> dict:
-    swg_i     = _idx(ltf_candles, signal.ltf_range.timestamp)
     rej_i     = _idx(ltf_candles, signal.rejection_candle.timestamp)
-    ltf_slice = ltf_candles[max(0, swg_i - ltf_pre) : min(len(ltf_candles), rej_i + ltf_post + 1)]
+    ltf_slice = ltf_candles[max(0, rej_i - ltf_pre) : min(len(ltf_candles), rej_i + ltf_post + 1)]
 
     zone_i    = _idx(htf_candles, signal.htf_range.timestamp)
     htf_slice = htf_candles[max(0, zone_i - htf_pre) : min(len(htf_candles), zone_i + htf_post + 1)]
@@ -90,11 +89,6 @@ def build_chart_data(
                 "top": signal.htf_range.range_high, "bottom": signal.htf_range.range_low,
                 "color": _HTF_COLOR, "borderColor": "#F57C00",
                 "label": "Supply" if is_short else "Demand",
-            },
-            "ltfZone": {
-                "top": signal.ltf_range.range_high, "bottom": signal.ltf_range.range_low,
-                "color": _LTF_COLOR, "borderColor": "#3B82F6",
-                "label": "LTF Swing",
             },
             "entry": signal.entry_price, "sl": signal.stop_loss,
             "tp1": signal.tp1, "tp2": signal.tp2,

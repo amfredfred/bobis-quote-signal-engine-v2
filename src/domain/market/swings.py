@@ -11,8 +11,8 @@ import logging
 from typing import Optional
 
 from domain.entities.candle import Candle
-from domain.entities.enums import BosDirection, SignalDirection
-from domain.entities.ranges import HtfRange, LtfRange
+from domain.entities.enums import BosDirection
+from domain.entities.ranges import HtfRange
 
 logger = logging.getLogger(__name__)
 
@@ -255,107 +255,3 @@ class SwingDetector:
         )
         return result
 
-    @staticmethod
-    def find_ltf_range(
-        candles: list[Candle],
-        htf_range: HtfRange,
-        ltf_all: Optional[list[Candle]] = None,
-    ) -> Optional[LtfRange]:
-        """
-        Find the LTF extreme swing inside the HTF swing candle's time window.
-
-        SHORT → highest candle in the window (highest high).
-        LONG  → lowest  candle in the window (lowest low).
-        """
-        direction = (
-            SignalDirection.SHORT
-            if htf_range.bos_direction == BosDirection.BEARISH
-            else SignalDirection.LONG
-        )
-
-        if (
-            ltf_all is not None
-            and htf_range.htf_candle_open > 0
-            and htf_range.htf_candle_close > 0
-        ):
-            window = [
-                c for c in ltf_all
-                if htf_range.htf_candle_open <= c.timestamp < htf_range.htf_candle_close
-            ]
-            logger.debug(
-                "find_ltf_range: window [%d→%d) → %d LTF candles",
-                htf_range.htf_candle_open, htf_range.htf_candle_close, len(window),
-            )
-        else:
-            window = candles
-            logger.debug("find_ltf_range: fallback to %d candles", len(window))
-
-        if not window:
-            return None
-
-        best = (
-            max(window, key=lambda c: c.high)
-            if direction == SignalDirection.SHORT
-            else min(window, key=lambda c: c.low)
-        )
-
-        return LtfRange(
-            range_high = best.high,
-            range_low  = best.low,
-            timestamp  = best.timestamp,
-            direction  = direction,
-        )
-
-    @staticmethod
-    def candles_entering_ltf(
-        candles: list[Candle],
-        ltf_range: LtfRange,
-        htf_range: Optional[HtfRange] = None,
-    ) -> list[Candle]:
-        """
-        Return candles that have retested the LTF range from outside.
-
-        A retest requires:
-          1. Price first leaves the zone (close escapes beyond sl_level).
-          2. A subsequent candle wicks back into the zone but closes back out.
-          3. Both candles are past the zone-forming HTF candle's close time.
-        """
-        post_range = [c for c in candles if c.timestamp > ltf_range.timestamp]
-        if not post_range:
-            return []
-
-        zone_close_ts = htf_range.htf_candle_close if htf_range is not None else 0
-
-        result, price_left = [], False
-
-        if ltf_range.direction == SignalDirection.SHORT:
-            for c in post_range:
-                if not price_left:
-                    if c.close < ltf_range.range_low and c.timestamp > zone_close_ts:
-                        price_left = True
-                else:
-                    if (
-                        c.timestamp > zone_close_ts
-                        and c.high >= ltf_range.range_low
-                        and c.close < ltf_range.range_low
-                    ):
-                        result.append(c)
-        else:
-            for c in post_range:
-                if not price_left:
-                    if c.close > ltf_range.range_high and c.timestamp > zone_close_ts:
-                        price_left = True
-                else:
-                    if (
-                        c.timestamp > zone_close_ts
-                        and c.low <= ltf_range.range_high
-                        and c.close > ltf_range.range_high
-                    ):
-                        result.append(c)
-
-        if not result:
-            logger.debug(
-                "%s LTF [%.5f,%.5f]: price_left=%s, no re-test candles found",
-                ltf_range.direction.value, ltf_range.range_low, ltf_range.range_high, price_left,
-            )
-        return result
