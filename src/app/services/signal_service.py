@@ -538,6 +538,12 @@ class SignalService:
             if not ltf_range:
                 if self._metrics:
                     self._metrics.increment("signals.no_ltf_range")
+                logger.info(
+                    "[%s] Zone htf_ts=%s dir=%s — no LTF range",
+                    pair_label,
+                    self._cfg.dt_ms(htf_range.timestamp),
+                    htf_range.bos_direction.value,
+                )
                 continue
             if structure is not None and not structure.allows(
                 ltf_range.direction.value
@@ -602,6 +608,13 @@ class SignalService:
             if not rej_result:
                 if self._metrics:
                     self._metrics.increment("signals.no_rejection")
+                logger.info(
+                    "[%s] Zone htf_ts=%s ltf_ts=%s dir=%s — no entry pattern",
+                    pair_label,
+                    self._cfg.dt_ms(htf_range.timestamp),
+                    self._cfg.dt_ms(ltf_range.timestamp),
+                    ltf_range.direction.value,
+                )
                 continue
             rejection, _ = rej_result
             if self._metrics:
@@ -649,7 +662,7 @@ class SignalService:
                     self._metrics.increment("signals.dedup_blocked")
                     reason_key = reason.split(":", 1)[0].strip().lower() or "unknown"
                     self._metrics.increment(f"signals.dedup_blocked.{reason_key}")
-                logger.debug("[%s] Blocked: %s", pair_label, reason)
+                logger.info("[%s] Dedup blocked: %s", pair_label, reason)
                 continue
 
             signal_id = (
