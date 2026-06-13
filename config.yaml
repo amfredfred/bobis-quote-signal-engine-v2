@@ -4,7 +4,9 @@ websocket:
   max_clients: 10
 
 mt5:
-  terminal_path: "c:\\Program Files\\FBS MetaTrader 5\\terminal64.exe"
+  use: exness
+  # ← uncomment to load credentials from mt5-credentials.yaml
+  #                 the value must match a profile key in mt5-credentials.yaml
   timeout_ms: 60000
   portable: false
   # FBS-Demo server time is UTC+3.
@@ -37,7 +39,7 @@ signal_quality:
   max_spread_to_sl_ratio: 0.35
   # Global fallbacks — overridden per symbol below.
   min_rr: 2.5
-  max_rr: 0  # disabled globally; controlled per symbol via rrr
+  max_rr: 0 # disabled globally; controlled per symbol via rrr
   # Per-symbol, per-TF RR. min_rr and max_rr resolve independently.
   # Priority: symbol+TF > symbol+* > *+TF > *+* > global.
   # COMMODITY class hardcodes max_rr: 8.0 in profiles.py before this runs.

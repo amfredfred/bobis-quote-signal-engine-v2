@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 .env
+mt5-credentials.yaml
 *.db
 *.db-shm
 *.db-wal

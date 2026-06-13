@@ -227,6 +227,73 @@ def _config_path_from_env() -> Path | None:
     return default if default.exists() else None
 
 
+def _load_mt5_profile(config_path: Path, profile: str) -> tuple[int, str, str, str]:
+    """Load a named MT5 credential profile from mt5-credentials.yaml.
+
+    The credentials file is looked up next to config_path, then in cwd.
+    Raises ValueError with a clear message if the profile or any required
+    field (login, password, server, terminal_path) is missing or empty.
+    """
+    candidates = [
+        config_path.parent / "mt5-credentials.yaml",
+        Path.cwd() / "mt5-credentials.yaml",
+    ]
+    creds_path = next((p for p in candidates if p.exists()), None)
+    if creds_path is None:
+        raise FileNotFoundError(
+            f"mt5.use is '{profile}' but no mt5-credentials.yaml was found "
+            f"(looked in {candidates[0].parent} and cwd)."
+        )
+    data = _load_yaml(creds_path)
+    if profile not in data:
+        available = ", ".join(data.keys()) or "(none)"
+        raise ValueError(
+            f"MT5 credential profile '{profile}' not found in {creds_path}. "
+            f"Available profiles: {available}"
+        )
+    p = data[profile]
+    if not isinstance(p, dict):
+        raise ValueError(f"Profile '{profile}' in {creds_path} must be a mapping.")
+    login = p.get("login")
+    password = p.get("password")
+    server = p.get("server")
+    terminal_path = p.get("terminal_path")
+    required = [("login", login), ("password", password), ("server", server), ("terminal_path", terminal_path)]
+    missing = [k for k, v in required if not v]
+    if missing:
+        raise ValueError(
+            f"MT5 credential profile '{profile}' is missing required field(s): "
+            f"{', '.join(missing)}. Add them to {creds_path}."
+        )
+    return int(login), str(password), str(server), str(terminal_path)
+
+
+def _resolve_mt5_credentials(cfg: dict, config_path: "Path | None") -> dict:
+    """Return mt5_login/password/server/terminal_path kwargs for Settings.
+
+    If config.yaml has ``mt5.use: <profile>``, all four fields are loaded from
+    mt5-credentials.yaml (next to config.yaml or in cwd).
+    Otherwise falls back to MT5_LOGIN / MT5_PASSWORD / MT5_SERVER env vars
+    with terminal_path from config.yaml (legacy mode).
+    """
+    profile = _get(cfg, "mt5.use", None)
+    if profile:
+        path = config_path if config_path else Path.cwd() / "config.yaml"
+        login, password, server, terminal_path = _load_mt5_profile(path, str(profile))
+        return {
+            "mt5_login": login,
+            "mt5_password": password,
+            "mt5_server": server,
+            "mt5_terminal_path": terminal_path,
+        }
+    return {
+        "mt5_login": int(os.getenv("MT5_LOGIN", "0") or "0"),
+        "mt5_password": os.getenv("MT5_PASSWORD", ""),
+        "mt5_server": os.getenv("MT5_SERVER", ""),
+        "mt5_terminal_path": str(_get(cfg, "mt5.terminal_path", "")),
+    }
+
+
 def _get(data: dict, key: str, default: Any = None) -> Any:
     cur: Any = data
     for part in key.split("."):
@@ -673,10 +740,7 @@ class Settings:
             ws_port=int(_get(cfg, "websocket.port", 8765)),
             ws_secret=os.getenv("SIGNAL_ENGINE_WS_SECRET", ""),
             max_ws_clients=int(_get(cfg, "websocket.max_clients", 10)),
-            mt5_terminal_path=str(_get(cfg, "mt5.terminal_path", "")),
-            mt5_login=int(os.getenv("MT5_LOGIN", "0") or "0"),
-            mt5_password=os.getenv("MT5_PASSWORD", ""),
-            mt5_server=os.getenv("MT5_SERVER", ""),
+            **_resolve_mt5_credentials(cfg, config_path),
             mt5_timeout_ms=int(_get(cfg, "mt5.timeout_ms", 60_000)),
             mt5_portable=_as_bool(_get(cfg, "mt5.portable", False)),
             broker_time_offset_ms=int(
