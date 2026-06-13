@@ -70,7 +70,6 @@ class _Settings(Protocol):
     signal_expiry_hours: float
     entry_model: str
     crt_mode: str
-    min_wick_ratio: float
 
     def now_ms(self) -> int: ...
     def entry_model_for(self, htf_interval: str, ltf_interval: str) -> str: ...

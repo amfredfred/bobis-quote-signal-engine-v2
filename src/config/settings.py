@@ -227,12 +227,13 @@ def _config_path_from_env() -> Path | None:
     return default if default.exists() else None
 
 
-def _load_mt5_profile(config_path: Path, profile: str) -> tuple[int, str, str, str]:
+def _load_mt5_profile(config_path: Path, profile: str) -> tuple[int, str, str, str, float, "str | None"]:
     """Load a named MT5 credential profile from mt5-credentials.yaml.
 
-    The credentials file is looked up next to config_path, then in cwd.
-    Raises ValueError with a clear message if the profile or any required
-    field (login, password, server, terminal_path) is missing or empty.
+    Returns (login, password, server, terminal_path, broker_time_offset_hours, config_ref).
+    broker_time_offset_hours defaults to 0.0 if omitted.
+    config_ref is the optional ``config:`` key — a path to a broker config file.
+    Raises ValueError/FileNotFoundError with clear messages on any missing required field.
     """
     candidates = [
         config_path.parent / "mt5-credentials.yaml",
@@ -265,32 +266,90 @@ def _load_mt5_profile(config_path: Path, profile: str) -> tuple[int, str, str, s
             f"MT5 credential profile '{profile}' is missing required field(s): "
             f"{', '.join(missing)}. Add them to {creds_path}."
         )
-    return int(login), str(password), str(server), str(terminal_path)
+    broker_time_offset_hours = float(p.get("broker_time_offset_hours", 0.0))
+    config_ref = p.get("config")
+    return int(login), str(password), str(server), str(terminal_path), broker_time_offset_hours, str(config_ref) if config_ref else None
 
 
-def _resolve_mt5_credentials(cfg: dict, config_path: "Path | None") -> dict:
-    """Return mt5_login/password/server/terminal_path kwargs for Settings.
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base. Lists are replaced, not merged."""
+    result = base.copy()
+    for key, val in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
 
-    If config.yaml has ``mt5.use: <profile>``, all four fields are loaded from
-    mt5-credentials.yaml (next to config.yaml or in cwd).
-    Otherwise falls back to MT5_LOGIN / MT5_PASSWORD / MT5_SERVER env vars
-    with terminal_path from config.yaml (legacy mode).
+
+def _resolve_broker_cfg(base_cfg: dict, config_path: "Path | None") -> dict:
+    """Return the merged active config.
+
+    config.yaml is the infra layer (websocket, logging, mt5 connection).
+    The broker config is the strategy layer (R:R, spread filter, etc.).
+    The two are deep-merged — broker config wins on any key it defines.
+
+    The broker config path comes exclusively from the ``config:`` key in the
+    active MT5 credential profile. If absent, base_cfg is returned unchanged.
+    No auto-discovery — explicit is better than implicit.
+
+    Credentials are never read here; they always come from mt5-credentials.yaml
+    via _resolve_mt5_credentials so that zconfig files stay secret-free.
     """
-    profile = _get(cfg, "mt5.use", None)
+    profile = _get(base_cfg, "mt5.use", None)
+    if not profile or not config_path:
+        return base_cfg
+
+    root = config_path.parent
+
+    # Try to read the optional config: key from the credentials profile.
+    creds_candidates = [root / "mt5-credentials.yaml", Path.cwd() / "mt5-credentials.yaml"]
+    creds_path = next((p for p in creds_candidates if p.exists()), None)
+    explicit_ref: "str | None" = None
+    if creds_path:
+        data = _load_yaml(creds_path) or {}
+        entry = data.get(str(profile), {})
+        if isinstance(entry, dict):
+            explicit_ref = entry.get("config")
+
+    # explicit config: key in credentials — the only way to load a broker config
+    if not explicit_ref:
+        return base_cfg
+    broker_cfg_path = root / explicit_ref
+    if not broker_cfg_path.exists():
+        raise FileNotFoundError(
+            f"Profile '{profile}' config: '{explicit_ref}' not found at {broker_cfg_path}."
+        )
+    return _deep_merge(base_cfg, _load_yaml(broker_cfg_path) or {})
+
+
+def _resolve_mt5_credentials(base_cfg: dict, config_path: "Path | None") -> dict:
+    """Return mt5 credential kwargs for Settings, including broker_time_offset_ms.
+
+    Always reads from base_cfg (config.yaml), never from zconfig, so
+    credentials stay out of files that might be committed.
+    Falls back to MT5_LOGIN / MT5_PASSWORD / MT5_SERVER env vars when mt5.use
+    is not set (legacy / Docker mode).
+    """
+    profile = _get(base_cfg, "mt5.use", None)
     if profile:
         path = config_path if config_path else Path.cwd() / "config.yaml"
-        login, password, server, terminal_path = _load_mt5_profile(path, str(profile))
+        login, password, server, terminal_path, time_offset_h, _ref = _load_mt5_profile(path, str(profile))
         return {
             "mt5_login": login,
             "mt5_password": password,
             "mt5_server": server,
             "mt5_terminal_path": terminal_path,
+            "broker_time_offset_ms": int(time_offset_h * 3_600_000),
         }
     return {
         "mt5_login": int(os.getenv("MT5_LOGIN", "0") or "0"),
         "mt5_password": os.getenv("MT5_PASSWORD", ""),
         "mt5_server": os.getenv("MT5_SERVER", ""),
-        "mt5_terminal_path": str(_get(cfg, "mt5.terminal_path", "")),
+        "mt5_terminal_path": str(_get(base_cfg, "mt5.terminal_path", "")),
+        "broker_time_offset_ms": int(
+            float(_get(base_cfg, "mt5.broker_time_offset_hours", 0.0)) * 3_600_000
+        ),
     }
 
 
@@ -567,7 +626,6 @@ class Settings:
         return round(interval_to_minutes(ltf_interval) * 2 / 60, 4)
 
     # ── Signal quality ────────────────────────────────────────────────────────
-    min_wick_ratio: float = 0.65
     stop_placement_method: str = "wick"  # wick | range
     max_sl_zone_mult: float = 2.0
     max_spread_to_sl_ratio: float = 0.35  # 0 = disabled
@@ -730,7 +788,8 @@ class Settings:
                 load_dotenv(dotenv_path, override=False)
 
         config_path = _config_path_from_env()
-        cfg = _load_yaml(config_path) if config_path else {}
+        base_cfg = _load_yaml(config_path) if config_path else {}
+        cfg = _resolve_broker_cfg(base_cfg, config_path)
 
         return cls(
             base_dir=Path.cwd(),
@@ -740,12 +799,9 @@ class Settings:
             ws_port=int(_get(cfg, "websocket.port", 8765)),
             ws_secret=os.getenv("SIGNAL_ENGINE_WS_SECRET", ""),
             max_ws_clients=int(_get(cfg, "websocket.max_clients", 10)),
-            **_resolve_mt5_credentials(cfg, config_path),
+            **_resolve_mt5_credentials(base_cfg, config_path),
             mt5_timeout_ms=int(_get(cfg, "mt5.timeout_ms", 60_000)),
             mt5_portable=_as_bool(_get(cfg, "mt5.portable", False)),
-            broker_time_offset_ms=int(
-                float(_get(cfg, "mt5.broker_time_offset_hours", 0.0)) * 3_600_000
-            ),
             weekend_sleep_enabled=_as_bool(_get(cfg, "market.weekend_sleep.enabled", True)),
             weekend_close_weekday=_parse_weekday(
                 _get(cfg, "market.weekend_sleep.close_weekday", "saturday"), 5
@@ -768,7 +824,6 @@ class Settings:
             tf_entry_models=_parse_tf_entry_models(_get(cfg, "timeframes.pairs")),
             htf_lookback=_parse_htf_lookback(_get(cfg, "timeframes.htf_lookback", 120)),
             htf_outputsize=int(_get(cfg, "timeframes.htf_outputsize", 1000)),
-            min_wick_ratio=float(_get(cfg, "signal_quality.min_wick_ratio", 0.65)),
             stop_placement_method=str(
                 _get(cfg, "signal_quality.stop_model", "wick")
             ).strip().lower(),

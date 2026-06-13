@@ -705,7 +705,6 @@ class MetricsCollector:
             "pivot_bars": self._cfg.pivot_bars,
             "entry_model": self._cfg.entry_model,
             "crt_mode": self._cfg.crt_mode,
-            "min_wick_ratio": self._cfg.min_wick_ratio,
             "stop_placement": self._cfg.stop_placement_method,
             "stop_buffer_pct": self._cfg.stop_buffer_pct,
             "max_sl_zone_mult": self._cfg.max_sl_zone_mult,

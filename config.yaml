@@ -5,12 +5,8 @@ websocket:
 
 mt5:
   use: exness
-  # ← uncomment to load credentials from mt5-credentials.yaml
-  #                 the value must match a profile key in mt5-credentials.yaml
   timeout_ms: 60000
   portable: false
-  # FBS-Demo server time is UTC+3.
-  broker_time_offset_hours: 3
 
 market:
   weekend_sleep:
@@ -32,7 +28,6 @@ timeframes:
   htf_outputsize: 1000
 
 signal_quality:
-  min_wick_ratio: 0.51
   stop_model: wick
   max_sl_zone_mult: 1.0
   # Reject when spread exceeds this fraction of SL distance. 0 = disabled.

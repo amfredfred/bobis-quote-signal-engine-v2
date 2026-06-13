@@ -500,7 +500,6 @@ class BacktestReport:
             print(f" {'─'*42}")
             min_rr, max_rr = self._rr_window_for_results(r, profile)
             print(f" {' R:R window':<32} [{min_rr}, {max_rr}]")
-            print(f" {' Wick ratio':<32} [{self.cfg.min_wick_ratio}, ∞]")
         print(f" {'─'*42}")
 
         for dir_label, subset in [("LONG", longs), ("SHORT", shorts)]:
