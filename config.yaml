@@ -12,7 +12,7 @@ mt5:
 
 market:
   weekend_sleep:
-    enabled: false
+    enabled: true
     close_weekday: saturday
     close_time: "00:00"
     reopen_weekday: monday
