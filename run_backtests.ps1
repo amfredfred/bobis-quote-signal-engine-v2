@@ -1,25 +1,51 @@
 # powershell -ExecutionPolicy Bypass -File run_backtests.ps1
+#
+# Full validation backtest — all 5 pairs, 3-year window.
+# Uses config.yaml settings (min_rr=8, max_rr=3 per symbol via rrr block).
 
-$null = New-Item -ItemType Directory -Force "results\2025-2026-FREQUENCY"
+$FROM   = "2023-01-01"
+$TO     = "2025-12-31"
+$OUTDIR = "results\3yr-validation"
+$null   = New-Item -ItemType Directory -Force $OUTDIR
 
-$symbols = @("XAUUSD")
-$cwd = (Get-Location).Path
+$symbols = @("XAUUSD", "US100", "EURUSD", "GBPUSD", "USDJPY")
+$cwd     = (Get-Location).Path
 
 $jobs = $symbols | ForEach-Object {
     $sym = $_
     Start-Job -ScriptBlock {
-        param($s, $dir)
-        Set-Location $dir                          # ← restore working directory
-        py -m src.app.backtesting.backtest --symbol $s --from-date 2025-01-01 --output "results/2025-2026-FREQUENCY/$s.csv" --start-balance 100 --risk-percent 10 --spread-points 2 2>&1 | ForEach-Object { "[$s] $_" }
-    } -ArgumentList $sym, $cwd
+        param($s, $dir, $from, $to, $out)
+        Set-Location $dir
+        & "$dir\venv\Scripts\python.exe" -m src.app.backtesting.backtest `
+            --symbol     $s `
+            --from-date  $from `
+            --to-date    $to `
+            --output     "$out\$s.csv" `
+            2>&1 | ForEach-Object { "[$s] $_" }
+    } -ArgumentList $sym, $cwd, $FROM, $TO, $OUTDIR
 }
+
+Write-Host "Running $($symbols.Count) backtests in parallel ($FROM → $TO)..."
 
 while ($jobs | Where-Object { $_.State -eq 'Running' }) {
     $jobs | Receive-Job
-    Start-Sleep -Milliseconds 200
+    Start-Sleep -Milliseconds 300
 }
 
 $jobs | Receive-Job
 $jobs | Remove-Job
 
-Write-Host "`nAll 1 backtest complete."
+Write-Host "`nDone. Results in: $OUTDIR"
+
+# Quick PF summary
+Write-Host "`nPer-pair summary:"
+foreach ($sym in $symbols) {
+    $csv = "$OUTDIR\$sym.csv"
+    if (-not (Test-Path $csv)) { Write-Host "  $sym - no output"; continue }
+    $rows = Import-Csv $csv
+    $wins  = ($rows | Where-Object { $_.outcome -in @("WIN_FULL","WIN_PARTIAL","WIN") } | Measure-Object -Property realized_rr -Sum).Sum
+    $loss  = ($rows | Where-Object { $_.outcome -in @("LOSS","SL_HIT") } | Measure-Object -Property realized_rr -Sum).Sum
+    $lossAbs = [Math]::Abs($loss)
+    $pf    = if ($lossAbs -gt 0) { [Math]::Round($wins / $lossAbs, 2) } else { "inf" }
+    Write-Host "  $sym  trades=$($rows.Count)  PF=$pf  gross_R=$([Math]::Round($wins + $loss, 1))"
+}

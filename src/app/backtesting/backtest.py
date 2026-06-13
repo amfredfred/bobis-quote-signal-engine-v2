@@ -555,6 +555,14 @@ class BacktestReport:
             max_rr = f"{max_values[0]}-{max_values[-1]}"
         return min_rr, max_rr
 
+    def print_streak_analysis(self) -> None:
+        """Run losing-streak analysis on this backtest's results."""
+        if not self.results:
+            print(" No results to analyse.")
+            return
+        from app.backtesting.streak_analysis import run as _streak_run
+        _streak_run(self.results, symbol=self.symbol)
+
     def save_csv(self, path: str) -> None:
         if not self.results:
             return
@@ -1495,6 +1503,12 @@ def main() -> None:
         help="Write deterministic backtest parity trace JSONL to this path",
     )
     p.add_argument("--verbose", action="store_true")
+    p.add_argument(
+        "--streak-analysis",
+        dest="streak_analysis",
+        action="store_true",
+        help="Run losing-streak analysis after the backtest completes",
+    )
     args = p.parse_args()
 
     cfg = Settings.from_env()
@@ -1624,6 +1638,9 @@ def main() -> None:
         trace_out=args.trace_out,
     )
     report = bt.run()
+
+    if args.streak_analysis:
+        report.print_streak_analysis()
 
     if args.output:
         if args.output.endswith(".json"):

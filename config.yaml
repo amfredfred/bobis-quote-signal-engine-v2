@@ -42,15 +42,23 @@ signal_quality:
   rrr:
     XAUUSD:
       "5/5":
-        min_rr: 2.5
-        max_rr: 2.5
+        min_rr: 8
+        max_rr: 3
     US100:
       "5/5":
-        min_rr: 2.5
+        min_rr: 8
         max_rr: 3
-    US500:
+    EURUSD:
       "5/5":
-        min_rr: 2.5
+        min_rr: 8
+        max_rr: 3
+    GBPUSD:
+      "5/5":
+        min_rr: 8
+        max_rr: 3
+    USDJPY:
+      "5/5":
+        min_rr: 8
         max_rr: 3
 
 signal_lifetime:
@@ -73,7 +81,7 @@ crt:
   mode: previous_candle
 
 trade_management:
-  tp1_trigger_pct: 55
+  tp1_trigger_pct: 45
   tp1_close_pct: 0.0
   move_sl_to_be_on_tp1: true
   tf_overrides:
@@ -83,9 +91,15 @@ trade_management:
     US100:
       "5/5":
         tp1_trigger_pct: 25.0
-    US500:
+    EURUSD:
       "5/5":
-        tp1_trigger_pct: 30.0
+        tp1_trigger_pct: 45.0
+    GBPUSD:
+      "5/5":
+        tp1_trigger_pct: 45.0
+    USDJPY:
+      "5/5":
+        tp1_trigger_pct: 45.0
 
 displacement_filter:
   enabled: false

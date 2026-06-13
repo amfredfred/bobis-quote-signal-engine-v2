@@ -99,7 +99,9 @@ class AssetProfile:
 ASSET_CLASS_MAP: dict[str, str] = {
     "XAUUSD": "COMMODITY",
     "US100": "INDICES",
-    "US500": "INDICES",
+    "EURUSD": "FOREX",
+    "GBPUSD": "FOREX",
+    "USDJPY": "FOREX",
 }
 SUPPORTED_SYMBOLS = frozenset(ASSET_CLASS_MAP)
 
@@ -176,10 +178,26 @@ _SESSIONS_INDICES: dict[str, dict] = {
     },
 }
 
+_SESSIONS_ASIA_INDICES: dict[str, dict] = {
+    "TOKYO": {
+        "start": datetime.time(0, 0),
+        "end": datetime.time(8, 0),
+        "enabled": True,
+        "blocked_hours": set(),
+    },
+    "LONDON": {
+        "start": datetime.time(8, 0),
+        "end": datetime.time(16, 0),
+        "enabled": True,
+        "blocked_hours": {9},
+    },
+}
+
 _CLASS_SESSIONS: dict[str, dict] = {
     "FOREX": _SESSIONS_FOREX,
     "COMMODITY": _SESSIONS_COMMODITY,
     "INDICES": _SESSIONS_INDICES,
+    "ASIA_INDICES": _SESSIONS_ASIA_INDICES,
 }
 
 # Per-class and per-symbol overrides (only keys that differ from Config defaults)
@@ -191,6 +209,9 @@ _CLASS_OVERRIDES: dict[str, dict] = {
         "max_rr": 8.0,
     },
     "INDICES": {
+        "max_rr": 8.0,
+    },
+    "ASIA_INDICES": {
         "max_rr": 8.0,
     },
     "CRYPTO": {
