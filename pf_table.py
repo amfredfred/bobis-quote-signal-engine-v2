@@ -12,8 +12,8 @@ from itertools import product
 from pathlib import Path
 
 PERIODS = {
-    "2026 H1": Path("results/grid"),
-    "2022 H1": Path("results/grid-2022"),
+    "2026 H1": Path("results/grid/fundecnext"),
+    "2022 H1": Path("results/grid-2022/fundecnext"),
 }
 
 SYMBOLS = ["XAUUSD", "US100", "EURUSD", "GBPUSD", "USDJPY"]

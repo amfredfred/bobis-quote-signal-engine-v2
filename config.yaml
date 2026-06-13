@@ -4,7 +4,7 @@ websocket:
   max_clients: 10
 
 mt5:
-  use: exness
+  use: fundednext
   timeout_ms: 60000
   portable: false
 
