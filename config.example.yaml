@@ -12,7 +12,7 @@ mt5:
 
 market:
   weekend_sleep:
-    enabled: false
+    enabled: true
     close_weekday: saturday
     close_time: "00:00"
     reopen_weekday: monday
@@ -23,12 +23,8 @@ timeframes:
     - htf: 5min
       ltf: 5min
       entry_model: crt
-  # Scalar applies to all pairs. Dict form for per-pair control:
-  # htf_lookback:
-  #   "5/5": 60     # 5min HTF / 5min LTF
-  #   "60/5": 120   # 1h HTF / 5min LTF
-  #   "*": 120      # fallback for unlisted pairs
-  htf_lookback: 240
+  htf_lookback:
+    "5/5": 60
   htf_outputsize: 1000
 
 signal_quality:
@@ -46,15 +42,23 @@ signal_quality:
   rrr:
     XAUUSD:
       "5/5":
-        min_rr: 2.5
-        max_rr: 2.5
+        min_rr: 8
+        max_rr: 3
     US100:
       "5/5":
-        min_rr: 2.5
+        min_rr: 8
         max_rr: 3
-    US500:
+    EURUSD:
       "5/5":
-        min_rr: 2.5
+        min_rr: 8
+        max_rr: 3
+    GBPUSD:
+      "5/5":
+        min_rr: 8
+        max_rr: 3
+    USDJPY:
+      "5/5":
+        min_rr: 8
         max_rr: 3
 
 signal_lifetime:
@@ -77,12 +81,25 @@ crt:
   mode: previous_candle
 
 trade_management:
-  tp1_trigger_pct: 55
+  tp1_trigger_pct: 45
   tp1_close_pct: 0.0
   move_sl_to_be_on_tp1: true
   tf_overrides:
-    "5/5":
-      tp1_trigger_pct: 45.0
+    XAUUSD:
+      "5/5":
+        tp1_trigger_pct: 45.0
+    US100:
+      "5/5":
+        tp1_trigger_pct: 25.0
+    EURUSD:
+      "5/5":
+        tp1_trigger_pct: 45.0
+    GBPUSD:
+      "5/5":
+        tp1_trigger_pct: 45.0
+    USDJPY:
+      "5/5":
+        tp1_trigger_pct: 45.0
 
 displacement_filter:
   enabled: false
