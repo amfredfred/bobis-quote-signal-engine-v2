@@ -39,6 +39,9 @@ def test_scheduler_passes_analysis_close_without_double_subtract() -> None:
 
 
 def test_scheduler_weekend_sleep_delays_until_broker_monday_open() -> None:
+    # 2026-06-06 12:00 UTC = Saturday 15:00 broker (UTC+3).
+    # Reopen at Monday 01:00 broker = Sydney session open (Sunday 22:00 UTC).
+    # Wait: 604800 - (5*86400 + 15*3600) + 3600 = 122400 s = 34 h.
     cfg = _SchedulerCfg(
         now=_utc_ms("2026-06-06 12:00:00"),
         broker_time_offset_ms=3 * 60 * 60 * 1000,
@@ -48,7 +51,7 @@ def test_scheduler_weekend_sleep_delays_until_broker_monday_open() -> None:
 
     delay_ms = SignalScheduler._weekend_sleep_delay_ms(scheduler)
 
-    assert delay_ms == (33 * 60 * 60 * 1000) + cfg.ws_candle_buffer_ms
+    assert delay_ms == (34 * 60 * 60 * 1000) + cfg.ws_candle_buffer_ms
 
 
 def test_scheduler_weekend_sleep_allows_weekday_market_time() -> None:
@@ -104,7 +107,7 @@ class _SchedulerCfg:
     weekend_close_weekday = 5
     weekend_close_time = datetime.time(0, 0)
     weekend_reopen_weekday = 0
-    weekend_reopen_time = datetime.time(0, 0)
+    weekend_reopen_time = datetime.time(1, 0)  # Monday 01:00 broker = Sydney open
 
     def __init__(self, now: int, broker_time_offset_ms: int = 0) -> None:
         self._now = now

@@ -16,7 +16,9 @@ market:
     close_weekday: saturday
     close_time: "00:00"
     reopen_weekday: monday
-    reopen_time: "00:00"
+    # Sydney session opens Sunday 22:00 UTC = Monday 01:00 broker (UTC+3).
+    # Waking at 00:00 is 1 hour before MT5 has live tick data.
+    reopen_time: "01:00"
 
 timeframes:
   pairs:
