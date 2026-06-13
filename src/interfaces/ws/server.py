@@ -282,9 +282,15 @@ class WebSocketServer:
 
     def broadcast(self, event: SignalEvent, payload: dict) -> None:
         symbol = payload.get("symbol") or payload.get("signal", {}).get("symbol")
-        asyncio.get_running_loop().create_task(
+        task = asyncio.get_running_loop().create_task(
             self._broadcast_async(event, payload, symbol)
         )
+        task.add_done_callback(self._on_broadcast_done)
+
+    @staticmethod
+    def _on_broadcast_done(task: asyncio.Task) -> None:
+        if not task.cancelled() and (exc := task.exception()):
+            logger.error("broadcast task raised an unhandled exception: %s", exc, exc_info=exc)
 
     async def _broadcast_async(
         self, event: SignalEvent, payload: dict, symbol: Optional[str]
@@ -486,6 +492,11 @@ class WebSocketServer:
             path         = request_line.split(" ")[1] if " " in request_line else "/"
             qs           = parse_qs(urlparse(path).query)
             provided     = headers.get("sec-websocket-protocol", "") or  qs.get("token", [""])[0]
+            # SECURITY NOTE: this is a shared symmetric secret — any holder can
+            # connect and inject arbitrary signals to all subscribed engines.
+            # Before multi-tenant deployment, replace with asymmetric auth
+            # (e.g. mTLS or per-client signed tokens) so the gateway cannot be
+            # impersonated even if the secret leaks.
             if not hmac.compare_digest(provided, self._cfg.ws_secret):
                 logger.warning("Rejected unauthenticated WS connection")
                 writer.write(b"HTTP/1.1 401 Unauthorized\r\n\r\nInvalid or missing token\n")
