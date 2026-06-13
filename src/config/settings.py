@@ -230,9 +230,10 @@ def _config_path_from_env() -> Path | None:
 def _load_mt5_profile(config_path: Path, profile: str) -> tuple[int, str, str, str, float, "str | None"]:
     """Load a named MT5 credential profile from mt5-credentials.yaml.
 
-    Returns (login, password, server, terminal_path, broker_time_offset_hours, config_ref).
+    Returns (login, password, server, terminal_path, broker_time_offset_hours, config_ref, symbol_aliases).
     broker_time_offset_hours defaults to 0.0 if omitted.
     config_ref is the optional ``config:`` key — a path to a broker config file.
+    symbol_aliases maps canonical symbol names to broker-specific names (e.g. {"US100": "USTEC_x100m"}).
     Raises ValueError/FileNotFoundError with clear messages on any missing required field.
     """
     candidates = [
@@ -268,7 +269,8 @@ def _load_mt5_profile(config_path: Path, profile: str) -> tuple[int, str, str, s
         )
     broker_time_offset_hours = float(p.get("broker_time_offset_hours", 0.0))
     config_ref = p.get("config")
-    return int(login), str(password), str(server), str(terminal_path), broker_time_offset_hours, str(config_ref) if config_ref else None
+    symbol_aliases = dict(p.get("symbol_aliases") or {})
+    return int(login), str(password), str(server), str(terminal_path), broker_time_offset_hours, str(config_ref) if config_ref else None, symbol_aliases
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -334,13 +336,14 @@ def _resolve_mt5_credentials(base_cfg: dict, config_path: "Path | None") -> dict
     profile = _get(base_cfg, "mt5.use", None)
     if profile:
         path = config_path if config_path else Path.cwd() / "config.yaml"
-        login, password, server, terminal_path, time_offset_h, _ref = _load_mt5_profile(path, str(profile))
+        login, password, server, terminal_path, time_offset_h, _ref, aliases = _load_mt5_profile(path, str(profile))
         return {
             "mt5_login": login,
             "mt5_password": password,
             "mt5_server": server,
             "mt5_terminal_path": terminal_path,
             "broker_time_offset_ms": int(time_offset_h * 3_600_000),
+            "mt5_symbol_aliases": aliases,
         }
     return {
         "mt5_login": int(os.getenv("MT5_LOGIN", "0") or "0"),
@@ -350,6 +353,7 @@ def _resolve_mt5_credentials(base_cfg: dict, config_path: "Path | None") -> dict
         "broker_time_offset_ms": int(
             float(_get(base_cfg, "mt5.broker_time_offset_hours", 0.0)) * 3_600_000
         ),
+        "mt5_symbol_aliases": {},
     }
 
 
@@ -557,6 +561,8 @@ class Settings:
     mt5_timeout_ms: int = 60_000
     mt5_portable: bool = False
     broker_time_offset_ms: int = 0
+    # Canonical → broker symbol name (e.g. {"US100": "USTEC_x100m"} for Exness).
+    mt5_symbol_aliases: dict = field(default_factory=dict)
     weekend_sleep_enabled: bool = True
     weekend_close_weekday: int = 5
     weekend_close_time: datetime.time = datetime.time(0, 0)

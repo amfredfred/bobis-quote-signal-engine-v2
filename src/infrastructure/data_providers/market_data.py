@@ -130,6 +130,7 @@ class MarketDataClient:
         portable: bool = False,
         metrics_fn=None,
         settings=None,
+        symbol_aliases: Optional[dict] = None,
     ) -> None:
         if mt5 is None:
             raise MarketDataError(
@@ -139,6 +140,10 @@ class MarketDataClient:
 
         self._metrics_fn = metrics_fn
         self._settings = settings
+        # Canonical name → broker-specific name (e.g. "US100" → "USTEC_x100m").
+        self._symbol_aliases: dict[str, str] = {
+            k.upper(): v for k, v in (symbol_aliases or {}).items()
+        }
         self._broker_time_offset_ms_by_symbol: dict[str, int] = {}
         self._resolved_symbols: dict[str, str] = {}
         self._shutdown_on_close = False
@@ -177,6 +182,7 @@ class MarketDataClient:
             portable=settings.mt5_portable,
             metrics_fn=metrics_fn,
             settings=settings,
+            symbol_aliases=getattr(settings, "mt5_symbol_aliases", None),
         )
 
     def _normalize_symbol(self, symbol: str) -> str:
@@ -184,6 +190,9 @@ class MarketDataClient:
 
     def _ensure_symbol(self, symbol: str) -> str:
         clean = self._normalize_symbol(symbol)
+        # Broker alias takes priority over auto-resolution.
+        if clean in self._symbol_aliases:
+            clean = self._symbol_aliases[clean]
         cached = self._resolved_symbols.get(clean)
         if cached:
             return cached
