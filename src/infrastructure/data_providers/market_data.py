@@ -66,7 +66,8 @@ def _to_mt5_interval(interval: str) -> int:
 
 
 def _utc_dt(ms: int) -> datetime.datetime:
-    return datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc)
+    # MT5 copy_rates_range requires naive datetimes — tz-aware causes INVALID_PARAMS (-2)
+    return datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc).replace(tzinfo=None)
 
 
 def _now_ms() -> int:

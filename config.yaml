@@ -68,7 +68,7 @@ signals:
 
 zones:
   max_htf_zones_per_dir: 2
-  max_signal_count: 3
+  max_signal_count: 2
 
 features:
   use_trend_filter: true

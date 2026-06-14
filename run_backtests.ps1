@@ -3,9 +3,9 @@
 # Full validation backtest — all 5 pairs, 3-year window.
 # Uses config.yaml settings (min_rr=8, max_rr=3 per symbol via rrr block).
 
-$FROM   = "2026-01-01"
-$TO     = "2026-06-13"
-$OUTDIR = "results\exness-6m-validation"
+$FROM   = "2023-01-01"
+$TO     = "2025-12-31"
+$OUTDIR = "results\3yr-fundednext-validation"
 $null   = New-Item -ItemType Directory -Force $OUTDIR
 
 $symbols = @("XAUUSD", "US100", "EURUSD", "GBPUSD", "USDJPY")
@@ -21,9 +21,9 @@ $jobs = $symbols | ForEach-Object {
         Set-Location $dir
         & "$dir\venv\Scripts\python.exe" -m src.app.backtesting.backtest `
             --symbol     $s `
-            --risk-percent 0.2 `
+            --risk-percent 0.25 `
             --start-balance 5000 `
-            --max-trailing-dd-pct 3 `
+            --max-trailing-dd-pct 5 `
             --risk-sweep `
             --from-date  $from `
             --to-date    $to `

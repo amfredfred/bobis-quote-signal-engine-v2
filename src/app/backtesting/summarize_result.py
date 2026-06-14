@@ -709,6 +709,50 @@ for ym in sorted_months:
         }
     )
 
+combined_weekly: dict = defaultdict(
+    lambda: {"r": 0.0, "trades": 0, "w": 0, "l": 0, "b": 0}
+)
+for r in all_flat:
+    date_str = r.get("entry_dt", "")[:10]
+    if not date_str:
+        continue
+    try:
+        iso = datetime.strptime(date_str, "%Y-%m-%d").isocalendar()
+        wk = f"{iso[0]}-W{iso[1]:02d}"
+    except ValueError:
+        continue
+    rr = float(r["realized_rr"])
+    combined_weekly[wk]["r"] += rr
+    combined_weekly[wk]["trades"] += 1
+    if r["outcome"] == "WIN_FULL":
+        combined_weekly[wk]["w"] += 1
+    elif r["outcome"] == "LOSS":
+        combined_weekly[wk]["l"] += 1
+    else:
+        combined_weekly[wk]["b"] += 1
+
+sorted_weeks = sorted(combined_weekly.keys())
+wcumulative = 0.0
+weekly_cumulative = []
+for wk in sorted_weeks:
+    m = combined_weekly[wk]
+    wcumulative += m["r"]
+    cl = m["w"] + m["l"] + m["b"]
+    weekly_cumulative.append(
+        {
+            "wk": wk,
+            "r": round(m["r"], 3),
+            "cum_r": round(wcumulative, 3),
+            "trades": m["trades"],
+            "w": m["w"],
+            "l": m["l"],
+            "b": m["b"],
+            "wr": round(100 * m["w"] / cl, 1) if cl else 0,
+            "be_rate": round(100 * m["b"] / cl, 1) if cl else 0,
+            "loss_rate": round(100 * m["l"] / cl, 1) if cl else 0,
+        }
+    )
+
 pairs_list = [d["pair"] for d in rows_by_pair]
 pair_idx = {p: i for i, p in enumerate(pairs_list)}
 n_pairs = len(pairs_list)
@@ -903,6 +947,7 @@ data_json = json.dumps(
         "trade_columns": TRADE_COLUMNS,
         "combined_eq": combined_eq,
         "monthly_cumulative": monthly_cumulative,
+        "weekly_cumulative": weekly_cumulative,
         "combined_daily": {
             k: {
                 "r": round(v["r"], 3),
@@ -1050,13 +1095,12 @@ body.dark .sess-card,body.dark .sdc-row,body.dark .tbl-wrap{background:var(--car
 .kpi .kl{font-size:11px;font-weight:600;color:var(--sub);text-transform:uppercase;letter-spacing:.1em;margin-top:5px;}
 
 #nav{
-  display:flex;border-bottom:2px solid var(--brd);background:#fff;
-  overflow-x:auto;padding:0 36px;position:sticky;top:0;z-index:100;
+  display:flex;flex-wrap:wrap;border-bottom:2px solid var(--brd);background:#fff;
+  padding:0 20px;position:sticky;top:0;z-index:100;
   box-shadow:0 1px 4px rgba(0,0,0,.05);
 }
-#nav::-webkit-scrollbar{display:none;}
 .ntab{
-  padding:15px 18px;font-size:13px;font-weight:600;color:var(--sub);
+  padding:10px 13px;font-size:12px;font-weight:600;color:var(--sub);
   border:none;background:none;cursor:pointer;
   border-bottom:3px solid transparent;margin-bottom:-2px;white-space:nowrap;transition:color .15s;
 }
@@ -1345,35 +1389,45 @@ tbody tr:hover td{background:#f4f6ff;}
 
 <div id="nav">
   <button class="ntab on" data-v="overview">Overview</button>
-  <button class="ntab"    data-v="tfpairs">TF Pairs</button>
   <button class="ntab"    data-v="monthly">Monthly</button>
+  <button class="ntab"    data-v="weekly">Weekly</button>
   <button class="ntab"    data-v="calendar">Calendar</button>
   <button class="ntab"    data-v="equity">Equity</button>
   <button class="ntab"    data-v="sessions">Sessions</button>
   <button class="ntab"    data-v="hours">Hours</button>
   <button class="ntab"    data-v="patterns">Patterns</button>
   <button class="ntab"    data-v="tradelog">Trade Log</button>
-  <button class="ntab"    data-v="correlation">Correlation</button>
   <button class="ntab"    data-v="risk">Risk Calc</button>
-  <button class="ntab"    data-v="sameday">Same-Day</button>
   <button class="ntab"    data-v="dollar">Dollar Equity</button>
+  <button class="ntab"    data-v="dow">Day of Week</button>
+  <button class="ntab"    data-v="zoneattempt">Zone Attempt</button>
+  <button class="ntab"    data-v="sequencing">Trade Sequencing</button>
+  <button class="ntab"    data-v="montecarlo">Monte Carlo</button>
+  <button class="ntab"    data-v="challenge">Funded Challenge</button>
   <button class="ntab"    data-v="detail">Pair Detail</button>
+  <button class="ntab"    data-v="trailing">Trailing Sim</button>
+  <button class="ntab"    data-v="trailingdd">Trailing DD</button>
 </div>
 
-<div id="v-overview"    class="view on"></div>
-<div id="v-tfpairs"     class="view"></div>
-<div id="v-monthly"     class="view"></div>
-<div id="v-calendar"    class="view"></div>
-<div id="v-equity"      class="view"></div>
-<div id="v-sessions"    class="view"></div>
-<div id="v-hours"       class="view"></div>
-<div id="v-patterns"    class="view"></div>
-<div id="v-tradelog"    class="view"></div>
-<div id="v-correlation" class="view"></div>
-<div id="v-risk"        class="view"></div>
-<div id="v-sameday"     class="view"></div>
-<div id="v-dollar"      class="view"></div>
-<div id="v-detail"      class="view"></div>
+<div id="v-overview"      class="view on"></div>
+<div id="v-monthly"       class="view"></div>
+<div id="v-weekly"        class="view"></div>
+<div id="v-calendar"      class="view"></div>
+<div id="v-equity"        class="view"></div>
+<div id="v-sessions"      class="view"></div>
+<div id="v-hours"         class="view"></div>
+<div id="v-patterns"      class="view"></div>
+<div id="v-tradelog"      class="view"></div>
+<div id="v-risk"          class="view"></div>
+<div id="v-dollar"        class="view"></div>
+<div id="v-dow"           class="view"></div>
+<div id="v-zoneattempt"   class="view"></div>
+<div id="v-sequencing"    class="view"></div>
+<div id="v-montecarlo"    class="view"></div>
+<div id="v-challenge"     class="view"></div>
+<div id="v-detail"        class="view"></div>
+<div id="v-trailing"      class="view"></div>
+<div id="v-trailingdd"    class="view"></div>
 
 <div id="cal-tip" style="display:none;position:fixed;z-index:999;background:var(--card);border:1px solid var(--brd2);border-radius:12px;padding:16px 20px;box-shadow:0 8px 28px rgba(0,0,0,.13);min-width:210px;pointer-events:none;font-size:14px;line-height:1.6"></div>
 
@@ -1383,6 +1437,7 @@ const D    = RAW.pairs;
 const G    = RAW.grand;
 const CEQ  = RAW.combined_eq;
 const MC   = RAW.monthly_cumulative;
+const WC   = RAW.weekly_cumulative||[];
 const CD   = RAW.combined_daily;
 const PL   = RAW.pairs_list;
 const CM   = RAW.corr_matrix;
@@ -1729,6 +1784,61 @@ function renderRRDist(id,buckets){
   setTimeout(()=>{
     drawBars('cv-monthly',MC.map(m=>m.ym.slice(5)+'/'+m.ym.slice(2,4)),MC.map(m=>m.r),220);
     drawLine('cv-monthly-cum',MC.map(m=>m.cum_r),MC[MC.length-1]?.cum_r>=0?WIN:LOSS,180);
+  },80);
+})();
+
+// ════════════════════════════════════════════════════════════════════════
+// WEEKLY
+// ════════════════════════════════════════════════════════════════════════
+(function(){
+  if(!WC.length) return;
+  const el=document.getElementById('v-weekly');
+  const maxAbsR=Math.max(...WC.map(m=>Math.abs(m.r)),1);
+  el.innerHTML=`
+  <div class="sh">Weekly Net R</div>
+  <div class="cbox" style="margin-bottom:24px">
+    <div class="ctitle">Weekly Bars <span id="wc-total"></span></div>
+    <canvas id="cv-weekly" height="220"></canvas>
+  </div>
+  <div class="sh">Cumulative R</div>
+  <div class="cbox" style="margin-bottom:24px">
+    <div class="ctitle">Running Total <span id="wc-cum"></span></div>
+    <canvas id="cv-weekly-cum" height="180"></canvas>
+  </div>
+  <div class="sh">Weekly Breakdown</div>
+  <div style="background:var(--card);border:1px solid var(--brd);border-radius:12px;overflow:hidden;margin-bottom:24px">
+    <div class="month-row" style="background:var(--card2);font-size:9px;color:var(--sub);font-weight:700;letter-spacing:.12em;text-transform:uppercase;border-bottom:2px solid var(--brd)">
+      <div>Week</div><div>Net R</div><div>Cumulative R</div><div>Trades</div><div>W% / BE% / L%</div><div>Score</div><div>Bar</div>
+    </div>
+    <div id="week-rows"></div>
+  </div>`;
+
+  const totalR=WC.reduce((s,m)=>s+m.r,0);
+  document.getElementById('wc-total').textContent=(totalR>=0?'+':'')+totalR.toFixed(2)+'R total';
+  document.getElementById('wc-cum').textContent='peak '+(Math.max(...WC.map(m=>m.cum_r))>=0?'+':'')+Math.max(...WC.map(m=>m.cum_r)).toFixed(2)+'R';
+
+  const wRows=document.getElementById('week-rows');
+  WC.forEach(m=>{
+    const div=document.createElement('div'); div.className='month-row';
+    const bw=Math.round(Math.abs(m.r)/maxAbsR*220);
+    const bar=m.r>=0?`<div class="month-bar-pos" style="width:${bw}px"></div>`
+                     :`<div class="month-bar-neg" style="width:${bw}px"></div>`;
+    const winPct=m.wr||0, bePct=m.be_rate||0, lossPct=m.loss_rate||0;
+    const score=winPct>=60?5:winPct>=50?4:winPct>=40?3:winPct>=30?2:1;
+    div.innerHTML=`
+      <div style="font-weight:700">${m.wk}</div>
+      <div style="color:${m.r>=0?WIN:LOSS};font-weight:700">${m.r>=0?'+':''}${m.r.toFixed(2)}R</div>
+      <div style="color:${m.cum_r>=0?WIN:LOSS};font-weight:600">${m.cum_r>=0?'+':''}${m.cum_r.toFixed(2)}R</div>
+      <div style="color:${SUB}">${m.trades}</div>
+      <div>${rateTrio(winPct, bePct, lossPct)}</div>
+      <div>${scoreBadge(score)}</div>
+      <div>${bar}</div>`;
+    wRows.appendChild(div);
+  });
+
+  setTimeout(()=>{
+    drawBars('cv-weekly',WC.map(m=>m.wk.replace(/\d{4}-/,'')),WC.map(m=>m.r),220);
+    drawLine('cv-weekly-cum',WC.map(m=>m.cum_r),WC[WC.length-1]?.cum_r>=0?WIN:LOSS,180);
   },80);
 })();
 
@@ -2719,79 +2829,6 @@ function renderHours(){
   applyFilters();
 })();
 
-// ════════════════════════════════════════════════════════════════════════
-// CORRELATION
-// ════════════════════════════════════════════════════════════════════════
-(function(){
-  const el=document.getElementById('v-correlation');
-  if(!PL||PL.length<2){
-    el.innerHTML='<div class="sh">Pair Correlation</div><p style="color:var(--sub);padding:20px">Need at least 2 pairs with overlapping dates.</p>';
-    return;
-  }
-
-  function cellHtml(cell,mode){
-    if(cell.days===0) return `<td style="background:#f0f2f5;color:${DIM}">—</td>`;
-    const pct=mode==='loss'?cell.loss_pct:cell.win_pct;
-    if(pct===null) return `<td style="background:#f0f2f5;color:${DIM}">—</td>`;
-    const intensity=pct/100;
-    const col=mode==='loss'
-      ?`rgba(214,59,59,${0.1+intensity*0.7})`
-      :`rgba(13,158,92,${0.1+intensity*0.7})`;
-    const tc=pct>55?'#fff':'var(--txt)';
-    return `<td style="background:${col};color:${tc}" title="${cell.days} shared days · ${pct}%">${pct}%</td>`;
-  }
-
-  function buildTable(mode){
-    const modeLabel=mode==='loss'?'Co-Loss Rate':'Co-Win Rate';
-    let html=`<div class="sh">${modeLabel} Heatmap — % of shared days where both pairs ${mode==='loss'?'lost':'won'}</div>
-    <div style="overflow-x:auto;margin-bottom:28px"><table class="corr-table">
-      <thead><tr><th></th>${PL.map(p=>`<th>${p}</th>`).join('')}</tr></thead><tbody>`;
-    PL.forEach((p1,i)=>{
-      html+=`<tr><th style="text-align:left;white-space:nowrap">${p1}</th>`;
-      PL.forEach((p2,j)=>{
-        if(i===j) html+=`<td style="background:var(--card2);font-weight:800;color:var(--acc)">${p1.slice(0,3)}</td>`;
-        else html+=cellHtml(CM[i][j],mode);
-      });
-      html+=`</tr>`;
-    });
-    html+=`</tbody></table></div>`;
-    return html;
-  }
-
-  const risks=[];
-  PL.forEach((p1,i)=>PL.forEach((p2,j)=>{
-    if(j<=i) return;
-    const c=CM[i][j];
-    if(c.days>=3&&c.loss_pct>=60) risks.push({p1,p2,...c});
-  }));
-  risks.sort((a,b)=>b.loss_pct-a.loss_pct);
-
-  const riskHtml=risks.length
-    ?risks.map(r=>`<div class="streak-alert" style="margin-bottom:8px">
-        <div class="streak-alert-icon">⚠️</div>
-        <div>
-          <div style="font-weight:800;font-size:14px;color:var(--loss)">${r.p1} + ${r.p2} — ${r.loss_pct}% co-loss rate</div>
-          <div style="font-size:13px;color:var(--sub);margin-top:2px">Both pairs lost on the same day ${r.coloss} out of ${r.days} shared trading days. High concentration risk.</div>
-        </div></div>`).join('')
-    :`<div class="streak-ok"><div class="streak-alert-icon">✅</div>
-        <div style="font-weight:700;color:var(--win);font-size:14px">No high co-loss pairs detected (threshold: 60%, min 3 shared days).</div></div>`;
-
-  el.innerHTML=`
-  <div class="sh">Concentration Risk Alerts</div>
-  <div style="margin-bottom:24px">${riskHtml}</div>
-  <div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap">
-    <button class="pbtn sel" id="corr-loss-btn" onclick="corrMode('loss')">🔴 Co-Loss Matrix</button>
-    <button class="pbtn"     id="corr-win-btn"  onclick="corrMode('win')">🟢 Co-Win Matrix</button>
-  </div>
-  <div id="corr-content">${buildTable('loss')}</div>
-  <div style="font-size:13px;color:var(--sub);margin-top:8px">Darker red = both pairs lose together more often. Min 3 shared days shown. Diagonal = pair itself.</div>`;
-
-  window.corrMode=function(mode){
-    ['loss','win'].forEach(m=>document.getElementById('corr-'+m+'-btn').classList.remove('sel'));
-    document.getElementById('corr-'+mode+'-btn').classList.add('sel');
-    document.getElementById('corr-content').innerHTML=buildTable(mode);
-  };
-})();
 
 // ════════════════════════════════════════════════════════════════════════
 // RISK OF RUIN
@@ -3017,84 +3054,6 @@ function renderHours(){
   calcRoR();
 })();
 
-// ════════════════════════════════════════════════════════════════════════
-// SAME-DAY STRIKES
-// ════════════════════════════════════════════════════════════════════════
-(function(){
-  const el=document.getElementById('v-sameday');
-  const days=Object.entries(CD).filter(([,d])=>(d.w+d.b+d.l)>=1).sort((a,b)=>a[1].r-b[1].r);
-  if(!days.length){ el.innerHTML='<div class="sh">Same-Day Strikes</div><p style="color:var(--sub);padding:20px">No trade data found.</p>'; return; }
-  const multiDays=days.filter(([,d])=>(d.w+d.b+d.l)>=2);
-  const massLoss=days.filter(([,d])=>{ const t=d.w+d.b+d.l; return t>=2&&d.l/t>=0.7; });
-  const massWin=[...days].sort((a,b)=>b[1].r-a[1].r).filter(([,d])=>{ const t=d.w+d.b+d.l; return t>=2&&d.w/t>=0.7; });
-  const worstDay=days[0]; const bestDay=[...days].sort((a,b)=>b[1].r-a[1].r)[0];
-
-  el.innerHTML=`
-  <div class="sh">Same-Day Strikes — all trade days sorted worst first</div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:24px">
-    ${[['Total days',days.length,ACC],['Multi-pair',multiDays.length,ACC3],['Mass-loss',massLoss.length,LOSS],['Mass-win',massWin.length,WIN]].map(([l,v,c])=>`
-    <div class="cbox" style="padding:16px 18px">
-      <div style="font-size:11px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">${l}</div>
-      <div style="font-size:28px;font-weight:800;color:${c}">${v}</div>
-    </div>`).join('')}
-    <div class="cbox" style="padding:16px 18px">
-      <div style="font-size:11px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">Worst Day</div>
-      <div style="font-size:17px;font-weight:800;color:var(--loss)">${worstDay[0]}</div>
-      <div style="font-size:13px;color:var(--loss);font-weight:700;margin-top:2px">${worstDay[1].r.toFixed(2)}R · ${worstDay[1].l}L</div>
-    </div>
-    <div class="cbox" style="padding:16px 18px">
-      <div style="font-size:11px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">Best Day</div>
-      <div style="font-size:17px;font-weight:800;color:var(--win)">${bestDay[0]}</div>
-      <div style="font-size:13px;color:var(--win);font-weight:700;margin-top:2px">+${bestDay[1].r.toFixed(2)}R · ${bestDay[1].w}W</div>
-    </div>
-  </div>
-  <div style="display:flex;gap:8px;align-items:center;margin-bottom:18px;flex-wrap:wrap">
-    <span style="font-size:13px;color:var(--sub);font-weight:600">Filter:</span>
-    <button class="pbtn sel" id="sdc-f-all"   onclick="sdcFilter('all')">All</button>
-    <button class="pbtn"     id="sdc-f-multi" onclick="sdcFilter('multi')">⚡ Multi-pair</button>
-    <button class="pbtn"     id="sdc-f-loss"  onclick="sdcFilter('loss')">🔴 Mass-loss</button>
-    <button class="pbtn"     id="sdc-f-win"   onclick="sdcFilter('win')">🟢 Mass-win</button>
-    <span style="margin-left:auto;font-size:13px;color:var(--sub)" id="sdc-count"></span>
-  </div>
-  <div id="sdc-list"></div>`;
-
-  function renderPill(t){
-    const cls=t.outcome==='WIN_FULL'?'win':t.outcome==='LOSS'?'loss':'be';
-    return `<div class="sdc-pill ${cls}">${t.dir==='LONG'?'↑':'↓'} ${t.pair} <span style="opacity:.7;font-size:11px">${t.entry}</span> ${(t.rr>=0?'+':'')+t.rr.toFixed(2)}R</div>`;
-  }
-  function renderDay(date,d){
-    const tot=d.w+d.b+d.l, lr2=tot?d.l/tot:0, wr2=tot?d.w/tot:0;
-    const nc=d.r>=0?WIN:LOSS;
-    const iML=lr2>=0.7&&tot>=2; const iMW=wr2>=0.7&&tot>=2;
-    const r2=ratesFromCounts(d.w,d.b,d.l);
-    const sorted=[...(d.pairs||[])].sort((a,b)=>d.r<0?(a.outcome==='LOSS'?-1:1):(b.outcome==='WIN_FULL'?-1:1));
-    const badge2=iML?`<div class="sdc-streak-badge">⚠ ${d.l}/${tot} lost</div>`
-      :iMW?`<div class="sdc-streak-badge" style="background:var(--win-bg);color:var(--win);border-color:var(--win-brd)">🎯 ${d.w}/${tot} won</div>`:'';
-    return `<div class="sdc-row" style="${iML?'border-color:#f5b8b8':iMW?'border-color:#b6e8d0':''}">
-      <div class="sdc-header">
-        <div class="sdc-date">${date}</div>
-        <div class="sdc-net" style="color:${nc}">${(d.r>=0?'+':'')+d.r.toFixed(2)}R</div>
-        <div>${rateTrio(r2.wr,r2.ber,r2.lr)}</div>
-        <div class="sdc-counts">
-          <span style="color:${WIN}">W ${d.w}</span><span style="color:${BE}">BE ${d.b}</span><span style="color:${LOSS}">L ${d.l}</span>
-          <span style="color:${SUB}">/ ${tot} trades</span>
-        </div>${badge2}
-      </div>
-      <div class="sdc-pills">${sorted.map(renderPill).join('')}</div>
-    </div>`;
-  }
-  window.sdcFilter=function(mode){
-    ['all','multi','loss','win'].forEach(f=>document.getElementById('sdc-f-'+f)?.classList.remove('sel'));
-    document.getElementById('sdc-f-'+mode)?.classList.add('sel');
-    let fil=days;
-    if(mode==='multi') fil=days.filter(([,d])=>(d.w+d.b+d.l)>=2);
-    else if(mode==='loss') fil=days.filter(([,d])=>{ const t=d.w+d.b+d.l;return t>=2&&d.l/t>=0.7; });
-    else if(mode==='win')  fil=[...days].sort((a,b)=>b[1].r-a[1].r).filter(([,d])=>{ const t=d.w+d.b+d.l;return t>=2&&d.w/t>=0.7; });
-    document.getElementById('sdc-count').textContent=fil.length+' day'+(fil.length!==1?'s':'');
-    document.getElementById('sdc-list').innerHTML=fil.length?fil.map(([date,d])=>renderDay(date,d)).join(''):'<div style="color:var(--sub);padding:20px">No days match.</div>';
-  };
-  window.sdcFilter('all');
-})();
 
 // ════════════════════════════════════════════════════════════════════════
 // PAIR DETAIL
@@ -3273,6 +3232,11 @@ function renderDetail(idx){
         <tbody>${detailTradeRows}</tbody>
       </table>
     </div>
+    <div class="sh">Trailing Sweep — TP1 partial-close simulation for this pair</div>
+    <div style="background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:18px 20px;margin-bottom:20px">
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px" id="det-trail-matrix-${d.pair.replace(/[^a-z0-9]/gi,'_')}"></div>
+      <div style="margin-top:10px;font-size:11px;color:var(--sub)">Trigger @ 45% · Trail lock 0% · LOSS trades unchanged (−1R) · Go to <strong>Trailing</strong> tab to adjust params</div>
+    </div>
     <div class="sh">Notes</div>
     <div class="cbox">
       <textarea class="notes-area" id="det-notes" placeholder="Add your observations about this pair…">${savedNote}</textarea>
@@ -3306,6 +3270,7 @@ function renderDetail(idx){
     const hrs=Object.keys(pHourAgg).map(Number).sort((a,b)=>a-b);
     drawBars('det-hours',hrs.map(h=>String(h).padStart(2,'0')),hrs.map(h=>+pHourAgg[h].r.toFixed(2)),170);
     drawGroupBars('det-dir',['LONG','SHORT'],[[d.long_wins,(d.long_trades||0)-d.long_wins],[d.short_wins,(d.short_trades||0)-d.short_wins]],170);
+    fillDetailTrailMatrix(d);
   },50);
 }
 
@@ -3427,255 +3392,522 @@ function drawGroupBars(id,labels,groups,H=170){
   });
 }
 
+
 // ════════════════════════════════════════════════════════════════════════
-// ── TF PAIRS (with streak visualization) ───────────────────────────────────
+// DAY OF WEEK
+// ════════════════════════════════════════════════════════════════════════
 (function(){
-  const el=document.getElementById('v-tfpairs');
-  const tfs=Object.values(TFS);
-  if(!tfs.length){
-    el.innerHTML='<div class="sh">TF Pair Comparison</div><p style="color:var(--sub);padding:20px">No htf_interval/ltf_interval columns found. Run backtest with TF_PAIRS env var set.</p>';
+  const el=document.getElementById('v-dow');
+  const DOW_NAMES=['Mon','Tue','Wed','Thu','Fri'];
+  // Aggregate across all pairs by weekday
+  const agg={};
+  for(let i=0;i<5;i++) agg[i]={w:0,b:0,l:0,r:0,trades:0};
+  D.forEach(pair=>(pair.raw_trades||[]).forEach(t=>{
+    if(!t.entry_dt) return;
+    try{
+      const dt=new Date(t.entry_dt.slice(0,10)+'T00:00:00Z');
+      const dow=(dt.getUTCDay()+6)%7; // 0=Mon..4=Fri
+      if(dow>4) return;
+      agg[dow].trades++;
+      agg[dow].r+=t.realized_rr||0;
+      if(t.outcome==='WIN_FULL') agg[dow].w++;
+      else if(t.outcome==='LOSS') agg[dow].l++;
+      else agg[dow].b++;
+    }catch(e){}
+  }));
+
+  const labels=DOW_NAMES;
+  const vals=labels.map((_,i)=>+( agg[i].r.toFixed(2)));
+
+  el.innerHTML=`
+  <div class="sh">Day of Week Performance</div>
+  <div class="dow-grid" style="margin-bottom:28px">
+    ${labels.map((name,i)=>{
+      const d=agg[i]; const cl=d.w+d.b+d.l||1;
+      const wr=100*d.w/cl; const rc=d.r>=0?WIN:LOSS;
+      const r2=ratesFromCounts(d.w,d.b,d.l);
+      return `<div class="dow-cell">
+        <div class="dow-name">${name}</div>
+        <div class="dow-r" style="color:${rc}">${d.r>=0?'+':''}${d.r.toFixed(2)}R</div>
+        <div class="dow-meta">${d.trades} trades</div>
+        <div style="margin:8px 0">${rateTrio(r2.wr,r2.ber,r2.lr)}</div>
+        <div style="font-size:11px;color:${SUB}">PF: ${d.l>0?(d.w*1.5/d.l).toFixed(2):'∞'}</div>
+      </div>`;
+    }).join('')}
+  </div>
+  <div class="sh">Net R by Day</div>
+  <div class="cbox" style="margin-bottom:28px"><canvas id="cv-dow-bars" height="200"></canvas></div>
+  <div class="sh">Breakdown Table</div>
+  <div style="background:var(--card);border:1px solid var(--brd);border-radius:12px;overflow:hidden;margin-bottom:24px">
+    <div class="month-row" style="background:var(--card2);font-size:9px;color:var(--sub);font-weight:700;letter-spacing:.12em;text-transform:uppercase;border-bottom:2px solid var(--brd)">
+      <div>Day</div><div>Net R</div><div>Trades</div><div>W</div><div>W% / BE% / L%</div><div>PF</div><div>Bar</div>
+    </div>
+    <div id="dow-rows"></div>
+  </div>`;
+
+  const maxAbsR=Math.max(...vals.map(Math.abs),1);
+  const rowsEl=document.getElementById('dow-rows');
+  labels.forEach((name,i)=>{
+    const d=agg[i]; const cl=d.w+d.b+d.l||1;
+    const pf=d.l>0?(d.w*1.5/d.l).toFixed(2):'∞';
+    const r2=ratesFromCounts(d.w,d.b,d.l);
+    const bw=Math.round(Math.abs(d.r)/maxAbsR*220);
+    const bar=d.r>=0?`<div class="month-bar-pos" style="width:${bw}px"></div>`
+                    :`<div class="month-bar-neg" style="width:${bw}px"></div>`;
+    const div=document.createElement('div'); div.className='month-row';
+    div.innerHTML=`
+      <div style="font-weight:700">${name}</div>
+      <div style="color:${d.r>=0?WIN:LOSS};font-weight:700">${d.r>=0?'+':''}${d.r.toFixed(2)}R</div>
+      <div style="color:${SUB}">${d.trades}</div>
+      <div style="color:${WIN};font-weight:700">${d.w}</div>
+      <div>${rateTrio(r2.wr,r2.ber,r2.lr)}</div>
+      <div style="color:${SUB}">${pf}</div>
+      <div>${bar}</div>`;
+    rowsEl.appendChild(div);
+  });
+
+  setTimeout(()=>drawBars('cv-dow-bars',labels,vals,200),80);
+})();
+
+// ════════════════════════════════════════════════════════════════════════
+// ZONE ATTEMPT
+// ════════════════════════════════════════════════════════════════════════
+(function(){
+  const el=document.getElementById('v-zoneattempt');
+  // Group: 1st, 2nd, 3+
+  const groups={1:{label:'1st',w:0,b:0,l:0,r:0,trades:0},2:{label:'2nd',w:0,b:0,l:0,r:0,trades:0},3:{label:'3+',w:0,b:0,l:0,r:0,trades:0}};
+  // Per symbol breakdown
+  const symMap={};
+  D.forEach(pair=>(pair.raw_trades||[]).forEach(t=>{
+    const za=parseInt(t.zone_attempt)||0;
+    const key=za<=0?null:za===1?1:za===2?2:3;
+    if(!key) return;
+    groups[key].trades++;
+    groups[key].r+=t.realized_rr||0;
+    if(t.outcome==='WIN_FULL') groups[key].w++;
+    else if(t.outcome==='LOSS') groups[key].l++;
+    else groups[key].b++;
+    // per symbol
+    const sym=t.symbol||pair.symbol||pair.pair;
+    if(!symMap[sym]) symMap[sym]={1:{w:0,b:0,l:0,r:0,trades:0},2:{w:0,b:0,l:0,r:0,trades:0},3:{w:0,b:0,l:0,r:0,trades:0}};
+    symMap[sym][key].trades++;
+    symMap[sym][key].r+=t.realized_rr||0;
+    if(t.outcome==='WIN_FULL') symMap[sym][key].w++;
+    else if(t.outcome==='LOSS') symMap[sym][key].l++;
+    else symMap[sym][key].b++;
+  }));
+
+  const hasData=Object.values(groups).some(g=>g.trades>0);
+  if(!hasData){
+    el.innerHTML='<div class="sh">Zone Attempt</div><p style="color:var(--sub);padding:20px">No zone_attempt data found in trades. Add a zone_attempt column to your CSVs.</p>';
     return;
   }
 
-  const byTf={};
-  D.forEach(d=>{
-    const tf=d.tf_pair||'unknown';
-    if(!byTf[tf]) byTf[tf]={tf, symbols:[], trades:0, w:0, l:0, b:0, r:0, 
-                              maxWinStreak:0, maxLossStreak:0, 
-                              streakLog:[],
-                              rrBuckets:{ '1.5R':0, '2R':0, '2.5R':0, '3R+':0 }};
-    byTf[tf].symbols.push(d.symbol||d.pair);
-    byTf[tf].trades+=d.trades;
-    byTf[tf].w+=d.wins;
-    byTf[tf].l+=d.losses;
-    byTf[tf].b+=d.bes;
-    byTf[tf].r+=d.total_r;
-    byTf[tf].maxWinStreak = Math.max(byTf[tf].maxWinStreak, d.max_win_streak||0);
-    byTf[tf].maxLossStreak = Math.max(byTf[tf].maxLossStreak, d.max_loss_streak||0);
-    
-// Calculate RR distribution from raw trades (1.5R minimum)
-(d.raw_trades||[]).forEach(t=>{
-  if(t.outcome!=='WIN_FULL') return;
-  const rr = Math.abs(t.realized_rr);
-  if(rr < 1.5) return;  // Skip anything below 1.5R
-  else if(rr < 2.0) byTf[tf].rrBuckets['1.5R']++;
-  else if(rr < 2.5) byTf[tf].rrBuckets['2R']++;
-  else if(rr < 3.0) byTf[tf].rrBuckets['2.5R']++;
-  else byTf[tf].rrBuckets['3R+']++;
-});
-    
-    // Record significant streaks (3+)
-    let curW=0, curL=0, lastRecorded='';
-    (d.raw_trades||[]).forEach(t=>{
-      if(t.outcome==='WIN_FULL'){
-        curW++; curL=0;
-        if(curW>=3 && curW>parseInt(lastRecorded.replace(/[^0-9]/g,'')||0)){
-          lastRecorded=`W${curW}`;
-          byTf[tf].streakLog.push({symbol:d.symbol, streak:`🔥${curW}W`, date:t.entry_dt?.slice(0,10)});
-        }
-      } else if(t.outcome==='LOSS'){
-        curL++; curW=0;
-        if(curL>=3 && curL>parseInt(lastRecorded.replace(/[^0-9]/g,'')||0)){
-          lastRecorded=`L${curL}`;
-          byTf[tf].streakLog.push({symbol:d.symbol, streak:`💀${curL}L`, date:t.entry_dt?.slice(0,10)});
-        }
-      } else {
-        curW=0; curL=0; lastRecorded='';
-      }
-    });
-  });
-  
-  const tfList=Object.values(byTf).sort((a,b)=>b.r-a.r);
-  const cols=['#4f6ef7','#0d9e5c','#d63b3b','#b07d00','#7c5cbf','#0e8fca'];
-  const tfColor=tf=>cols[tfList.findIndex(t=>t.tf===tf)%cols.length];
-
-  function streakBar(maxStreak, type){
-    const limit=Math.min(maxStreak,10);
-    const color=type==='win'?WIN:LOSS;
-    let bars='';
-    for(let i=1;i<=limit;i++){
-      const opacity=40 + Math.floor((i/maxStreak)*40);
-      bars+=`<div style="flex:1;height:6px;background:${color}${opacity.toString(16)};border-radius:2px" title="${i} ${type} streak"></div>`;
-    }
-    return `<div style="display:flex;gap:2px;margin-top:6px">${bars}</div>`;
-  }
-
-  function renderRRBuckets(buckets, totalWins) {
-  if(totalWins === 0) return '<div style="font-size:11px;color:var(--sub);text-align:center">No wins</div>';
-  
-  const entries = [
-    { label: '1.5R', key: '1.5R', color: '#0d9e5c', min: 1.5, max: 1.99 },
-    { label: '2R', key: '2R', color: '#0e8fca', min: 2.0, max: 2.49 },
-    { label: '2.5R', key: '2.5R', color: '#7c5cbf', min: 2.5, max: 2.99 },
-    { label: '3R+', key: '3R+', color: '#4f6ef7', min: 3.0, max: 999 }
-  ];
-  
-  let html = '<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--brd)">';
-  html += '<div style="font-size:9px;color:var(--sub);font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;text-align:center">RR DISTRIBUTION</div>';
-  html += '<div style="display:flex;gap:4px;justify-content:space-around">';
-  
-  entries.forEach(e => {
-    const cnt = buckets[e.key] || 0;
-    const pct = totalWins ? ((cnt / totalWins) * 100).toFixed(0) : 0;
-    html += `<div style="text-align:center;flex:1">
-      <div style="font-size:11px;font-weight:800;color:${e.color}">${e.label}</div>
-      <div style="font-size:16px;font-weight:800;color:${e.color}">${cnt}</div>
-      <div style="height:3px;background:${e.color}33;border-radius:2px;margin-top:2px">
-        <div style="width:${pct}%;height:3px;background:${e.color};border-radius:2px"></div>
-      </div>
-      <div style="font-size:9px;color:var(--sub)">${pct}%</div>
-    </div>`;
-  });
-  
-  // Calculate average win (using midpoints)
-  let totalRR = 0;
-  Object.entries(buckets).forEach(([k,v]) => {
-    if(k === '1.5R') totalRR += v * 1.75;
-    else if(k === '2R') totalRR += v * 2.25;
-    else if(k === '2.5R') totalRR += v * 2.75;
-    else if(k === '3R+') totalRR += v * 4.0;
-  });
-  const avgWin = totalWins ? (totalRR / totalWins).toFixed(2) : '0';
-  
-  html += `</div><div style="font-size:9px;color:var(--sub);text-align:center;margin-top:4px">⚡ Avg Win: ${avgWin}R</div></div>`;
-  return html;
-}
-
-  const cards=tfList.map(tf=>{
-    const r2=ratesFromCounts(tf.w,tf.b,tf.l);
-    const exp=(tf.r/tf.trades).toFixed(3);
-    const col=tfColor(tf.tf);
-    const rc=tf.r>=0?WIN:LOSS;
-    const symbols=[...new Set(tf.symbols)].slice(0,6).join(', ');
-    const moreSymbols = [...new Set(tf.symbols)].length > 6 ? ` +${[...new Set(tf.symbols)].length-6} more` : '';
-    const totalWins = tf.w;
-    
-    const recentStreaks = tf.streakLog.slice(-3).map(s=> 
-      `<span style="font-size:10px;background:${s.streak.includes('W')?WIN+'22':LOSS+'22'};padding:2px 5px;border-radius:4px;margin-right:4px" title="${s.symbol} · ${s.date}">${s.streak}</span>`
-    ).join('');
-    
-    return `<div class="sess-card" style="border-color:${col}44">
-      <div class="sc-bg" style="background:${col}"></div>
-      <div class="sess-name" style="color:${col};font-size:15px">${tf.tf||'—'}</div>
-      <div class="sess-time" style="margin-bottom:10px">${[...new Set(tf.symbols)].length} symbols · ${symbols}${moreSymbols}</div>
-      <div class="sess-r" style="color:${rc}">${tf.r>=0?'+':''}${tf.r.toFixed(2)}R</div>
-      <div class="sess-meta">${tf.trades} trades · ${exp>=0?'+':''}${exp}R/T</div>
+  const cards=Object.values(groups).map(g=>{
+    if(!g.trades) return '';
+    const cl=g.w+g.b+g.l||1; const wr=100*g.w/cl;
+    const pf=g.l>0?(g.r>0?g.r/g.l:0).toFixed(2):'∞';
+    const rc=g.r>=0?WIN:LOSS;
+    const r2=ratesFromCounts(g.w,g.b,g.l);
+    return `<div class="sess-card" style="border-color:${rc}44">
+      <div class="sc-bg" style="background:${rc}"></div>
+      <div class="sess-name" style="color:${rc}">${g.label} Attempt</div>
+      <div class="sess-r" style="color:${rc}">${g.r>=0?'+':''}${g.r.toFixed(2)}R</div>
+      <div class="sess-meta">${g.trades} trades</div>
       <div style="margin:10px 0">${rateTrio(r2.wr,r2.ber,r2.lr)}</div>
-      
-      <!-- RR DISTRIBUTION -->
-      ${renderRRBuckets(tf.rrBuckets, totalWins)}
-      
-      <div style="display:flex;gap:12px;margin:10px 0;padding:8px 0;border-top:1px solid ${col}33;border-bottom:1px solid ${col}33">
-        <div style="flex:1;text-align:center">
-          <div style="font-size:10px;color:${WIN};font-weight:700">MAX WIN STREAK</div>
-          <div style="font-size:20px;font-weight:800;color:${WIN}">${tf.maxWinStreak}</div>
-          ${streakBar(tf.maxWinStreak, 'win')}
-        </div>
-        <div style="flex:1;text-align:center">
-          <div style="font-size:10px;color:${LOSS};font-weight:700">MAX LOSS STREAK</div>
-          <div style="font-size:20px;font-weight:800;color:${LOSS}">${tf.maxLossStreak}</div>
-          ${streakBar(tf.maxLossStreak, 'loss')}
-        </div>
-      </div>
-      
-      ${recentStreaks ? `<div style="margin:6px 0;font-size:10px;color:${SUB}">📊 Recent: ${recentStreaks}</div>` : ''}
-      
-      ${tf.maxLossStreak >= 5 ? `<div style="margin-top:8px;padding:6px;background:${LOSS}22;border-radius:6px;font-size:11px;color:${LOSS};text-align:center">⚠️ ${tf.maxLossStreak} consecutive losses — review this TF pair</div>` : ''}
-      
-      <div class="sess-bar-track" style="margin:10px 0 6px 0">
-        <div class="sess-bar-fill" style="width:${Math.min(100,Math.abs(tf.r)/Math.max(...tfList.map(t=>Math.abs(t.r)),1)*100)}%;background:${rc}"></div>
-      </div>
       <div class="sess-counts">
-        <span style="color:${WIN}">✓ ${tf.w}</span>
-        <span style="color:${BE}">≈ ${tf.b}</span>
-        <span style="color:${LOSS}">✗ ${tf.l}</span>
+        <span style="color:${WIN}">W ${g.w}</span>
+        <span style="color:${BE}">BE ${g.b}</span>
+        <span style="color:${LOSS}">L ${g.l}</span>
       </div>
     </div>`;
   }).join('');
 
-  const allSymbols=[...new Set(D.map(d=>d.symbol||d.pair))].sort();
-  const allTfPairs=[...new Set(D.map(d=>d.tf_pair||''))].filter(Boolean).sort();
-
-  const symTfMap={};
-  D.forEach(d=>{
-    const sym=d.symbol||d.pair;
-    const tf=d.tf_pair||'';
-    if(!symTfMap[sym]) symTfMap[sym]={};
-    symTfMap[sym][tf]=d;
-  });
-
-  const colHead=allTfPairs.map(tf=>`<th style="color:${tfColor(tf)};font-family:monospace">${tf}</th>`).join('');
-  
-  const symRows=allSymbols.map(sym=>{
-    const cells=allTfPairs.map(tf=>{
-      const d=symTfMap[sym]?.[tf];
-      if(!d) return `<td style="color:${DIM}">—</td>`;
-      const col=d.total_r>=0?WIN:LOSS;
-      let streakBadge='';
-      if(d.max_loss_streak >= 5) streakBadge=`<span style="display:inline-block;margin-left:4px;background:${LOSS}22;color:${LOSS};font-size:9px;padding:1px 4px;border-radius:4px">💀${d.max_loss_streak}</span>`;
-      else if(d.max_win_streak >= 5) streakBadge=`<span style="display:inline-block;margin-left:4px;background:${WIN}22;color:${WIN};font-size:9px;padding:1px 4px;border-radius:4px">🔥${d.max_win_streak}</span>`;
-      else if(d.max_loss_streak >= 3) streakBadge=`<span style="display:inline-block;margin-left:4px;color:${LOSS};font-size:9px">⚠${d.max_loss_streak}</span>`;
-      
-      return `<td style="cursor:pointer" onclick="showDetail(${D.indexOf(d)})" title="${d.pair} · Max loss streak: ${d.max_loss_streak} · Max win streak: ${d.max_win_streak}">
-        <div style="color:${col};font-weight:700">${d.total_r>=0?'+':''}${d.total_r.toFixed(2)}R${streakBadge}</div>
-        <div style="margin:4px 0">${rateTrio(d.wr, d.be_rate||0, d.loss_rate||0)}</div>
-        <div style="font-size:11px;color:${SUB}">${d.trades}t | L${d.max_loss_streak}/W${d.max_win_streak}</div>
-      </td>`;
+  const symRows=Object.entries(symMap).sort((a,b)=>{
+    const ra=Object.values(a[1]).reduce((s,g)=>s+g.r,0);
+    const rb=Object.values(b[1]).reduce((s,g)=>s+g.r,0);
+    return rb-ra;
+  }).map(([sym,gs])=>{
+    const cells=[1,2,3].map(k=>{
+      const g=gs[k]; const cl=g.w+g.b+g.l||1;
+      if(!g.trades) return '<td style="color:var(--dim)">—</td>';
+      const c=g.r>=0?WIN:LOSS;
+      return `<td><div style="color:${c};font-weight:700">${g.r>=0?'+':''}${g.r.toFixed(1)}R</div>
+        <div style="font-size:11px;color:var(--sub)">${g.trades}t · ${(100*g.w/cl).toFixed(0)}%WR</div></td>`;
     }).join('');
-    return `<tr><td style="font-weight:700">${sym}</td>${cells}</tr>`;
+    return `<tr><td style="font-weight:700;padding:10px 14px">${sym}</td>${cells}</tr>`;
   }).join('');
-
-  const barLabels=tfList.map(t=>t.tf||'—');
-  const barVals=tfList.map(t=>+t.r.toFixed(2));
-  const barCols=tfList.map(t=>tfColor(t.tf));
 
   el.innerHTML=`
-  <div class="sh">TF Pair Summary — with Win/Loss Streaks & RR Distribution</div>
-  <div class="sess-grid">${cards}</div>
-
-  <div class="sh">Net R by TF Pair (all symbols combined)</div>
-  <div class="cbox" style="margin-bottom:28px"><canvas id="cv-tf-bars" height="200"></canvas></div>
-
-  <div class="sh">Symbol × TF Pair Matrix — click any cell to open detail</div>
+  <div class="sh">Zone Attempt Analysis</div>
+  <div class="sess-grid" style="margin-bottom:28px">${cards}</div>
+  <div class="sh">Summary Table</div>
   <div class="tbl-wrap" style="margin-bottom:28px">
-    <table>
-      <thead><tr><th>Symbol</th>${colHead}</tr></thead>
-      <tbody>${symRows}</tbody>
-    </table>
+    <table><thead><tr>
+      <th>Attempt</th><th>Trades</th><th>W</th><th>BE</th><th>L</th>
+      <th>WR%</th><th>Net R</th><th>Expect/T</th>
+    </tr></thead><tbody>
+    ${Object.values(groups).filter(g=>g.trades>0).map(g=>{
+      const cl=g.w+g.b+g.l||1;
+      const wr=100*g.w/cl; const exp=g.r/g.trades;
+      return `<tr>
+        <td style="font-weight:700">${g.label}</td>
+        <td>${g.trades}</td>
+        <td style="color:${WIN};font-weight:700">${g.w}</td>
+        <td style="color:${BE}">${g.b}</td>
+        <td style="color:${LOSS};font-weight:700">${g.l}</td>
+        <td>${badge(wr)}</td>
+        <td style="color:${g.r>=0?WIN:LOSS};font-weight:700">${g.r>=0?'+':''}${g.r.toFixed(2)}R</td>
+        <td style="color:${exp>=0?WIN:LOSS};font-weight:600">${exp>=0?'+':''}${exp.toFixed(3)}R</td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>
   </div>
-
-  <div class="sh">TF Pair Comparison Table</div>
+  <div class="sh">Per-Symbol Breakdown</div>
   <div class="tbl-wrap">
-    <table>
-      <thead><tr>
-        <th>TF Pair</th><th>Symbols</th><th>Trades</th>
-        <th>W</th><th>BE</th><th>L</th>
-        <th>W% / BE% / L%</th><th>Total R</th><th>Expect/T</th>
-        <th>Max Streaks</th>
-      </tr></thead>
-      <tbody>
-        ${tfList.map(tf=>{
-          const r2=ratesFromCounts(tf.w,tf.b,tf.l);
-          const exp=tf.r/tf.trades;
-          const col=tfColor(tf.tf);
-          return `<tr>
-            <td style="font-weight:800;font-family:monospace;color:${col}">${tf.tf||'—'}</td>
-            <td style="color:${SUB}">${[...new Set(tf.symbols)].length}</td>
-            <td style="font-weight:600">${tf.trades}</td>
-            <td style="color:${WIN};font-weight:700">${tf.w}</td>
-            <td style="color:${BE};font-weight:600">${tf.b}</td>
-            <td style="color:${LOSS};font-weight:700">${tf.l}</td>
-            <td>${rateTrio(r2.wr,r2.ber,r2.lr)}</td>
-            <td style="color:${tf.r>=0?WIN:LOSS};font-weight:700">${tf.r>=0?'+':''}${tf.r.toFixed(2)}R</td>
-            <td style="color:${exp>=0?WIN:LOSS};font-weight:600">${exp>=0?'+':''}${exp.toFixed(3)}R</td>
-            <td style="font-size:11px"><span style="color:${WIN}">W${tf.maxWinStreak}</span> / <span style="color:${LOSS}">L${tf.maxLossStreak}</span></td>
-          </tr>`;
-        }).join('')}
-      </tbody>
-    </table>
+    <table><thead><tr>
+      <th>Symbol</th><th>1st Attempt</th><th>2nd Attempt</th><th>3+ Attempts</th>
+    </tr></thead><tbody>${symRows}</tbody></table>
   </div>`;
+})();
 
-  setTimeout(()=>drawCustomBars('cv-tf-bars',barLabels,barVals,barCols,200),80);
+// ════════════════════════════════════════════════════════════════════════
+// TRADE SEQUENCING
+// ════════════════════════════════════════════════════════════════════════
+(function(){
+  const el=document.getElementById('v-sequencing');
+
+  // Collect all trades sorted by entry_dt
+  const allTrades=D.flatMap(d=>(d.raw_trades||[]).map(t=>({...t,_pair:d.pair,_sym:d.symbol||d.pair})))
+    .sort((a,b)=>(a.entry_dt||'').localeCompare(b.entry_dt||''));
+
+  function seqStats(trades){
+    // Returns conditional stats keyed by scenario
+    const scenarios={
+      'After WIN':    {w:0,b:0,l:0,r:0,trades:0},
+      'After BE':     {w:0,b:0,l:0,r:0,trades:0},
+      'After LOSS':   {w:0,b:0,l:0,r:0,trades:0},
+      'After 2x LOSS':{w:0,b:0,l:0,r:0,trades:0},
+      'After 3x LOSS':{w:0,b:0,l:0,r:0,trades:0},
+    };
+    for(let i=1;i<trades.length;i++){
+      const cur=trades[i]; const prev=trades[i-1];
+      const prev2=i>=2?trades[i-2]:null;
+      const prev3=i>=3?trades[i-3]:null;
+      const rec=function(key){
+        const s=scenarios[key];
+        s.trades++; s.r+=cur.realized_rr||0;
+        if(cur.outcome==='WIN_FULL') s.w++;
+        else if(cur.outcome==='LOSS') s.l++;
+        else s.b++;
+      };
+      if(prev.outcome==='WIN_FULL') rec('After WIN');
+      else if(prev.outcome==='BREAKEVEN') rec('After BE');
+      else if(prev.outcome==='LOSS'){
+        rec('After LOSS');
+        if(prev2&&prev2.outcome==='LOSS'){
+          rec('After 2x LOSS');
+          if(prev3&&prev3.outcome==='LOSS') rec('After 3x LOSS');
+        }
+      }
+    }
+    return scenarios;
+  }
+
+  const globalScen=seqStats(allTrades);
+
+  // Per-symbol
+  const symScen={};
+  D.forEach(pair=>{
+    const trades=(pair.raw_trades||[]).sort((a,b)=>(a.entry_dt||'').localeCompare(b.entry_dt||''));
+    if(trades.length<2) return;
+    symScen[pair.symbol||pair.pair]=seqStats(trades);
+  });
+
+  function scenRow(label,s){
+    if(!s.trades) return '';
+    const cl=s.w+s.b+s.l||1;
+    const wr=100*s.w/cl; const exp=s.r/s.trades;
+    const r2=ratesFromCounts(s.w,s.b,s.l);
+    return `<tr>
+      <td style="font-weight:700">${label}</td>
+      <td>${s.trades}</td>
+      <td>${rateTrio(r2.wr,r2.ber,r2.lr)}</td>
+      <td style="color:${s.r>=0?WIN:LOSS};font-weight:700">${s.r>=0?'+':''}${s.r.toFixed(2)}R</td>
+      <td style="color:${exp>=0?WIN:LOSS};font-weight:600">${exp>=0?'+':''}${exp.toFixed(3)}R</td>
+    </tr>`;
+  }
+
+  const symTableRows=Object.entries(symScen).map(([sym,sc])=>{
+    const rows=Object.entries(sc).map(([label,s])=>scenRow(sym+' — '+label,s)).filter(Boolean).join('');
+    return rows;
+  }).join('');
+
+  el.innerHTML=`
+  <div class="sh">Trade Sequencing — conditional stats by prior outcome</div>
+  <div class="tbl-wrap" style="margin-bottom:28px">
+    <table><thead><tr>
+      <th>Scenario</th><th>Trades</th><th>W% / BE% / L%</th><th>Net R</th><th>Expect/T</th>
+    </tr></thead><tbody>
+    ${Object.entries(globalScen).map(([label,s])=>scenRow(label,s)).filter(Boolean).join('')}
+    </tbody></table>
+  </div>
+  <div class="sh">Per-Symbol Breakdown</div>
+  <div class="tbl-wrap">
+    <table><thead><tr>
+      <th>Symbol — Scenario</th><th>Trades</th><th>W% / BE% / L%</th><th>Net R</th><th>Expect/T</th>
+    </tr></thead><tbody>${symTableRows}</tbody></table>
+  </div>`;
+})();
+
+// ════════════════════════════════════════════════════════════════════════
+// MONTE CARLO
+// ════════════════════════════════════════════════════════════════════════
+(function(){
+  const el=document.getElementById('v-montecarlo');
+  const allRR=D.flatMap(d=>(d.raw_trades||[]).map(t=>+(t.realized_rr||0)));
+
+  el.innerHTML=`
+  <div class="sh">Monte Carlo Simulation</div>
+  <div class="ror-grid" style="margin-bottom:24px">
+    <div class="ror-inputs">
+      <div class="ror-label">Simulations</div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:4px">
+        <input type="range" id="mc-n-s" min="100" max="5000" step="100" value="1000" style="flex:1;accent-color:var(--acc)">
+        <input class="ror-input" id="mc-n" type="number" min="100" max="5000" step="100" value="1000" style="width:90px;margin:0">
+      </div>
+      <div class="ror-label" style="margin-top:14px;color:var(--sub);font-size:11px">${allRR.length} trades · results appear instantly</div>
+      <button class="pbtn" id="mc-run" style="margin-top:16px;background:var(--acc);color:#fff;border-color:var(--acc);padding:10px 20px;font-size:14px">Run Simulation</button>
+    </div>
+    <div id="mc-summary" class="ror-result" style="padding:20px;gap:0;justify-content:flex-start;align-items:flex-start">
+      <div style="color:var(--sub);font-size:13px">Click Run Simulation to start.</div>
+    </div>
+  </div>
+  <div class="sh">Final R Distribution</div>
+  <div class="cbox" style="margin-bottom:28px"><canvas id="cv-mc-hist" height="220"></canvas></div>
+  <div class="sh">Max Drawdown Distribution</div>
+  <div class="cbox" style="margin-bottom:28px"><canvas id="cv-mc-dd" height="220"></canvas></div>`;
+
+  function fisher(arr){
+    const a=[...arr];
+    for(let i=a.length-1;i>0;i--){
+      const j=Math.floor(Math.random()*(i+1));
+      [a[i],a[j]]=[a[j],a[i]];
+    }
+    return a;
+  }
+  function simOnce(rrs){
+    let cum=0,peak=0,maxDD=0;
+    for(const r of rrs){
+      cum+=r; if(cum>peak) peak=cum;
+      const dd=peak-cum; if(dd>maxDD) maxDD=dd;
+    }
+    return {finalR:+cum.toFixed(3),maxDD:+maxDD.toFixed(3)};
+  }
+  function percentile(arr,p){
+    const s=[...arr].sort((a,b)=>a-b);
+    const idx=Math.floor(p/100*(s.length-1));
+    return s[idx];
+  }
+  function histBuckets(vals,nBuckets){
+    const mn=Math.min(...vals), mx=Math.max(...vals), range=mx-mn||1;
+    const bw=range/nBuckets;
+    const labels=[]; const counts=[];
+    for(let i=0;i<nBuckets;i++){
+      labels.push((mn+i*bw).toFixed(1));
+      counts.push(0);
+    }
+    vals.forEach(v=>{
+      let idx=Math.floor((v-mn)/bw);
+      if(idx>=nBuckets) idx=nBuckets-1;
+      counts[idx]++;
+    });
+    return {labels,counts};
+  }
+
+  function runMC(){
+    const N=Math.max(100,Math.min(5000,parseInt(document.getElementById('mc-n').value)||1000));
+    if(!allRR.length) return;
+    const finals=[],dds=[];
+    for(let i=0;i<N;i++){
+      const r=simOnce(fisher(allRR));
+      finals.push(r.finalR); dds.push(r.maxDD);
+    }
+    const med=percentile(finals,50);
+    const p5=percentile(finals,5);
+    const p95=percentile(finals,95);
+    const probNeg=finals.filter(f=>f<0).length/N;
+    const medDD=percentile(dds,50);
+    const p95DD=percentile(dds,95);
+
+    document.getElementById('mc-summary').innerHTML=`
+      <div style="width:100%">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+          ${[
+            ['Median Final R',(med>=0?'+':'')+med.toFixed(2)+'R',med>=0?WIN:LOSS],
+            ['5th Pct Final R',(p5>=0?'+':'')+p5.toFixed(2)+'R',LOSS],
+            ['95th Pct Final R',(p95>=0?'+':'')+p95.toFixed(2)+'R',WIN],
+            ['Prob Negative',(probNeg*100).toFixed(1)+'%',probNeg>0.3?LOSS:probNeg>0.15?BE:WIN],
+            ['Median Max DD','-'+medDD.toFixed(2)+'R',LOSS],
+            ['95th Pct Max DD','-'+p95DD.toFixed(2)+'R',LOSS],
+          ].map(([l,v,c])=>`
+            <div style="background:var(--card2);border:1px solid var(--brd);border-radius:10px;padding:10px 12px;text-align:center">
+              <div style="font-size:10px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">${l}</div>
+              <div style="font-size:16px;font-weight:800;color:${c};line-height:1">${v}</div>
+            </div>`).join('')}
+        </div>
+        <div style="font-size:12px;color:var(--sub)">${N} simulations × ${allRR.length} trades (shuffled)</div>
+      </div>`;
+
+    const {labels:fl,counts:fc}=histBuckets(finals,40);
+    const {labels:dl,counts:dc}=histBuckets(dds,30);
+
+    const canvas1=document.getElementById('cv-mc-hist');
+    const canvas2=document.getElementById('cv-mc-dd');
+    if(canvas1){
+      // draw final R histogram via drawBars
+      const step=Math.ceil(fl.length/20);
+      const sparse=fl.filter((_,i)=>i%step===0);
+      drawBars('cv-mc-hist',fl.map((l,i)=>i%step===0?l:''),fc.map(v=>v),220);
+    }
+    if(canvas2){
+      drawBars('cv-mc-dd',dl.map((l,i)=>i%Math.ceil(dl.length/15)===0?l:''),dc.map(v=>v),220);
+    }
+  }
+
+  document.getElementById('mc-run').addEventListener('click',runMC);
+  document.getElementById('mc-n-s').addEventListener('input',()=>{ document.getElementById('mc-n').value=document.getElementById('mc-n-s').value; });
+  document.getElementById('mc-n').addEventListener('input',()=>{ document.getElementById('mc-n-s').value=document.getElementById('mc-n').value; });
+})();
+
+// ════════════════════════════════════════════════════════════════════════
+// FUNDED CHALLENGE
+// ════════════════════════════════════════════════════════════════════════
+(function(){
+  const el=document.getElementById('v-challenge');
+  const allRR=D.flatMap(d=>(d.raw_trades||[]).map(t=>+(t.realized_rr||0)));
+  const _firstDollar=D.find(d=>d.dollar_stats);
+  const DEFAULT_BAL=_firstDollar?.dollar_stats?.start_balance||10000;
+
+  el.innerHTML=`
+  <div class="sh">Funded Challenge Simulator</div>
+  <div class="ror-grid" style="margin-bottom:24px">
+    <div class="ror-inputs">
+      <div class="ror-label">Starting Balance ($)</div>
+      <input class="ror-input" id="ch-bal" type="number" min="1000" step="1000" value="${DEFAULT_BAL}">
+      <div class="ror-label">Profit Target (%)</div>
+      <input class="ror-input" id="ch-pt" type="number" min="1" max="50" step="0.5" value="10">
+      <div class="ror-label">Trailing DD Limit (%)</div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:4px">
+        <input type="range" id="ch-dd-s" min="1" max="15" step="0.5" value="5" style="flex:1;accent-color:var(--loss)">
+        <input class="ror-input" id="ch-dd" type="number" min="0.5" max="20" step="0.5" value="5" style="width:76px;margin:0">
+        <span style="color:var(--sub);font-size:13px;font-weight:700">%</span>
+      </div>
+      <div class="ror-label">Max Total Loss Limit (%)</div>
+      <input class="ror-input" id="ch-tl" type="number" min="1" max="20" step="0.5" value="10">
+      <div class="ror-label">Risk % per Trade</div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:4px">
+        <input type="range" id="ch-risk-s" min="0.05" max="3" step="0.05" value="0.5" style="flex:1;accent-color:var(--acc)">
+        <input class="ror-input" id="ch-risk" type="number" min="0.05" max="5" step="0.05" value="0.5" style="width:76px;margin:0">
+        <span style="color:var(--sub);font-size:13px;font-weight:700">%</span>
+      </div>
+    </div>
+    <div id="ch-result" class="ror-result" style="padding:20px;gap:0;justify-content:flex-start;align-items:flex-start"></div>
+  </div>
+  <div class="sh">Sweep Matrix — Trailing DD% × Risk%</div>
+  <div class="cbox" style="margin-bottom:28px;overflow-x:auto" id="ch-matrix"></div>`;
+
+  function simChallenge(rrs,startBal,ptPct,ddPct,tlPct,riskPct){
+    let bal=startBal,peak=startBal;
+    const totalFloor=startBal*(1-tlPct/100);
+    for(let i=0;i<rrs.length;i++){
+      const risk=bal*(riskPct/100);
+      bal=bal+risk*rrs[i];
+      if(bal>peak) peak=bal;
+      const trailFloor=peak*(1-ddPct/100);
+      const floor=Math.max(trailFloor,totalFloor);
+      if(bal<=floor) return {pass:false,tradeNo:i+1,balance:bal,peak,netPct:(bal-startBal)/startBal*100};
+      if(bal>=startBal*(1+ptPct/100)) return {pass:true,tradeNo:i+1,balance:bal,peak,netPct:(bal-startBal)/startBal*100};
+    }
+    return {pass:false,tradeNo:rrs.length,balance:bal,peak,netPct:(bal-startBal)/startBal*100,incomplete:true};
+  }
+
+  function fisher(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+
+  function update(){
+    const startBal=parseFloat(document.getElementById('ch-bal').value)||DEFAULT_BAL;
+    const ptPct=parseFloat(document.getElementById('ch-pt').value)||10;
+    const ddPct=parseFloat(document.getElementById('ch-dd').value)||5;
+    const tlPct=parseFloat(document.getElementById('ch-tl').value)||10;
+    const riskPct=parseFloat(document.getElementById('ch-risk').value)||0.5;
+
+    if(!allRR.length){ document.getElementById('ch-result').innerHTML='<div style="color:var(--sub)">No trade data.</div>'; return; }
+
+    const base=simChallenge(allRR,startBal,ptPct,ddPct,tlPct,riskPct);
+
+    // MC pass rate (500 shuffles)
+    let passes=0;
+    for(let i=0;i<500;i++){ if(simChallenge(fisher(allRR),startBal,ptPct,ddPct,tlPct,riskPct).pass) passes++; }
+    const passRate=(passes/500*100).toFixed(1);
+
+    const col=base.pass?WIN:base.incomplete?BE:LOSS;
+    const verdict=base.pass?'PASS':base.incomplete?'INCOMPLETE (ran out of trades)':'FAIL';
+    const tradeMsg=base.pass?`Passed at trade ${base.tradeNo}`:`Blown at trade ${base.tradeNo}`;
+
+    document.getElementById('ch-result').innerHTML=`
+      <div style="width:100%">
+        <div style="font-size:28px;font-weight:800;color:${col};line-height:1;margin-bottom:6px">${verdict}</div>
+        <div style="font-size:13px;color:var(--sub);margin-bottom:16px">${tradeMsg} of ${allRR.length}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+          ${[
+            ['Peak Balance','$'+Math.round(base.peak).toLocaleString(),WIN],
+            ['Final Balance','$'+Math.round(base.balance).toLocaleString(),col],
+            ['Net Return',(base.netPct>=0?'+':'')+base.netPct.toFixed(2)+'%',base.netPct>=0?WIN:LOSS],
+            ['MC Pass Rate (500 shuffles)',passRate+'%',passes/500>=0.5?WIN:passes/500>=0.25?BE:LOSS],
+          ].map(([l,v,c])=>`
+            <div style="background:var(--card2);border:1px solid var(--brd);border-radius:10px;padding:10px 12px;text-align:center">
+              <div style="font-size:10px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">${l}</div>
+              <div style="font-size:16px;font-weight:800;color:${c};line-height:1">${v}</div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+
+    // Sweep matrix: DD rows × Risk cols
+    const DD_ROWS=[3,4,5,6,8]; const RISK_COLS=[0.1,0.2,0.3,0.5,1.0];
+    let mat=`<table style="border-collapse:collapse;font-size:12px;width:100%">
+      <thead><tr style="background:var(--card2);border-bottom:2px solid var(--brd)">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--sub);font-weight:700;text-transform:uppercase">Trail DD \\ Risk%</th>
+        ${RISK_COLS.map(r=>`<th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--sub);font-weight:700">${r}%</th>`).join('')}
+      </tr></thead><tbody>`;
+    DD_ROWS.forEach(dd=>{
+      mat+=`<tr style="border-bottom:1px solid var(--brd)"><td style="padding:8px 12px;font-weight:700;color:${LOSS}">${dd}% DD</td>`;
+      RISK_COLS.forEach(rp=>{
+        const s=simChallenge(allRR,startBal,ptPct,dd,tlPct,rp);
+        const active=(Math.abs(rp-riskPct)<0.001&&Math.abs(dd-ddPct)<0.001);
+        const c=s.pass?WIN:s.incomplete?BE:LOSS;
+        const lbl=s.pass?'✓ '+s.tradeNo+'t':s.incomplete?'~':'✗ T'+s.tradeNo;
+        const ret=(s.netPct>=0?'+':'')+s.netPct.toFixed(1)+'%';
+        mat+=`<td style="padding:8px 10px;text-align:center;${active?'outline:2px solid var(--acc);background:var(--acc)14;':''}">
+          <div style="font-size:11px;font-weight:800;color:${c}">${lbl}</div>
+          <div style="font-size:10px;color:${c}">${ret}</div>
+        </td>`;
+      });
+      mat+='</tr>';
+    });
+    mat+='</tbody></table>';
+    document.getElementById('ch-matrix').innerHTML=mat;
+  }
+
+  ['ch-bal','ch-pt','ch-tl'].forEach(id=>document.getElementById(id).addEventListener('input',update));
+  ['risk','dd'].forEach(id=>{
+    document.getElementById('ch-'+id+'-s').addEventListener('input',()=>{
+      document.getElementById('ch-'+id).value=document.getElementById('ch-'+id+'-s').value; update();
+    });
+    document.getElementById('ch-'+id).addEventListener('input',()=>{
+      document.getElementById('ch-'+id+'-s').value=document.getElementById('ch-'+id).value; update();
+    });
+  });
+  update();
 })();
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
@@ -3684,6 +3916,480 @@ renderHours();
 
 let _rt;
 window.addEventListener('resize',()=>{ clearTimeout(_rt); _rt=setTimeout(()=>document.querySelector('.ntab.on')?.click(),200); });
+
+// ════════════════════════════════════════════════════════════════════════
+// TRAILING DD CALCULATOR
+// ════════════════════════════════════════════════════════════════════════
+(function(){
+  const el=document.getElementById('v-trailingdd');
+
+  // Infer start balance and base risk% from first pair with dollar data
+  const _firstDollar=D.find(d=>d.dollar_stats);
+  const DEFAULT_BAL  =_firstDollar?.dollar_stats?.start_balance||5000;
+  const DEFAULT_RISK =0.2;
+  const DEFAULT_DD   =3;
+
+  // Simulate equity curve at given risk% and trailing DD threshold
+  // Returns { blown, at_trade, at_date, balance, peak, net_pnl, net_pnl_pct, peak_pct, equity_curve }
+  function simDD(trades, startBal, riskPct, ddPct){
+    let bal=startBal, peak=startBal;
+    const eq=[startBal];
+    const floor_series=[startBal*(1-ddPct/100)];
+    for(let i=0;i<trades.length;i++){
+      const t=trades[i];
+      const rr=parseFloat(t.realized_rr)||0;
+      const risk=bal*(riskPct/100);
+      bal=bal+risk*rr;
+      if(bal>peak) peak=bal;
+      const floor=peak*(1-ddPct/100);
+      eq.push(+bal.toFixed(2));
+      floor_series.push(+floor.toFixed(2));
+      if(bal<=floor){
+        return {blown:true,at_trade:i+1,at_date:t.close_dt||t.entry_dt||'',
+                balance:bal,peak,floor,eq,floor_series,
+                net_pnl:bal-startBal,net_pnl_pct:(bal-startBal)/startBal*100,
+                peak_pct:(peak-startBal)/startBal*100};
+      }
+    }
+    return {blown:false,at_trade:trades.length,at_date:'',
+            balance:bal,peak,floor:peak*(1-ddPct/100),eq,floor_series,
+            net_pnl:bal-startBal,net_pnl_pct:(bal-startBal)/startBal*100,
+            peak_pct:(peak-startBal)/startBal*100};
+  }
+
+  const allTrades=D.flatMap(d=>d.raw_trades||[])
+    .sort((a,b)=>(a.entry_dt||'').localeCompare(b.entry_dt||''));
+
+  const money=v=>'$'+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const pct=v=>(v>=0?'+':'')+v.toFixed(2)+'%';
+  const sgn=v=>v>=0?'+':'';
+
+  el.innerHTML=`
+  <div class="sh">Trailing Drawdown Calculator — Funded Account Kill Rule</div>
+  <div style="font-size:13px;color:var(--sub);margin-bottom:20px">
+    Simulates the funded-account trailing DD rule: if balance drops <strong>X%</strong> below the peak (high-watermark), the account fails.
+    Re-runs the equity curve at any risk% so you can find the safe operating zone.
+  </div>
+
+  <div class="ror-grid" style="margin-bottom:24px">
+    <div class="ror-inputs">
+      <div class="ror-label">Starting Balance ($)</div>
+      <input class="ror-input" id="tdd-bal" type="number" min="100" step="500" value="${DEFAULT_BAL}">
+
+      <div class="ror-label">Risk % per Trade</div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:4px">
+        <input type="range" id="tdd-risk-s" min="0.05" max="3" step="0.05" value="${DEFAULT_RISK}" style="flex:1;accent-color:var(--acc)">
+        <input class="ror-input" id="tdd-risk" type="number" min="0.05" max="5" step="0.05" value="${DEFAULT_RISK}" style="width:76px;margin:0">
+        <span style="color:var(--sub);font-size:13px;font-weight:700">%</span>
+      </div>
+
+      <div class="ror-label">Trailing DD Limit (%)</div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:4px">
+        <input type="range" id="tdd-dd-s" min="1" max="15" step="0.5" value="${DEFAULT_DD}" style="flex:1;accent-color:var(--loss)">
+        <input class="ror-input" id="tdd-dd" type="number" min="0.5" max="20" step="0.5" value="${DEFAULT_DD}" style="width:76px;margin:0">
+        <span style="color:var(--sub);font-size:13px;font-weight:700">%</span>
+      </div>
+
+      <div style="margin-top:16px;padding:12px 14px;background:var(--card2);border:1px solid var(--brd);border-radius:10px;font-size:12px;color:var(--sub);line-height:1.7">
+        <strong style="color:var(--txt)">Rule:</strong> trailing floor = peak × (1 − DD%)<br>
+        If balance ≤ floor at any point → account blown.<br>
+        Risk is applied as % of <em>current</em> balance (compound).
+      </div>
+    </div>
+    <div class="ror-result" id="tdd-result" style="padding:20px;gap:0;justify-content:flex-start"></div>
+  </div>
+
+  <div style="background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:20px;margin-bottom:24px">
+    <div class="sh">Equity vs Trailing Floor</div>
+    <canvas id="tdd-chart" height="200"></canvas>
+  </div>
+
+  <div style="background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:20px;margin-bottom:24px">
+    <div class="sh">Sweep Matrix — Trailing DD% × Risk% (combined book)</div>
+    <div id="tdd-matrix" style="overflow-x:auto"></div>
+  </div>
+
+  <div style="background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:20px;margin-bottom:24px">
+    <div class="sh">Per-Symbol Breakdown</div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:700px">
+      <thead><tr style="font-size:11px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.08em;border-bottom:2px solid var(--brd);background:var(--card2)">
+        <th style="padding:10px 14px;text-align:left">Symbol</th>
+        <th style="padding:10px 14px;text-align:right">Trades</th>
+        <th style="padding:10px 14px;text-align:right">Final Bal</th>
+        <th style="padding:10px 14px;text-align:right">Peak</th>
+        <th style="padding:10px 14px;text-align:right">Peak %</th>
+        <th style="padding:10px 14px;text-align:right">Net PnL</th>
+        <th style="padding:10px 14px;text-align:center">Status</th>
+        <th style="padding:10px 14px;text-align:right">Blew At</th>
+      </tr></thead>
+      <tbody id="tdd-pair-tbody"></tbody>
+    </table></div>
+  </div>`;
+
+  function drawDDChart(eq, floor_series, blown, blowAt){
+    const canvas=document.getElementById('tdd-chart');
+    if(!canvas) return;
+    const dpr=window.devicePixelRatio||1;
+    const W=canvas.parentElement.offsetWidth-40||600;
+    const H=200;
+    canvas.width=W*dpr; canvas.height=H*dpr;
+    canvas.style.width=W+'px'; canvas.style.height=H+'px';
+    const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr);
+    const pad={t:14,r:14,b:26,l:74};
+    const cw=W-pad.l-pad.r, ch=H-pad.t-pad.b;
+    const all=[...eq,...floor_series];
+    const mn=Math.min(...all), mx=Math.max(...all), range=mx-mn||1;
+    const sy=v=>pad.t+ch*(1-(v-mn)/range);
+    const sx=i=>pad.l+(i/(eq.length-1))*cw;
+    const fmt=v=>'$'+Math.round(v).toLocaleString();
+    ctx.fillStyle='#f7f8fa'; ctx.fillRect(0,0,W,H);
+    [0,.25,.5,.75,1].forEach(t=>{
+      const y=pad.t+t*ch; ctx.strokeStyle='#e8eaf0'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+cw,y); ctx.stroke();
+    });
+    // floor area (danger zone)
+    ctx.save();
+    ctx.beginPath(); ctx.moveTo(sx(0),sy(floor_series[0]));
+    floor_series.forEach((_,i)=>ctx.lineTo(sx(i),sy(floor_series[i])));
+    ctx.lineTo(sx(floor_series.length-1),H); ctx.lineTo(sx(0),H); ctx.closePath();
+    ctx.fillStyle='rgba(214,59,59,0.07)'; ctx.fill();
+    ctx.restore();
+    // floor line
+    ctx.beginPath(); ctx.strokeStyle='#d63b3b'; ctx.lineWidth=1.5; ctx.setLineDash([5,4]);
+    floor_series.forEach((v,i)=>i===0?ctx.moveTo(sx(i),sy(v)):ctx.lineTo(sx(i),sy(v)));
+    ctx.stroke(); ctx.setLineDash([]);
+    // equity fill
+    const grad=ctx.createLinearGradient(0,pad.t,0,pad.t+ch);
+    grad.addColorStop(0,'#4f6ef740'); grad.addColorStop(1,'#4f6ef708');
+    ctx.beginPath(); ctx.moveTo(sx(0),sy(eq[0]));
+    eq.forEach((v,i)=>ctx.lineTo(sx(i),sy(v)));
+    ctx.lineTo(sx(eq.length-1),sy(mn)); ctx.lineTo(sx(0),sy(mn)); ctx.closePath();
+    ctx.fillStyle=grad; ctx.fill();
+    // equity line
+    ctx.beginPath(); ctx.strokeStyle=blown?'#d63b3b':'#4f6ef7'; ctx.lineWidth=2.5;
+    eq.forEach((v,i)=>i===0?ctx.moveTo(sx(i),sy(v)):ctx.lineTo(sx(i),sy(v)));
+    ctx.stroke();
+    // blow marker
+    if(blown && blowAt>0 && blowAt<eq.length){
+      ctx.beginPath(); ctx.arc(sx(blowAt),sy(eq[blowAt]),6,0,Math.PI*2);
+      ctx.fillStyle='#d63b3b'; ctx.fill();
+      ctx.font='bold 11px Inter,sans-serif'; ctx.fillStyle='#d63b3b'; ctx.textAlign='left';
+      ctx.fillText('✗ blown',sx(blowAt)+10,sy(eq[blowAt])+4);
+    }
+    // labels
+    [mn,eq[0],mx].forEach(v=>{
+      ctx.fillStyle=v===eq[0]?'#9aa0b4':v>eq[0]?WIN:LOSS;
+      ctx.font='bold 11px Inter,sans-serif'; ctx.textAlign='right';
+      ctx.fillText(fmt(v),pad.l-6,sy(v)+4);
+    });
+    ctx.fillStyle='#d63b3b'; ctx.font='bold 10px Inter,sans-serif'; ctx.textAlign='right';
+    ctx.fillText('floor',pad.l-6,sy(floor_series[floor_series.length-1])+4);
+  }
+
+  function update(){
+    const startBal=parseFloat(document.getElementById('tdd-bal').value)||DEFAULT_BAL;
+    const riskPct =parseFloat(document.getElementById('tdd-risk').value)||DEFAULT_RISK;
+    const ddPct   =parseFloat(document.getElementById('tdd-dd').value)||DEFAULT_DD;
+
+    const r=simDD(allTrades,startBal,riskPct,ddPct);
+    const col=r.blown?LOSS:WIN;
+
+    document.getElementById('tdd-result').innerHTML=`
+      <div style="width:100%">
+        <div style="font-size:32px;font-weight:800;color:${col};line-height:1;margin-bottom:6px">${r.blown?'✗ BLOWN':'✓ SURVIVED'}</div>
+        ${r.blown?`<div style="font-size:13px;color:${LOSS};margin-bottom:16px">Blew at trade ${r.at_trade}${r.at_date?' ('+r.at_date.slice(0,10)+')':''}</div>`:'<div style="font-size:13px;color:var(--sub);margin-bottom:16px">All ${allTrades.length} trades completed</div>'}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+          ${[
+            ['Final Balance', money(r.balance), col],
+            ['Peak Balance', money(r.peak), WIN],
+            ['Net PnL', (r.net_pnl>=0?'+':'')+money(r.net_pnl), r.net_pnl>=0?WIN:LOSS],
+            ['Peak Return', sgn(r.peak_pct)+r.peak_pct.toFixed(2)+'%', WIN],
+            ['Net Return', pct(r.net_pnl_pct), r.net_pnl_pct>=0?WIN:LOSS],
+            ['DD Floor', money(r.floor), LOSS],
+          ].map(([l,v,c])=>`
+            <div style="background:var(--card2);border:1px solid var(--brd);border-radius:10px;padding:10px 12px;text-align:center">
+              <div style="font-size:10px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">${l}</div>
+              <div style="font-size:16px;font-weight:800;color:${c};line-height:1">${v}</div>
+            </div>`).join('')}
+        </div>
+        ${r.blown?`<div style="padding:10px 14px;background:var(--loss-bg);border:1px solid var(--loss-brd);border-radius:8px;font-size:12px;color:${LOSS}">
+          Balance dropped to ${money(r.balance)} ≤ floor ${money(r.floor)}<br>
+          (peak was ${money(r.peak)} → floor = peak × ${(1-ddPct/100).toFixed(3)})
+        </div>`:''}
+      </div>`;
+
+    setTimeout(()=>drawDDChart(r.eq,r.floor_series,r.blown,r.at_trade),30);
+
+    // Per-symbol table
+    const tbody=document.getElementById('tdd-pair-tbody'); tbody.innerHTML='';
+    D.forEach(d=>{
+      const trades=d.raw_trades||[];
+      const s=simDD(trades,startBal,riskPct,ddPct);
+      const tr=document.createElement('tr');
+      tr.style.borderBottom='1px solid var(--brd)';
+      tr.innerHTML=`
+        <td style="padding:10px 14px;font-weight:700">${d.symbol}</td>
+        <td style="padding:10px 14px;text-align:right;color:var(--sub)">${trades.length}</td>
+        <td style="padding:10px 14px;text-align:right;color:${s.net_pnl>=0?WIN:LOSS};font-weight:700">${money(s.balance)}</td>
+        <td style="padding:10px 14px;text-align:right;color:${WIN};font-weight:600">${money(s.peak)}</td>
+        <td style="padding:10px 14px;text-align:right;color:${WIN}">${sgn(s.peak_pct)}${s.peak_pct.toFixed(2)}%</td>
+        <td style="padding:10px 14px;text-align:right;color:${s.net_pnl>=0?WIN:LOSS};font-weight:700">${sgn(s.net_pnl)}${money(s.net_pnl)}</td>
+        <td style="padding:10px 14px;text-align:center">
+          <span style="background:${s.blown?'var(--loss-bg)':'var(--win-bg)'};color:${s.blown?LOSS:WIN};border:1px solid ${s.blown?'var(--loss-brd)':'var(--win-brd)'};border-radius:6px;padding:3px 10px;font-size:12px;font-weight:700">
+            ${s.blown?'✗ BLOWN':'✓ OK'}</span></td>
+        <td style="padding:10px 14px;text-align:right;color:${s.blown?LOSS:'var(--sub)'}">${s.blown?'Trade '+s.at_trade:'—'}</td>`;
+      tbody.appendChild(tr);
+    });
+
+    // Sweep matrix
+    const DD_LEVELS=[2,3,4,5,6,8,10];
+    const RISK_LEVELS=[0.1,0.2,0.3,0.5,0.75,1.0,1.5,2.0];
+    let mat=`<table style="border-collapse:collapse;font-size:12px;width:100%">
+      <thead><tr style="background:var(--card2);border-bottom:2px solid var(--brd)">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--sub);font-weight:700;text-transform:uppercase">DD Limit \\ Risk%</th>
+        ${RISK_LEVELS.map(r=>`<th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--sub);font-weight:700">${r}%</th>`).join('')}
+      </tr></thead><tbody>`;
+    DD_LEVELS.forEach(dd=>{
+      mat+=`<tr style="border-bottom:1px solid var(--brd)">
+        <td style="padding:8px 12px;font-weight:700;color:${LOSS}">${dd}% DD</td>`;
+      RISK_LEVELS.forEach(rp=>{
+        const s=simDD(allTrades,startBal,rp,dd);
+        const active=(Math.abs(rp-riskPct)<0.001 && Math.abs(dd-ddPct)<0.001);
+        const c=s.blown?LOSS:WIN;
+        mat+=`<td style="padding:8px 10px;text-align:center;${active?'outline:2px solid var(--acc);background:var(--acc)14;':''}">
+          <div style="font-size:11px;font-weight:800;color:${c}">${s.blown?'✗':'✓'}</div>
+          <div style="font-size:10px;color:${c}">${s.blown?'T'+s.at_trade:sgn(s.net_pnl_pct)+s.net_pnl_pct.toFixed(1)+'%'}</div>
+        </td>`;
+      });
+      mat+='</tr>';
+    });
+    mat+='</tbody></table>';
+    document.getElementById('tdd-matrix').innerHTML=mat;
+  }
+
+  ['risk','dd'].forEach(id=>{
+    const sl=document.getElementById('tdd-'+id+'-s');
+    const nb=document.getElementById('tdd-'+id);
+    sl.addEventListener('input',()=>{nb.value=sl.value;update();});
+    nb.addEventListener('input',()=>{sl.value=nb.value;update();});
+  });
+  document.getElementById('tdd-bal').addEventListener('input',update);
+  update();
+})();
+
+// ════════════════════════════════════════════════════════════════════════
+// TRAILING SWEEP
+// ════════════════════════════════════════════════════════════════════════
+function simTrail(trades, trigPct, closePct, lockPct){
+  let grossWin=0,grossLoss=0,totalR=0,wins=0,losses=0,bes=0;
+  for(const t of trades){
+    const rr=+(t.rr||3);
+    const tp1R=trigPct*rr;
+    let sr;
+    if(t.outcome==='WIN_FULL')      sr=closePct*tp1R+(1-closePct)*rr;
+    else if(t.outcome==='BREAKEVEN') sr=(closePct+(1-closePct)*lockPct)*tp1R;
+    else                             sr=-1;
+    totalR+=sr;
+    if(sr>0){grossWin+=sr;wins++;}
+    else if(sr<0){grossLoss+=Math.abs(sr);losses++;}
+    else bes++;
+  }
+  const pf=grossLoss>0?grossWin/grossLoss:Infinity;
+  const wl=wins+losses;
+  return {totalR,pf,grossWin,grossLoss,wins,losses,bes,wr:wl>0?wins/wl*100:0,n:trades.length};
+}
+
+(function(){
+  const allTrades=D.flatMap(d=>d.raw_trades||[]);
+  const el=document.getElementById('v-trailing');
+  el.innerHTML=`
+  <div class="sh">Trailing / Partial-Close Sweep</div>
+  <div style="font-size:13px;color:var(--sub);margin-bottom:20px">
+    Simulate partial-close and trailing lock strategies on real trade outcomes.
+    WIN_FULL = reached TP2. BREAKEVEN = reached TP1 then reversed to entry. LOSS = hit SL (unchanged).
+  </div>
+  <div class="ror-grid" style="margin-bottom:24px">
+    <div class="ror-inputs">
+      <div class="ror-label">TP1 Trigger — % of way to TP2 <span style="color:var(--acc);font-size:10px;font-weight:600">← data used 45%</span></div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:4px">
+        <input type="range" id="tr-trig-s" min="20" max="80" step="5" value="45" style="flex:1;accent-color:var(--acc)">
+        <input class="ror-input" id="tr-trig" type="number" min="20" max="80" step="5" value="45" style="width:76px;margin:0">
+        <span style="color:var(--sub);font-size:13px;font-weight:700">%</span>
+      </div>
+      <div class="ror-label">TP1 Close % — fraction of position closed at TP1</div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:4px">
+        <input type="range" id="tr-close-s" min="0" max="100" step="5" value="0" style="flex:1;accent-color:var(--acc)">
+        <input class="ror-input" id="tr-close" type="number" min="0" max="100" step="5" value="0" style="width:76px;margin:0">
+        <span style="color:var(--sub);font-size:13px;font-weight:700">%</span>
+      </div>
+      <div class="ror-label">Trail Lock-in % — for BE trades, how much of TP1 gain the trail locks on remaining</div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:4px">
+        <input type="range" id="tr-lock-s" min="0" max="100" step="5" value="0" style="flex:1;accent-color:var(--acc)">
+        <input class="ror-input" id="tr-lock" type="number" min="0" max="100" step="5" value="0" style="width:76px;margin:0">
+        <span style="color:var(--sub);font-size:13px;font-weight:700">%</span>
+      </div>
+      <div style="margin-top:16px;padding:12px 14px;background:var(--card2);border:1px solid var(--brd);border-radius:10px;font-size:12px;color:var(--sub);line-height:1.7">
+        <strong style="color:var(--txt)">Model:</strong><br>
+        WIN_FULL → close%×TP1R + (1−close%)×fullR<br>
+        BREAKEVEN → (close% + (1−close%)×lock%)×TP1R<br>
+        LOSS → unchanged (−1R)
+      </div>
+    </div>
+    <div class="ror-result" id="tr-result" style="padding:20px;gap:0;justify-content:flex-start"></div>
+  </div>
+
+  <div style="background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:20px;margin-bottom:24px">
+    <div class="sh">Per-Symbol Comparison</div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:680px">
+      <thead><tr style="font-size:11px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.08em;border-bottom:2px solid var(--brd);background:var(--card2)">
+        <th style="padding:10px 14px;text-align:left">Symbol</th>
+        <th style="padding:10px 14px;text-align:right">Trades</th>
+        <th style="padding:10px 14px;text-align:right">Base R</th>
+        <th style="padding:10px 14px;text-align:right">Sim R</th>
+        <th style="padding:10px 14px;text-align:right">ΔR</th>
+        <th style="padding:10px 14px;text-align:right">Base PF</th>
+        <th style="padding:10px 14px;text-align:right">Sim PF</th>
+        <th style="padding:10px 14px;text-align:right">Base WR</th>
+        <th style="padding:10px 14px;text-align:right">Sim WR</th>
+      </tr></thead>
+      <tbody id="tr-pair-tbody"></tbody>
+    </table></div>
+  </div>
+
+  <div style="background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:20px;margin-bottom:24px">
+    <div class="sh">Sweep Matrix — PF at different trigger × close combinations (trail lock fixed at slider value)</div>
+    <div id="tr-matrix" style="overflow-x:auto"></div>
+  </div>`;
+
+  const pfStr=v=>isFinite(v)?v.toFixed(2):'∞';
+  const sign=v=>v>=0?'+':'';
+  const base=simTrail(allTrades,0.45,0,0);
+
+  function update(){
+    const trigPct =parseFloat(document.getElementById('tr-trig').value)/100;
+    const closePct=parseFloat(document.getElementById('tr-close').value)/100;
+    const lockPct =parseFloat(document.getElementById('tr-lock').value)/100;
+    const sim=simTrail(allTrades,trigPct,closePct,lockPct);
+    const dR=sim.totalR-base.totalR;
+    const dPF=isFinite(sim.pf)&&isFinite(base.pf)?sim.pf-base.pf:0;
+    const col=dR>=0?WIN:LOSS;
+
+    document.getElementById('tr-result').innerHTML=`
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;width:100%">
+        ${[
+          ['Baseline R', sign(base.totalR)+base.totalR.toFixed(1)+'R', SUB],
+          ['Simulated R', sign(sim.totalR)+sim.totalR.toFixed(1)+'R', sim.totalR>=base.totalR?WIN:LOSS],
+          ['Delta R', sign(dR)+dR.toFixed(1)+'R', col],
+          ['Baseline PF', pfStr(base.pf), SUB],
+          ['Simulated PF', pfStr(sim.pf), sim.pf>=base.pf?WIN:LOSS],
+          ['Delta PF', sign(dPF)+dPF.toFixed(2), dPF>=0?WIN:LOSS],
+        ].map(([l,v,c])=>`
+          <div style="background:var(--card2);border:1px solid var(--brd);border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:10px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px">${l}</div>
+            <div style="font-size:20px;font-weight:800;color:${c};line-height:1">${v}</div>
+          </div>`).join('')}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;width:100%">
+        ${[['W',sim.wins,WIN],['BE',sim.bes,BE],['L',sim.losses,LOSS],['WR',sim.wr.toFixed(1)+'%',sim.wr>=base.wr?WIN:LOSS]].map(([l,v,c])=>`
+          <div style="background:${c}14;border:1px solid ${c}33;border-radius:8px;padding:8px;text-align:center">
+            <div style="font-size:10px;font-weight:700;color:${c};text-transform:uppercase;margin-bottom:3px">${l}</div>
+            <div style="font-size:17px;font-weight:800;color:${c}">${v}</div>
+          </div>`).join('')}
+      </div>`;
+
+    const tbody=document.getElementById('tr-pair-tbody');
+    tbody.innerHTML='';
+    D.forEach(d=>{
+      const trades=d.raw_trades||[];
+      const b=simTrail(trades,0.45,0,0);
+      const s=simTrail(trades,trigPct,closePct,lockPct);
+      const dr=s.totalR-b.totalR;
+      const dpf=isFinite(s.pf)&&isFinite(b.pf)?s.pf-b.pf:0;
+      const tr=document.createElement('tr');
+      tr.style.borderBottom='1px solid var(--brd)';
+      tr.innerHTML=`
+        <td style="padding:10px 14px;font-weight:700">${d.symbol}</td>
+        <td style="padding:10px 14px;text-align:right;color:var(--sub)">${trades.length}</td>
+        <td style="padding:10px 14px;text-align:right;color:${b.totalR>=0?WIN:LOSS};font-weight:600">${sign(b.totalR)}${b.totalR.toFixed(1)}R</td>
+        <td style="padding:10px 14px;text-align:right;color:${s.totalR>=0?WIN:LOSS};font-weight:700">${sign(s.totalR)}${s.totalR.toFixed(1)}R</td>
+        <td style="padding:10px 14px;text-align:right;color:${dr>=0?WIN:LOSS};font-weight:700">${sign(dr)}${dr.toFixed(1)}R</td>
+        <td style="padding:10px 14px;text-align:right;color:var(--sub)">${pfStr(b.pf)}</td>
+        <td style="padding:10px 14px;text-align:right;color:${dpf>=0?WIN:LOSS};font-weight:700">${pfStr(s.pf)}</td>
+        <td style="padding:10px 14px;text-align:right;color:var(--sub)">${b.wr.toFixed(1)}%</td>
+        <td style="padding:10px 14px;text-align:right;color:${s.wr>=b.wr?WIN:LOSS};font-weight:700">${s.wr.toFixed(1)}%</td>`;
+      tbody.appendChild(tr);
+    });
+    const totTr=document.createElement('tr');
+    totTr.style.cssText='border-top:2px solid var(--brd);background:var(--card2)';
+    totTr.innerHTML=`
+      <td style="padding:10px 14px;font-weight:800">TOTAL</td>
+      <td style="padding:10px 14px;text-align:right;color:var(--sub)">${sim.n}</td>
+      <td style="padding:10px 14px;text-align:right;color:${base.totalR>=0?WIN:LOSS};font-weight:700">${sign(base.totalR)}${base.totalR.toFixed(1)}R</td>
+      <td style="padding:10px 14px;text-align:right;color:${sim.totalR>=0?WIN:LOSS};font-weight:700">${sign(sim.totalR)}${sim.totalR.toFixed(1)}R</td>
+      <td style="padding:10px 14px;text-align:right;color:${dR>=0?WIN:LOSS};font-weight:700">${sign(dR)}${dR.toFixed(1)}R</td>
+      <td style="padding:10px 14px;text-align:right;font-weight:700">${pfStr(base.pf)}</td>
+      <td style="padding:10px 14px;text-align:right;color:${sim.pf>=base.pf?WIN:LOSS};font-weight:700">${pfStr(sim.pf)}</td>
+      <td style="padding:10px 14px;text-align:right;font-weight:700">${base.wr.toFixed(1)}%</td>
+      <td style="padding:10px 14px;text-align:right;color:${sim.wr>=base.wr?WIN:LOSS};font-weight:700">${sim.wr.toFixed(1)}%</td>`;
+    tbody.appendChild(totTr);
+
+    const CLOSES=[0,25,50,75,100];
+    const TRIGS=[30,45,60];
+    let mat=`<table style="border-collapse:collapse;font-size:12px;width:100%">
+      <thead><tr style="background:var(--card2);border-bottom:2px solid var(--brd)">
+        <th style="padding:8px 14px;text-align:left;font-size:11px;color:var(--sub);font-weight:700;text-transform:uppercase">Trigger</th>
+        ${CLOSES.map(c=>`<th style="padding:8px 14px;text-align:center;font-size:11px;color:var(--sub);font-weight:700;text-transform:uppercase">Close ${c}%</th>`).join('')}
+      </tr></thead><tbody>`;
+    TRIGS.forEach(trig=>{
+      mat+=`<tr style="border-bottom:1px solid var(--brd)"><td style="padding:8px 14px;font-weight:700">TP1 @ ${trig}%</td>`;
+      CLOSES.forEach(cl=>{
+        const s2=simTrail(allTrades,trig/100,cl/100,lockPct);
+        const active=(Math.round(trigPct*100)===trig&&Math.round(closePct*100)===cl);
+        const c=s2.pf>base.pf+0.05?WIN:s2.pf<base.pf-0.05?LOSS:SUB;
+        mat+=`<td style="padding:8px 14px;text-align:center;${active?'background:var(--acc)18;outline:2px solid var(--acc)44;':''}">
+          <div style="font-size:14px;font-weight:800;color:${c}">${pfStr(s2.pf)}</div>
+          <div style="font-size:10px;color:var(--sub);margin-top:2px">${sign(s2.totalR)}${s2.totalR.toFixed(0)}R</div>
+        </td>`;
+      });
+      mat+='</tr>';
+    });
+    mat+='</tbody></table>';
+    document.getElementById('tr-matrix').innerHTML=mat;
+  }
+
+  ['trig','close','lock'].forEach(id=>{
+    const sl=document.getElementById('tr-'+id+'-s');
+    const nb=document.getElementById('tr-'+id);
+    sl.addEventListener('input',()=>{nb.value=sl.value;update();});
+    nb.addEventListener('input',()=>{sl.value=nb.value;update();});
+  });
+  update();
+})();
+
+// Fill per-pair trailing matrix in Pair Detail (called after renderDetail builds the DOM)
+function fillDetailTrailMatrix(d){
+  const key=d.pair.replace(/[^a-z0-9]/gi,'_');
+  const el=document.getElementById('det-trail-matrix-'+key);
+  if(!el) return;
+  const CLOSES=[0,25,50,75,100];
+  const trades=d.raw_trades||[];
+  const base=simTrail(trades,0.45,0,0);
+  const sgn=v=>v>=0?'+':'';
+  el.innerHTML=CLOSES.map(cl=>{
+    const s=simTrail(trades,0.45,cl/100,0);
+    const dR=s.totalR-base.totalR;
+    const c=s.pf>base.pf+0.05?WIN:s.pf<base.pf-0.05?LOSS:SUB;
+    const isBase=cl===0;
+    return `<div style="background:${isBase?'var(--card2)':'var(--card)'};border:1px solid ${isBase?'var(--acc)':'var(--brd)'};border-radius:10px;padding:12px;text-align:center">
+      <div style="font-size:10px;font-weight:700;color:var(--sub);margin-bottom:8px">CLOSE ${cl}%</div>
+      <div style="font-size:18px;font-weight:800;color:${c};line-height:1">${isFinite(s.pf)?s.pf.toFixed(2):'∞'}</div>
+      <div style="font-size:10px;color:var(--sub);margin-top:2px">PF</div>
+      <div style="font-size:13px;font-weight:700;color:${s.totalR>=0?WIN:LOSS};margin-top:8px">${sgn(s.totalR)}${s.totalR.toFixed(1)}R</div>
+      ${cl>0?`<div style="font-size:10px;color:${dR>=0?WIN:LOSS}">${sgn(dR)}${dR.toFixed(1)}R vs base</div>`:'<div style="font-size:10px;color:var(--sub)">baseline</div>'}
+      <div style="font-size:10px;color:var(--sub);margin-top:4px">${s.wr.toFixed(1)}% WR</div>
+    </div>`;
+  }).join('');
+}
 </script>
 </body>
 </html>"""
