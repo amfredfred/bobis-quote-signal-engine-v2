@@ -1,3 +1,6 @@
+zones:
+  max_signal_count: 1
+  
 signal_quality:
   max_spread_to_sl_ratio: 0.35
   rrr:
