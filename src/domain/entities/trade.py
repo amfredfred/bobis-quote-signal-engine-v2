@@ -71,6 +71,7 @@ class TradeSignal:
     htf_interval: str = "1h"
     ltf_interval: str = "5min"
     zone_attempt: int = 1
+    broker: str = ""
 
     # ── Lifecycle timestamps (ms UTC) ─────────────────────────────────────────
     created_at:   int           = 0
@@ -118,6 +119,7 @@ class TradeSignal:
             "htfInterval":     self.htf_interval,
             "ltfInterval":     self.ltf_interval,
             "zoneAttempt":     self.zone_attempt,
+            "broker":          self.broker,
             "htfRange": {
                 "rangeHigh":      self.htf_range.range_high,
                 "rangeLow":       self.htf_range.range_low,
@@ -180,6 +182,7 @@ class TradeSignal:
             htf_interval           = d.get("htfInterval", "1h"),
             ltf_interval           = d.get("ltfInterval", "5min"),
             zone_attempt           = int(d.get("zoneAttempt", 1)),
+            broker                 = d.get("broker", ""),
             htf_range = HtfRange(
                 range_high       = hr["rangeHigh"],
                 range_low        = hr["rangeLow"],

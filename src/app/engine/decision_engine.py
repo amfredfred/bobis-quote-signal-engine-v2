@@ -30,6 +30,7 @@ class DecisionEngine:
         rejection: RejectionCandle,
         signal_id: str,
         profile: AssetProfile,
+        broker: str = "",
         blocked_reason: str | None = None,
     ) -> Decision:
         if blocked_reason:
@@ -42,6 +43,7 @@ class DecisionEngine:
             rejection=rejection,
             signal_id=signal_id,
             profile=profile,
+            broker=broker,
         )
         if signal is None:
             return Decision(None, "blocked", "signal_quality_gate")

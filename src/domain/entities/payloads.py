@@ -29,3 +29,4 @@ class SignalPendingPayload(TypedDict):
     pendingAt:    int
     htfInterval:  str
     ltfInterval:  str
+    broker:       str

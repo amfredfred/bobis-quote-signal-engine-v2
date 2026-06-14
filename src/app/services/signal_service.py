@@ -602,6 +602,7 @@ class SignalService:
                 rejection=rejection,
                 signal_id=signal_id,
                 profile=profile,
+                broker=self._cfg.mt5_profile,
             )
             signal = decision.signal
             if signal is None:

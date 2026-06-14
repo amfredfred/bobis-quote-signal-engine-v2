@@ -560,6 +560,7 @@ class Settings:
     mt5_server: str = ""
     mt5_timeout_ms: int = 60_000
     mt5_portable: bool = False
+    mt5_profile: str = ""
     broker_time_offset_ms: int = 0
     # Canonical → broker symbol name (e.g. {"US100": "USTEC_x100m"} for Exness).
     mt5_symbol_aliases: dict = field(default_factory=dict)
@@ -808,6 +809,7 @@ class Settings:
             **_resolve_mt5_credentials(base_cfg, config_path),
             mt5_timeout_ms=int(_get(cfg, "mt5.timeout_ms", 60_000)),
             mt5_portable=_as_bool(_get(cfg, "mt5.portable", False)),
+            mt5_profile=str(_get(base_cfg, "mt5.use", "")),
             weekend_sleep_enabled=_as_bool(_get(cfg, "market.weekend_sleep.enabled", True)),
             weekend_close_weekday=_parse_weekday(
                 _get(cfg, "market.weekend_sleep.close_weekday", "saturday"), 5

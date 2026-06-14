@@ -43,6 +43,7 @@ def build_signal(
     rejection:    RejectionCandle,
     signal_id:    str,
     profile:      AssetProfile,
+    broker:       str = "",
 ) -> Optional[TradeSignal]:
     """
     Validate and construct a TradeSignal.
@@ -147,6 +148,7 @@ def build_signal(
         risk_pips         = risk,
         htf_interval     = htf_interval,
         ltf_interval     = ltf_interval,
+        broker           = broker,
         created_at       = setup_candle_open_at,
         triggered_at     = setup_candle_close_at,
         setup_candle_open_at  = setup_candle_open_at,
