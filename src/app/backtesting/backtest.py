@@ -99,6 +99,7 @@ interval_to_minutes: callable = lru_cache(maxsize=64)(_interval_to_minutes)
 DEFAULT_START_BALANCE: float = 5_000.0
 DEFAULT_RISK_PERCENT: float = 1.0
 DEFAULT_TRAILING_GIVEBACK_PCT: float = 0.0
+SWEEP_RISK_LEVELS: list[float] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 5.0]
 
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 GREEN = "\033[92m"
@@ -120,8 +121,10 @@ def calculate_trade_accounting(
     result_r: float,
     risk_percent: float,
     peak_balance_before: float,
+    risk_basis: Optional[float] = None,
 ) -> dict:
-    risk_amount = balance_before * (risk_percent / 100)
+    # risk_basis overrides balance_before for risk sizing (used by fixed-risk mode)
+    risk_amount = (risk_basis if risk_basis is not None else balance_before) * (risk_percent / 100)
     pnl = result_r * risk_amount
     balance_after = balance_before + pnl
     peak_balance_after = max(peak_balance_before, balance_after)
@@ -253,6 +256,9 @@ class BacktestReport:
         start_balance: float = DEFAULT_START_BALANCE,
         risk_percent: float = DEFAULT_RISK_PERCENT,
         trailing_giveback_pct: float = DEFAULT_TRAILING_GIVEBACK_PCT,
+        risk_type: str = "compound",
+        max_trailing_dd_pct: Optional[float] = None,
+        max_total_loss_pct: Optional[float] = None,
     ) -> None:
         self.symbol = symbol
         self.results = results
@@ -260,20 +266,41 @@ class BacktestReport:
         self.start_balance = start_balance
         self.risk_percent = risk_percent
         self.trailing_giveback_pct = trailing_giveback_pct
+        self.risk_type = risk_type
+        self.max_trailing_dd_pct = max_trailing_dd_pct
+        self.max_total_loss_pct = max_total_loss_pct
         self._registry = AssetRegistry(cfg)
         self.profile = self._registry.get(symbol)  # base (combined summary)
 
     def _compute_accounting(
-        self, results: list[BacktestResult]
+        self,
+        results: list[BacktestResult],
+        *,
+        risk_percent: Optional[float] = None,
+        risk_type: Optional[str] = None,
+        max_trailing_dd_pct: Optional[float] = None,
+        max_total_loss_pct: Optional[float] = None,
     ) -> tuple[list[dict], dict]:
-        """Compute per-trade accounting and aggregate summary for a result subset."""
+        """Compute per-trade accounting and aggregate summary for a result subset.
+
+        Optional overrides allow the sweep to re-run with different risk parameters
+        without mutating the report object.
+        """
+        rp = risk_percent if risk_percent is not None else self.risk_percent
+        rt = risk_type if risk_type is not None else self.risk_type
+        mtr = max_trailing_dd_pct if max_trailing_dd_pct is not None else self.max_trailing_dd_pct
+        mtl = max_total_loss_pct if max_total_loss_pct is not None else self.max_total_loss_pct
+
         balance = self.start_balance
         peak = self.start_balance
         max_dd = 0.0
         max_dd_pct = 0.0
+        fixed_basis = self.start_balance if rt == "fixed" else None
+        total_floor = self.start_balance * (1 - mtl / 100) if mtl is not None else None
+        blown_info: Optional[dict] = None
 
         per_trade: list[dict] = []
-        for r in results:
+        for idx, r in enumerate(results):
             raw_rr = r.realized_rr
             s = r.signal
             entry = s.entry_price
@@ -282,9 +309,43 @@ class BacktestReport:
             acct = calculate_trade_accounting(
                 balance_before=balance,
                 result_r=raw_rr,
-                risk_percent=self.risk_percent,
+                risk_percent=rp,
                 peak_balance_before=peak,
+                risk_basis=fixed_basis,
             )
+
+            # ── Kill-condition check ──────────────────────────────────────────
+            _trade_date = (
+                datetime.datetime.fromtimestamp(r.close_ts / 1000, tz=datetime.timezone.utc)
+                .strftime("%Y-%m-%d")
+                if r.close_ts
+                else "?"
+            )
+            blown_by: Optional[str] = None
+            if mtr is not None:
+                trailing_floor = acct["peak_balance_after"] * (1 - mtr / 100)
+                if acct["balance_after"] < trailing_floor:
+                    blown_by = "trailing_dd"
+                    blown_info = {
+                        "reason": f"trailing DD >{mtr}%",
+                        "trade_index": idx,
+                        "trade_date": _trade_date,
+                        "balance_at_blow": acct["balance_after"],
+                        "floor": trailing_floor,
+                        "peak_at_blow": acct["peak_balance_after"],
+                    }
+            if blown_by is None and total_floor is not None:
+                if acct["balance_after"] < total_floor:
+                    blown_by = "total_loss"
+                    blown_info = {
+                        "reason": f"total loss >{mtl}%",
+                        "trade_index": idx,
+                        "trade_date": _trade_date,
+                        "balance_at_blow": acct["balance_after"],
+                        "floor": total_floor,
+                        "peak_at_blow": acct["peak_balance_after"],
+                    }
+
             per_trade.append({
                 "balance_before": balance,
                 **acct,
@@ -294,11 +355,15 @@ class BacktestReport:
                 "executed_entry_price": entry,
                 "raw_exit_price": exit_px,
                 "executed_exit_price": exit_px,
+                "blown": blown_by is not None,
             })
             balance = acct["balance_after"]
             peak = acct["peak_balance_after"]
             max_dd = max(max_dd, acct["drawdown_after"])
             max_dd_pct = max(max_dd_pct, acct["drawdown_pct_after"])
+
+            if blown_by:
+                break  # stop simulating after account is blown
 
         final = balance
         net_pnl = final - self.start_balance
@@ -326,6 +391,7 @@ class BacktestReport:
             "avg_loss_pnl": sum(losses_pnl) / len(losses_pnl) if losses_pnl else 0.0,
             "best_trade_pnl": max(pnls) if pnls else 0.0,
             "worst_trade_pnl": min(pnls) if pnls else 0.0,
+            "blown": blown_info,
         }
         return per_trade, summary
 
@@ -357,6 +423,75 @@ class BacktestReport:
                 }
             )
         return curve
+
+    def print_risk_sweep(
+        self,
+        levels: Optional[list[float]] = None,
+        max_trailing_dd_pct: Optional[float] = None,
+        max_total_loss_pct: Optional[float] = None,
+    ) -> None:
+        """Print a table showing outcomes at multiple risk% levels."""
+        if not self.results:
+            return
+        levels = levels or SWEEP_RISK_LEVELS
+        mtr = max_trailing_dd_pct if max_trailing_dd_pct is not None else self.max_trailing_dd_pct
+        mtl = max_total_loss_pct if max_total_loss_pct is not None else self.max_total_loss_pct
+
+        kill_desc = []
+        if mtr is not None:
+            kill_desc.append(f"trailing DD >{mtr}%")
+        if mtl is not None:
+            kill_desc.append(f"total loss >{mtl}%")
+        kill_label = "  kill: " + " + ".join(kill_desc) if kill_desc else "  no kill conditions"
+
+        W, R = BOLD, RESET
+        sep = "─" * 78
+        print(f"\n{W}{sep}{R}")
+        print(f"{W} RISK SWEEP · {self.symbol} · start {_fmt_currency_plain(self.start_balance)}{R}")
+        print(f" {DIM}{kill_label}{RESET}")
+        print(sep)
+        print(
+            f" {'Risk%':>6}  {'Final Bal':>12}  {'Return%':>9}  "
+            f"{'Max DD $':>10}  {'Max DD%':>7}  {'Trades':>7}  Status"
+        )
+        print(f" {'─'*6}  {'─'*12}  {'─'*9}  {'─'*10}  {'─'*7}  {'─'*7}  {'─'*14}")
+
+        first_blown: Optional[float] = None
+        for rp in levels:
+            _, acct = self._compute_accounting(
+                self.results,
+                risk_percent=rp,
+                max_trailing_dd_pct=mtr,
+                max_total_loss_pct=mtl,
+            )
+            blown = acct.get("blown")
+            if blown and first_blown is None:
+                first_blown = rp
+
+            trades_run = sum(1 for t in self.results)  # total signals
+            if blown:
+                trades_run = blown["trade_index"] + 1
+
+            status_col = RED if blown else GREEN
+            status = f"✗ BLOWN ({blown['trade_date']})" if blown else "✓ SURVIVED"
+            net_col = GREEN if acct["net_pnl"] >= 0 else RED
+            current = "◄" if abs(rp - self.risk_percent) < 0.001 else ""
+
+            print(
+                f" {rp:>5.2f}%  "
+                f"{net_col}{_fmt_currency_plain(acct['final_balance']):>12}{RESET}  "
+                f"{net_col}{acct['net_pnl_pct']:>+8.1f}%{RESET}  "
+                f"{RED}-{_fmt_currency_plain(acct['max_drawdown']):>9}{RESET}  "
+                f"{RED}-{acct['max_drawdown_pct']:>6.2f}%{RESET}  "
+                f"{trades_run:>7}  "
+                f"{status_col}{status}{RESET} {DIM}{current}{RESET}"
+            )
+
+        if first_blown is not None:
+            print(f"\n {YELLOW}First blow at {first_blown:g}% risk{RESET}")
+        else:
+            print(f"\n {GREEN}No blows across all risk levels{RESET}")
+        print(sep)
 
     def print(self) -> None:
         if not self.results:
@@ -415,8 +550,21 @@ class BacktestReport:
         print(sep)
 
         if not compact:
+            # ── Blow warning ───────────────────────────────────────────────
+            if acct.get("blown"):
+                bi = acct["blown"]
+                print(
+                    f"\n {RED}{BOLD}⚠  ACCOUNT BLOWN  —  {bi['reason'].upper()}{RESET}"
+                )
+                print(
+                    f" {RED}   Trade #{bi['trade_index'] + 1} on {bi['trade_date']}:"
+                    f" balance {_fmt_currency_plain(bi['balance_at_blow'])}"
+                    f" fell below floor {_fmt_currency_plain(bi['floor'])}"
+                    f" (peak was {_fmt_currency_plain(bi['peak_at_blow'])}){RESET}\n"
+                )
+
             # ── Account performance (primary) ──────────────────────────────
-            risk_label = f"{self.risk_percent:g}% risk/trade"
+            risk_label = f"{self.risk_percent:g}% risk/trade ({self.risk_type})"
             net_col = GREEN if acct["net_pnl"] >= 0 else RED
             dd_col = RED if acct["max_drawdown"] > 0 else DIM
             print(f" {'ACCOUNT SIMULATION':<32} {DIM}({risk_label}){R}")
@@ -647,6 +795,9 @@ class MultiPairBacktester:
         start_balance: float = DEFAULT_START_BALANCE,
         risk_percent: float = DEFAULT_RISK_PERCENT,
         trailing_giveback_pct: float = DEFAULT_TRAILING_GIVEBACK_PCT,
+        risk_type: str = "compound",
+        max_trailing_dd_pct: Optional[float] = None,
+        max_total_loss_pct: Optional[float] = None,
         trace_out: Optional[str] = None,
     ) -> None:
         # Validate account simulation inputs
@@ -676,6 +827,9 @@ class MultiPairBacktester:
         self.start_balance = start_balance
         self.risk_percent = risk_percent
         self.trailing_giveback_pct = trailing_giveback_pct
+        self.risk_type = risk_type
+        self.max_trailing_dd_pct = max_trailing_dd_pct
+        self.max_total_loss_pct = max_total_loss_pct
         self.trace_out = trace_out
         self._trace_writer: Optional[ParityTraceWriter] = None
         self._registry = AssetRegistry(cfg)
@@ -1054,6 +1208,9 @@ class MultiPairBacktester:
             start_balance=self.start_balance,
             risk_percent=self.risk_percent,
             trailing_giveback_pct=self.trailing_giveback_pct,
+            risk_type=self.risk_type,
+            max_trailing_dd_pct=self.max_trailing_dd_pct,
+            max_total_loss_pct=self.max_total_loss_pct,
         )
         report.print()
         return report
@@ -1501,6 +1658,36 @@ def main() -> None:
         dest="trace_out",
         help="Write deterministic backtest parity trace JSONL to this path",
     )
+    p.add_argument(
+        "--risk-type",
+        dest="risk_type",
+        type=lambda s: s.strip(),
+        choices=["compound", "fixed"],
+        default="compound",
+        help="compound: risk %% of current balance each trade (default); fixed: risk %% of start balance always",
+    )
+    p.add_argument(
+        "--max-trailing-dd-pct",
+        dest="max_trailing_dd_pct",
+        type=float,
+        default=None,
+        metavar="N",
+        help="Kill account when balance drops below peak × (1 - N/100). E.g. 6 for FundedNext Stellar.",
+    )
+    p.add_argument(
+        "--max-total-loss-pct",
+        dest="max_total_loss_pct",
+        type=float,
+        default=None,
+        metavar="N",
+        help="Kill account when balance drops below start_balance × (1 - N/100). E.g. 10 for a 10%% max loss rule.",
+    )
+    p.add_argument(
+        "--risk-sweep",
+        dest="risk_sweep",
+        action="store_true",
+        help="Run the same trade sequence at multiple risk%% levels and print a survival table.",
+    )
     p.add_argument("--verbose", action="store_true")
     p.add_argument(
         "--streak-analysis",
@@ -1634,12 +1821,18 @@ def main() -> None:
             else DEFAULT_RISK_PERCENT
         ),
         trailing_giveback_pct=trailing_giveback_pct,
+        risk_type=args.risk_type,
+        max_trailing_dd_pct=args.max_trailing_dd_pct,
+        max_total_loss_pct=args.max_total_loss_pct,
         trace_out=args.trace_out,
     )
     report = bt.run()
 
     if args.streak_analysis:
         report.print_streak_analysis()
+
+    if args.risk_sweep:
+        report.print_risk_sweep()
 
     if args.output:
         if args.output.endswith(".json"):

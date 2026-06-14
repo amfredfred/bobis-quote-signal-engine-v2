@@ -3,9 +3,9 @@
 # Full validation backtest — all 5 pairs, 3-year window.
 # Uses config.yaml settings (min_rr=8, max_rr=3 per symbol via rrr block).
 
-$FROM   = "2023-01-01"
-$TO     = "2025-12-31"
-$OUTDIR = "results\3yr-validation"
+$FROM   = "2026-01-01"
+$TO     = "2026-06-13"
+$OUTDIR = "results\exness-6m-validation"
 $null   = New-Item -ItemType Directory -Force $OUTDIR
 
 $symbols = @("XAUUSD", "US100", "EURUSD", "GBPUSD", "USDJPY")
@@ -15,9 +15,16 @@ $jobs = $symbols | ForEach-Object {
     $sym = $_
     Start-Job -ScriptBlock {
         param($s, $dir, $from, $to, $out)
+        $env:PYTHONUTF8 = "1"
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $OutputEncoding            = [System.Text.Encoding]::UTF8
         Set-Location $dir
         & "$dir\venv\Scripts\python.exe" -m src.app.backtesting.backtest `
             --symbol     $s `
+            --risk-percent 0.2 `
+            --start-balance 5000 `
+            --max-trailing-dd-pct 3 `
+            --risk-sweep `
             --from-date  $from `
             --to-date    $to `
             --output     "$out\$s.csv" `

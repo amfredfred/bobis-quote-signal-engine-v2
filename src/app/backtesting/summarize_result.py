@@ -603,7 +603,7 @@ combined_monthly: dict = defaultdict(
     lambda: {"r": 0.0, "trades": 0, "w": 0, "l": 0, "b": 0}
 )
 combined_daily: dict = defaultdict(
-    lambda: {"r": 0.0, "w": 0, "l": 0, "b": 0, "pairs": []}
+    lambda: {"r": 0.0, "pnl": 0.0, "w": 0, "l": 0, "b": 0, "pairs": []}
 )
 tf_pair_stats: dict = defaultdict(
     lambda: {"r": 0.0, "trades": 0, "w": 0, "l": 0, "b": 0, "equity": []}
@@ -639,6 +639,7 @@ for path in sorted(results_dir.rglob("*.csv")):
                     combined_monthly[ym]["b"] += 1
             if date:
                 combined_daily[date]["r"] += rr
+                combined_daily[date]["pnl"] += float(r.get("pnl", 0) or 0)
                 if r["outcome"] == "WIN_FULL":
                     combined_daily[date]["w"] += 1
                 elif r["outcome"] == "LOSS":
@@ -651,6 +652,7 @@ for path in sorted(results_dir.rglob("*.csv")):
                         "dir": r.get("direction", ""),
                         "outcome": r["outcome"],
                         "rr": round(rr, 3),
+                        "pnl": round(float(r.get("pnl", 0) or 0), 2),
                         "entry": r.get("entry_dt", "")[11:16],
                     }
                 )
@@ -904,6 +906,7 @@ data_json = json.dumps(
         "combined_daily": {
             k: {
                 "r": round(v["r"], 3),
+                "pnl": round(v["pnl"], 2),
                 "w": v["w"],
                 "l": v["l"],
                 "b": v["b"],
@@ -1353,6 +1356,7 @@ tbody tr:hover td{background:#f4f6ff;}
   <button class="ntab"    data-v="correlation">Correlation</button>
   <button class="ntab"    data-v="risk">Risk Calc</button>
   <button class="ntab"    data-v="sameday">Same-Day</button>
+  <button class="ntab"    data-v="dollar">Dollar Equity</button>
   <button class="ntab"    data-v="detail">Pair Detail</button>
 </div>
 
@@ -1368,6 +1372,7 @@ tbody tr:hover td{background:#f4f6ff;}
 <div id="v-correlation" class="view"></div>
 <div id="v-risk"        class="view"></div>
 <div id="v-sameday"     class="view"></div>
+<div id="v-dollar"      class="view"></div>
 <div id="v-detail"      class="view"></div>
 
 <div id="cal-tip" style="display:none;position:fixed;z-index:999;background:var(--card);border:1px solid var(--brd2);border-radius:12px;padding:16px 20px;box-shadow:0 8px 28px rgba(0,0,0,.13);min-width:210px;pointer-events:none;font-size:14px;line-height:1.6"></div>
@@ -1733,93 +1738,179 @@ function renderRRDist(id,buckets){
 (function(){
   const el=document.getElementById('v-calendar');
   const tip=document.getElementById('cal-tip');
-  function dbg(r,n){ if(!n) return '#f0f2f5'; if(r>6) return '#b8ecd4'; if(r>2) return '#d4f0e4'; if(r>0) return '#eaf8f1'; if(r<-2) return '#f7cece'; if(r<0) return '#fdeaea'; return '#f7f8fa'; }
-  function dfg(r,n){ if(!n) return DIM; if(r>2) return '#0a7a44'; if(r>0) return '#0d8a4e'; if(r<-1) return '#a01818'; if(r<0) return '#b83030'; return SUB; }
+  const hasDollar=Object.values(CD).some(d=>d.pnl!==undefined&&d.pnl!==0)||D.some(d=>d.dollar_stats);
+  let _mode='r'; // 'r' or '$'
+
+  // colour helpers — R mode
+  function dbgR(r,n){ if(!n) return '#f0f2f5'; if(r>6) return '#b8ecd4'; if(r>2) return '#d4f0e4'; if(r>0) return '#eaf8f1'; if(r<-2) return '#f7cece'; if(r<0) return '#fdeaea'; return '#f7f8fa'; }
+  function dfgR(r,n){ if(!n) return DIM; if(r>2) return '#0a7a44'; if(r>0) return '#0d8a4e'; if(r<-1) return '#a01818'; if(r<0) return '#b83030'; return SUB; }
+  // colour helpers — $ mode (thresholds relative to start balance; fall back to ±$100)
+  const _sb=(()=>{ const d=D.find(x=>x.dollar_stats); return d?d.dollar_stats.start_balance:5000; })();
+  const _t2=_sb*0.02, _t1=0, _tn1=-_sb*0.01, _tn2=-_sb*0.02;
+  function dbgD(v,n){ if(!n) return '#f0f2f5'; if(v>_t2) return '#b8ecd4'; if(v>_t1) return '#eaf8f1'; if(v<_tn2) return '#f7cece'; if(v<_tn1) return '#fdeaea'; return '#f7f8fa'; }
+  function dfgD(v,n){ if(!n) return DIM; if(v>_t2) return '#0a7a44'; if(v>0) return '#0d8a4e'; if(v<_tn2) return '#a01818'; if(v<0) return '#b83030'; return SUB; }
+  function fmtD(v){ return (v>=0?'+':'')+'\$'+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0}); }
 
   el.innerHTML=`
   <div class="sh">Daily P&amp;L Calendar — hover to preview · click to expand</div>
   <div class="cal-detail" id="cal-detail"><div style="color:var(--sub);font-size:14px">Click any trade day to see its breakdown.</div></div>
-  <div style="display:flex;align-items:center;gap:18px;margin-bottom:20px;flex-wrap:wrap;font-size:13px;color:var(--sub)">
-    <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#b8ecd4;border:1px solid #9edfc2"></div>&gt;2R profit</div>
-    <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#eaf8f1;border:1px solid #b6e8d0"></div>Profit</div>
-    <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#fdeaea;border:1px solid #f5b8b8"></div>Loss</div>
-    <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#f7cece;border:1px solid #f0a0a0"></div>&lt;-2R loss</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;margin-bottom:20px">
+    <div id="cal-legend" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--sub)"></div>
+    ${hasDollar?`<div style="display:flex;gap:0;border:1px solid var(--brd2);border-radius:8px;overflow:hidden;font-size:12px;font-weight:700">
+      <button id="cal-togR" onclick="window._calToggle('r')" style="padding:6px 14px;border:none;background:var(--acc);color:#fff;cursor:pointer">R</button>
+      <button id="cal-togD" onclick="window._calToggle('\$')" style="padding:6px 14px;border:none;background:var(--card);color:var(--sub);cursor:pointer">\$</button>
+    </div>`:''}
   </div>
   <div class="cal-wrap" id="cal-wrap"></div>`;
 
   const wrap=document.getElementById('cal-wrap');
   const detEl=document.getElementById('cal-detail');
+  const legEl=document.getElementById('cal-legend');
   const allDates=Object.keys(CD).sort();
   if(!allDates.length){ wrap.innerHTML='<p style="color:var(--sub)">No entry_dt data.</p>'; return; }
   const years=[...new Set(allDates.map(d=>d.slice(0,4)))].sort();
 
-  years.forEach(yr=>{
-    const ydiv=document.createElement('div'); ydiv.style.marginBottom='22px';
-    ydiv.innerHTML=`<div style="font-size:14px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.1em;margin-bottom:14px">${yr}</div><div class="cal-months" id="cal-${yr}"></div>`;
-    wrap.appendChild(ydiv);
-    const mWrap=document.getElementById('cal-'+yr);
-    for(let mo=0;mo<12;mo++){
-      const ym=`${yr}-${String(mo+1).padStart(2,'0')}`;
-      if(!allDates.some(d=>d.startsWith(ym))) continue;
-      const mDiv=document.createElement('div'); mDiv.className='cal-month';
-      mDiv.innerHTML=`<div class="cal-month-title">${MONTHS[mo]} ${yr}</div>
-        <div class="cal-dow">${['M','T','W','T','F','S','S'].map(d=>`<span>${d}</span>`).join('')}</div>
-        <div class="cal-days" id="cd-${yr}-${mo}"></div>`;
-      mWrap.appendChild(mDiv);
-      const grid=document.getElementById(`cd-${yr}-${mo}`);
-      const off=(new Date(yr,mo,1).getDay()+6)%7;
-      const dim=new Date(yr,mo+1,0).getDate();
-      for(let e=0;e<off;e++){ const x=document.createElement('div'); x.className='cal-empty'; grid.appendChild(x); }
-      for(let d=1;d<=dim;d++){
-        const ds=`${yr}-${String(mo+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-        const day=CD[ds];
-        const cell=document.createElement('div');
-        cell.className='cal-day'+(day?' has-trades':'');
-        if(!day){
-          cell.style.background='#f0f2f5';
-          cell.innerHTML=`<span class="dn" style="color:${DIM}">${d}</span>`;
-        } else {
-          const val=day.r, tot=day.w+day.b+day.l;
-          cell.style.cssText=`background:${dbg(val,1)};border:1px solid ${val>=0?'#b6e8d0':'#f5b8b8'}`;
-          cell.innerHTML=`<span class="dn" style="color:${dfg(val,1)}">${d}</span>
-            <span class="dr" style="color:${dfg(val,1)}">${(val>=0?'+':'')+val.toFixed(1)}R</span>
-            <span class="dt" style="color:${dfg(val,1)}">${tot}t</span>`;
-          cell.addEventListener('mouseenter',()=>{
-            tip.innerHTML=`<div style="font-size:11px;font-weight:700;color:var(--sub);margin-bottom:6px">${ds}</div>
-              <div style="font-size:24px;font-weight:800;color:${val>=0?WIN:LOSS};margin-bottom:10px">${(val>=0?'+':'')+val.toFixed(2)}R</div>
-              <div style="display:flex;gap:14px;font-size:14px;font-weight:700">
-                <span style="color:${WIN}">W: ${day.w}</span><span style="color:${BE}">BE: ${day.b}</span><span style="color:${LOSS}">L: ${day.l}</span>
-              </div><div style="font-size:12px;color:var(--sub);margin-top:6px">${tot} trade${tot!==1?'s':''}</div>`;
-            tip.style.display='block';
-          });
-          cell.addEventListener('mousemove',e=>{
-            const x=e.clientX+16,y=e.clientY-10;
-            tip.style.left=(x+240>window.innerWidth?x-260:x)+'px'; tip.style.top=y+'px';
-          });
-          cell.addEventListener('mouseleave',()=>tip.style.display='none');
-          cell.addEventListener('click',()=>{
-            const rc=val>=0?WIN:LOSS;
-            const r2=ratesFromCounts(day.w,day.b,day.l);
-            let pillsHtml=(day.pairs||[]).map(t=>{
-              const cls=t.outcome==='WIN_FULL'?'win':t.outcome==='LOSS'?'loss':'be';
-              return `<div class="tpill ${cls}">${t.dir==='LONG'?'↑':'↓'} ${t.pair} ${t.entry} ${(t.rr>=0?'+':'')+t.rr.toFixed(2)}R</div>`;
-            }).join('');
-            detEl.innerHTML=`<div style="font-size:17px;font-weight:800;margin-bottom:10px">${ds}
-              <span style="color:${rc};margin-left:12px">${(val>=0?'+':'')+val.toFixed(2)}R</span>
-              <span style="font-size:13px;color:var(--sub);margin-left:8px;font-weight:400">${tot} trades</span></div>
-              <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
-                ${rateTrio(r2.wr,r2.ber,r2.lr)}
-                <span style="color:${WIN};font-size:14px;font-weight:700">✓ ${day.w} W</span>
-                <span style="color:${BE};font-size:14px;font-weight:700">≈ ${day.b} BE</span>
-                <span style="color:${LOSS};font-size:14px;font-weight:700">✕ ${day.l} L</span>
-              </div><div style="display:flex;flex-wrap:wrap;gap:6px">${pillsHtml}</div>`;
-            detEl.scrollIntoView({behavior:'smooth',block:'nearest'});
-          });
-        }
-        grid.appendChild(cell);
-      }
+  function setLegend(mode){
+    if(mode==='r'){
+      legEl.innerHTML=`
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#b8ecd4;border:1px solid #9edfc2"></div>&gt;2R profit</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#eaf8f1;border:1px solid #b6e8d0"></div>Profit</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#fdeaea;border:1px solid #f5b8b8"></div>Loss</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#f7cece;border:1px solid #f0a0a0"></div>&lt;-2R loss</div>`;
+    } else {
+      const t2s='\$'+Math.round(_t2).toLocaleString(), tn2s='-\$'+Math.round(Math.abs(_tn2)).toLocaleString();
+      legEl.innerHTML=`
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#b8ecd4;border:1px solid #9edfc2"></div>&gt;${t2s}</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#eaf8f1;border:1px solid #b6e8d0"></div>Profit</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#fdeaea;border:1px solid #f5b8b8"></div>Loss</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:18px;height:18px;border-radius:4px;background:#f7cece;border:1px solid #f0a0a0"></div>&lt;${tn2s}</div>`;
     }
-  });
+  }
+  setLegend('r');
+
+  function buildCalendar(mode){
+    wrap.innerHTML='';
+    years.forEach(yr=>{
+      const ydiv=document.createElement('div'); ydiv.style.marginBottom='22px';
+      ydiv.innerHTML=`<div style="font-size:14px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.1em;margin-bottom:14px">${yr}</div><div class="cal-months" id="cal-${yr}"></div>`;
+      wrap.appendChild(ydiv);
+      const mWrap=document.getElementById('cal-'+yr);
+      for(let mo=0;mo<12;mo++){
+        const ym=`${yr}-${String(mo+1).padStart(2,'0')}`;
+        if(!allDates.some(d=>d.startsWith(ym))) continue;
+        const mDiv=document.createElement('div'); mDiv.className='cal-month';
+        mDiv.innerHTML=`<div class="cal-month-title">${MONTHS[mo]} ${yr}</div>
+          <div class="cal-dow">${['M','T','W','T','F','S','S'].map(x=>`<span>${x}</span>`).join('')}</div>
+          <div class="cal-days" id="cd-${yr}-${mo}"></div>`;
+        mWrap.appendChild(mDiv);
+        const grid=document.getElementById(`cd-${yr}-${mo}`);
+        const off=(new Date(yr,mo,1).getDay()+6)%7;
+        const dim=new Date(yr,mo+1,0).getDate();
+        for(let e=0;e<off;e++){ const x=document.createElement('div'); x.className='cal-empty'; grid.appendChild(x); }
+        for(let d=1;d<=dim;d++){
+          const ds=`${yr}-${String(mo+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+          const day=CD[ds];
+          const cell=document.createElement('div');
+          cell.className='cal-day'+(day?' has-trades':'');
+          if(!day){
+            cell.style.background='#f0f2f5';
+            cell.innerHTML=`<span class="dn" style="color:${DIM}">${d}</span>`;
+          } else {
+            const tot=day.w+day.b+day.l;
+            if(mode==='r'){
+              const val=day.r;
+              cell.style.cssText=`background:${dbgR(val,1)};border:1px solid ${val>=0?'#b6e8d0':'#f5b8b8'}`;
+              cell.innerHTML=`<span class="dn" style="color:${dfgR(val,1)}">${d}</span>
+                <span class="dr" style="color:${dfgR(val,1)}">${(val>=0?'+':'')+val.toFixed(1)}R</span>
+                <span class="dt" style="color:${dfgR(val,1)}">${tot}t</span>`;
+              cell.addEventListener('mouseenter',()=>{
+                tip.innerHTML=`<div style="font-size:11px;font-weight:700;color:var(--sub);margin-bottom:6px">${ds}</div>
+                  <div style="font-size:24px;font-weight:800;color:${val>=0?WIN:LOSS};margin-bottom:10px">${(val>=0?'+':'')+val.toFixed(2)}R</div>
+                  <div style="display:flex;gap:14px;font-size:14px;font-weight:700">
+                    <span style="color:${WIN}">W: ${day.w}</span><span style="color:${BE}">BE: ${day.b}</span><span style="color:${LOSS}">L: ${day.l}</span>
+                  </div><div style="font-size:12px;color:var(--sub);margin-top:6px">${tot} trade${tot!==1?'s':''}</div>`;
+                tip.style.display='block';
+              });
+              cell.addEventListener('click',()=>{
+                const rc=val>=0?WIN:LOSS;
+                const r2=ratesFromCounts(day.w,day.b,day.l);
+                const pillsHtml=(day.pairs||[]).map(t=>{
+                  const cls=t.outcome==='WIN_FULL'?'win':t.outcome==='LOSS'?'loss':'be';
+                  return `<div class="tpill ${cls}">${t.dir==='LONG'?'↑':'↓'} ${t.pair} ${t.entry} ${(t.rr>=0?'+':'')+t.rr.toFixed(2)}R</div>`;
+                }).join('');
+                detEl.innerHTML=`<div style="font-size:17px;font-weight:800;margin-bottom:10px">${ds}
+                  <span style="color:${rc};margin-left:12px">${(val>=0?'+':'')+val.toFixed(2)}R</span>
+                  <span style="font-size:13px;color:var(--sub);margin-left:8px;font-weight:400">${tot} trades</span></div>
+                  <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
+                    ${rateTrio(r2.wr,r2.ber,r2.lr)}
+                    <span style="color:${WIN};font-size:14px;font-weight:700">✓ ${day.w} W</span>
+                    <span style="color:${BE};font-size:14px;font-weight:700">≈ ${day.b} BE</span>
+                    <span style="color:${LOSS};font-size:14px;font-weight:700">✕ ${day.l} L</span>
+                  </div><div style="display:flex;flex-wrap:wrap;gap:6px">${pillsHtml}</div>`;
+                detEl.scrollIntoView({behavior:'smooth',block:'nearest'});
+              });
+            } else {
+              const val=day.pnl||0;
+              cell.style.cssText=`background:${dbgD(val,1)};border:1px solid ${val>=0?'#b6e8d0':'#f5b8b8'}`;
+              const short=Math.abs(val)>=1000?((val>=0?'+':'-')+'\$'+Math.round(Math.abs(val)/100)/10+'k'):(fmtD(val));
+              cell.innerHTML=`<span class="dn" style="color:${dfgD(val,1)}">${d}</span>
+                <span class="dr" style="color:${dfgD(val,1)};font-size:10px">${short}</span>
+                <span class="dt" style="color:${dfgD(val,1)};font-size:9px">${tot}t</span>`;
+              cell.addEventListener('mouseenter',()=>{
+                tip.innerHTML=`<div style="font-size:11px;font-weight:700;color:var(--sub);margin-bottom:6px">${ds}</div>
+                  <div style="font-size:24px;font-weight:800;color:${val>=0?WIN:LOSS};margin-bottom:4px">${fmtD(val)}</div>
+                  <div style="font-size:13px;color:var(--sub);margin-bottom:10px">${(day.r>=0?'+':'')+day.r.toFixed(2)}R</div>
+                  <div style="display:flex;gap:14px;font-size:14px;font-weight:700">
+                    <span style="color:${WIN}">W: ${day.w}</span><span style="color:${BE}">BE: ${day.b}</span><span style="color:${LOSS}">L: ${day.l}</span>
+                  </div><div style="font-size:12px;color:var(--sub);margin-top:6px">${tot} trade${tot!==1?'s':''}</div>`;
+                tip.style.display='block';
+              });
+              cell.addEventListener('click',()=>{
+                const rc=val>=0?WIN:LOSS;
+                const r2=ratesFromCounts(day.w,day.b,day.l);
+                const pillsHtml=(day.pairs||[]).map(t=>{
+                  const cls=t.outcome==='WIN_FULL'?'win':t.outcome==='LOSS'?'loss':'be';
+                  const dstr=t.pnl!=null?` <span style="font-size:10px;opacity:.8">${(t.pnl>=0?'+':'')+'\$'+Math.abs(t.pnl).toFixed(0)}</span>`:'';
+                  return `<div class="tpill ${cls}">${t.dir==='LONG'?'↑':'↓'} ${t.pair} ${t.entry} ${(t.rr>=0?'+':'')+t.rr.toFixed(2)}R${dstr}</div>`;
+                }).join('');
+                detEl.innerHTML=`<div style="font-size:17px;font-weight:800;margin-bottom:10px">${ds}
+                  <span style="color:${rc};margin-left:12px">${fmtD(val)}</span>
+                  <span style="color:var(--sub);font-size:14px;font-weight:400;margin-left:8px">${(day.r>=0?'+':'')+day.r.toFixed(2)}R</span>
+                  <span style="font-size:13px;color:var(--sub);margin-left:8px;font-weight:400">${tot} trades</span></div>
+                  <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
+                    ${rateTrio(r2.wr,r2.ber,r2.lr)}
+                    <span style="color:${WIN};font-size:14px;font-weight:700">✓ ${day.w} W</span>
+                    <span style="color:${BE};font-size:14px;font-weight:700">≈ ${day.b} BE</span>
+                    <span style="color:${LOSS};font-size:14px;font-weight:700">✕ ${day.l} L</span>
+                  </div><div style="display:flex;flex-wrap:wrap;gap:6px">${pillsHtml}</div>`;
+                detEl.scrollIntoView({behavior:'smooth',block:'nearest'});
+              });
+            }
+            cell.addEventListener('mousemove',e=>{
+              const x=e.clientX+16,y=e.clientY-10;
+              tip.style.left=(x+240>window.innerWidth?x-260:x)+'px'; tip.style.top=y+'px';
+            });
+            cell.addEventListener('mouseleave',()=>tip.style.display='none');
+          }
+          grid.appendChild(cell);
+        }
+      }
+    });
+  }
+
+  buildCalendar('r');
+
+  window._calToggle=function(mode){
+    _mode=mode==='r'?'r':'$';
+    setLegend(_mode);
+    buildCalendar(_mode);
+    detEl.innerHTML='<div style="color:var(--sub);font-size:14px">Click any trade day to see its breakdown.</div>';
+    const togR=document.getElementById('cal-togR'), togD=document.getElementById('cal-togD');
+    if(togR&&togD){
+      togR.style.background=_mode==='r'?'var(--acc)':'var(--card)'; togR.style.color=_mode==='r'?'#fff':'var(--sub)';
+      togD.style.background=_mode==='$'?'var(--acc)':'var(--card)'; togD.style.color=_mode==='$'?'#fff':'var(--sub)';
+    }
+  };
 })();
 
 // ════════════════════════════════════════════════════════════════════════
@@ -1839,6 +1930,97 @@ function renderRRDist(id,buckets){
     grid.appendChild(box);
   });
   setTimeout(()=>D.forEach((d,i)=>drawLine('eq-'+i,d.equity,d.total_r>=0?WIN:LOSS,150)),80);
+})();
+
+// ════════════════════════════════════════════════════════════════════════
+// DOLLAR EQUITY
+// ════════════════════════════════════════════════════════════════════════
+(function(){
+  const el=document.getElementById('v-dollar');
+  const hasDollar=D.some(d=>d.dollar_stats);
+  if(!hasDollar){
+    el.innerHTML=`<div class="sh">Dollar Equity</div>
+      <div class="cbox" style="padding:48px;text-align:center;color:var(--sub)">
+        No dollar data — run the backtest with a starting balance configured.
+      </div>`;
+    return;
+  }
+
+  // Summary KPI row
+  const totalPnl=D.reduce((s,d)=>s+(d.dollar_stats?.net_pnl||0),0);
+  const startBal=D.find(d=>d.dollar_stats)?.dollar_stats?.start_balance||0;
+  const finalBal=startBal+totalPnl;
+  const pctGain=startBal>0?(totalPnl/startBal*100):0;
+  const worstDD=Math.max(...D.map(d=>d.dollar_stats?.max_drawdown_dollar||0));
+  const worstDDpct=Math.max(...D.map(d=>d.dollar_stats?.max_drawdown_dollar_pct||0));
+
+  el.innerHTML=`
+  <div class="sh">Dollar Performance</div>
+  <div class="kpis" style="margin-bottom:24px">
+    <div class="kpi"><div class="kv" style="color:${totalPnl>=0?WIN:LOSS}">${totalPnl>=0?'+':''}$${Math.abs(totalPnl).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div class="kl">Net P&amp;L</div></div>
+    <div class="kpi"><div class="kv" style="color:${pctGain>=0?WIN:LOSS}">${pctGain>=0?'+':''}${pctGain.toFixed(2)}%</div><div class="kl">Return</div></div>
+    <div class="kpi"><div class="kv">$${startBal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div class="kl">Start Balance</div></div>
+    <div class="kpi"><div class="kv">$${finalBal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div class="kl">End Balance</div></div>
+    <div class="kpi"><div class="kv" style="color:${LOSS}">-$${worstDD.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div class="kl">Max DD $</div></div>
+    <div class="kpi"><div class="kv" style="color:${LOSS}">${worstDDpct.toFixed(2)}%</div><div class="kl">Max DD %</div></div>
+  </div>
+  <div class="sh">Per-Symbol Dollar Equity Curves</div>
+  <div class="grid2" id="dollar-eq-grid"></div>
+  <div class="sh" style="margin-top:8px">Per-Symbol Dollar Summary</div>
+  <div class="tbl-wrap"><table>
+    <thead><tr>
+      <th>Pair</th><th>Start $</th><th>End $</th><th>Net P&amp;L</th><th>Return %</th>
+      <th>Gross Profit</th><th>Gross Loss</th><th>PF $</th><th>Max DD $</th><th>Max DD %</th>
+    </tr></thead>
+    <tbody id="dollar-tbody"></tbody>
+  </table></div>`;
+
+  // Per-pair curves
+  const grid=document.getElementById('dollar-eq-grid');
+  D.forEach((d,i)=>{
+    if(!d.dollar_stats) return;
+    const ds=d.dollar_stats;
+    const col=ds.net_pnl>=0?WIN:LOSS;
+    const box=document.createElement('div'); box.className='cbox';
+    box.innerHTML=`<div class="ctitle">${d.pair}
+      <span style="color:${col}">${ds.net_pnl>=0?'+':'-'}$${Math.abs(ds.net_pnl).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+      <span style="color:${SUB};font-size:11px">${ds.net_pnl_pct>=0?'+':''}${ds.net_pnl_pct.toFixed(2)}% · DD -$${ds.max_drawdown_dollar.toFixed(2)} (${ds.max_drawdown_dollar_pct.toFixed(2)}%)</span>
+    </div><canvas id="deq-${i}" height="150"></canvas>`;
+    grid.appendChild(box);
+  });
+
+  // Per-pair table
+  const tbody=document.getElementById('dollar-tbody');
+  D.forEach(d=>{
+    if(!d.dollar_stats) return;
+    const ds=d.dollar_stats;
+    const tr=document.createElement('tr');
+    const pnlCol=ds.net_pnl>=0?WIN:LOSS;
+    tr.innerHTML=`
+      <td style="font-weight:700">${d.pair}</td>
+      <td>$${ds.start_balance.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td>$${ds.final_balance.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td style="color:${pnlCol};font-weight:700">${ds.net_pnl>=0?'+':'-'}$${Math.abs(ds.net_pnl).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td style="color:${pnlCol};font-weight:700">${ds.net_pnl_pct>=0?'+':''}${ds.net_pnl_pct.toFixed(2)}%</td>
+      <td style="color:${WIN}">$${ds.gross_profit.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td style="color:${LOSS}">$${ds.gross_loss.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td style="color:${ds.profit_factor_dollar>=1?WIN:LOSS};font-weight:700">${ds.profit_factor_dollar!=null?ds.profit_factor_dollar.toFixed(2):'—'}</td>
+      <td style="color:${LOSS}">-$${ds.max_drawdown_dollar.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td style="color:${LOSS}">${ds.max_drawdown_dollar_pct.toFixed(2)}%</td>`;
+    tbody.appendChild(tr);
+  });
+
+  function _drawDollarCharts(){
+    D.forEach((d,i)=>{
+      if(!d.dollar_stats) return;
+      drawLineDollar('deq-'+i,d.dollar_stats.equity_dollar,d.dollar_stats.net_pnl>=0?WIN:LOSS,150);
+    });
+  }
+  const _dollarTab=document.querySelector('.ntab[data-v="dollar"]');
+  if(_dollarTab){
+    let _drawn=false;
+    _dollarTab.addEventListener('click',()=>{ if(!_drawn){ setTimeout(_drawDollarCharts,30); _drawn=true; } });
+  }
 })();
 
 // ════════════════════════════════════════════════════════════════════════
@@ -3159,6 +3341,29 @@ function drawLine(id,data,color,H=170){
   ctx.beginPath(); ctx.strokeStyle=color; ctx.lineWidth=2.5;
   data.forEach((v,i)=>i===0?ctx.moveTo(sx(i),sy(v)):ctx.lineTo(sx(i),sy(v))); ctx.stroke();
   [mn,0,mx].forEach(v=>{ ctx.fillStyle=v===0?'#9aa0b4':(v>0?WIN:LOSS); ctx.font='bold 11px Inter,sans-serif'; ctx.textAlign='right'; ctx.fillText((v>=0?'+':'')+v.toFixed(1)+'R',pad.l-6,sy(v)+4); });
+}
+function drawLineDollar(id,data,color,H=170){
+  const g=getCtx(id,H); if(!g||data.length<2) return;
+  const {ctx,W}=g;
+  const pad={t:14,r:14,b:24,l:70};
+  const cw=W-pad.l-pad.r, ch=H-pad.t-pad.b;
+  const mn=Math.min(...data), mx=Math.max(...data), range=mx-mn||1;
+  const base=data[0];
+  const sy=v=>pad.t+ch*(1-(v-mn)/range);
+  const sx=i=>pad.l+(i/(data.length-1))*cw;
+  ctx.fillStyle='#f7f8fa'; ctx.fillRect(0,0,W,H);
+  [0,.25,.5,.75,1].forEach(t=>{ const y=pad.t+t*ch; ctx.strokeStyle='#e8eaf0'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+cw,y); ctx.stroke(); });
+  ctx.strokeStyle='#c4c9d6'; ctx.lineWidth=1.5; ctx.setLineDash([5,4]);
+  ctx.beginPath(); ctx.moveTo(pad.l,sy(base)); ctx.lineTo(pad.l+cw,sy(base)); ctx.stroke(); ctx.setLineDash([]);
+  const grad=ctx.createLinearGradient(0,pad.t,0,pad.t+ch);
+  grad.addColorStop(0,color+'40'); grad.addColorStop(1,color+'08');
+  ctx.beginPath(); ctx.moveTo(sx(0),sy(data[0]));
+  data.forEach((v,i)=>ctx.lineTo(sx(i),sy(v)));
+  ctx.lineTo(sx(data.length-1),sy(data[data.length-1])); ctx.closePath(); ctx.fillStyle=grad; ctx.fill();
+  ctx.beginPath(); ctx.strokeStyle=color; ctx.lineWidth=2.5;
+  data.forEach((v,i)=>i===0?ctx.moveTo(sx(i),sy(v)):ctx.lineTo(sx(i),sy(v))); ctx.stroke();
+  const fmt=v=>'$'+Math.round(v).toLocaleString();
+  [mn,base,mx].forEach(v=>{ ctx.fillStyle=v===base?'#9aa0b4':(v>base?WIN:LOSS); ctx.font='bold 11px Inter,sans-serif'; ctx.textAlign='right'; ctx.fillText(fmt(v),pad.l-6,sy(v)+4); });
 }
 function drawBars(id,labels,values,H=220){
   const g=getCtx(id,H); if(!g) return;
