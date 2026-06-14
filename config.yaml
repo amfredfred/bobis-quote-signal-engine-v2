@@ -3,6 +3,10 @@ websocket:
   port: 8765
   max_clients: 10
 
+# Worker mode is driven entirely by env vars injected by signal-manager's
+# ProcessSupervisor (MT5_USE, MANAGER_MODE, MANAGER_URL, MANAGER_TOKEN,
+# MANAGER_SYMBOLS).  No manager section belongs here.
+
 mt5:
   use: fundednext
   timeout_ms: 60000

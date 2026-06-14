@@ -44,6 +44,7 @@ from app.session.coordinator import SessionCoordinator
 from app.services.signal_service import SignalService
 from interfaces.ws.scheduler import SignalScheduler
 from interfaces.ws.server import WebSocketServer
+from interfaces.ws.manager_client import ManagerClient
 from domain.entities.enums import SignalEvent
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -116,9 +117,9 @@ class SignalEngine:
         )
         self._service.add_listener(self._on_signal_event)
 
-        # Scheduler and WS server are created in start() once the loop is running
+        # Scheduler and broadcaster are created in start() once the loop is running
         self._scheduler: SignalScheduler
-        self._ws: WebSocketServer
+        self._ws: WebSocketServer | ManagerClient
 
     # ── Tick ──────────────────────────────────────────────────────────────────
 
@@ -183,21 +184,42 @@ class SignalEngine:
             callback=self._on_candle_close,
             settings=self._cfg,
         )
-        self._ws = WebSocketServer(
-            scheduler=self._scheduler,
-            service=self._service,
-            market_data=self._md,
-            settings=self._cfg,
-            metrics=self._metrics,
-        )
-        await self._ws.start(self._cfg.ws_host, self._cfg.ws_port)
         pairs_str = "  |  ".join(f"{h}/{l}" for h, l in self._cfg.tf_pairs)
-        logger.info(
-            "Signal Engine running  ws://%s:%d  TF pairs: [%s]",
-            self._cfg.ws_host,
-            self._cfg.ws_port,
-            pairs_str,
-        )
+
+        if self._cfg.manager_mode == "worker":
+            self._ws = ManagerClient(
+                url=self._cfg.manager_url,
+                token=self._cfg.manager_token,
+                broker=self._cfg.mt5_profile,
+            )
+            await self._ws.start()
+            # Auto-subscribe configured symbols so the engine starts analysing
+            # without waiting for a downstream client to subscribe.
+            symbols = list(self._cfg.manager_symbols)
+            if symbols:
+                self._scheduler.subscribe("manager", symbols)
+                logger.info("Signal Engine (worker) auto-subscribed: %s", symbols)
+            logger.info(
+                "Signal Engine running  mode=worker  manager=%s  broker=%s  TF pairs: [%s]",
+                self._cfg.manager_url,
+                self._cfg.mt5_profile,
+                pairs_str,
+            )
+        else:
+            self._ws = WebSocketServer(
+                scheduler=self._scheduler,
+                service=self._service,
+                market_data=self._md,
+                settings=self._cfg,
+                metrics=self._metrics,
+            )
+            await self._ws.start(self._cfg.ws_host, self._cfg.ws_port)
+            logger.info(
+                "Signal Engine running  mode=standalone  ws://%s:%d  TF pairs: [%s]",
+                self._cfg.ws_host,
+                self._cfg.ws_port,
+                pairs_str,
+            )
 
     async def stop(self) -> None:
         logger.info("Shutting down Signal Engine…")

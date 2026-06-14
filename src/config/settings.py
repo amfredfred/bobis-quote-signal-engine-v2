@@ -553,6 +553,12 @@ class Settings:
     ws_secret: str = ""
     max_ws_clients: int = 10
 
+    # ── Signal Manager (worker mode) ──────────────────────────────────────────
+    manager_mode:    str   = "standalone"   # "standalone" | "worker"
+    manager_url:     str   = "ws://localhost:8766"
+    manager_token:   str   = ""
+    manager_symbols: tuple = ()             # symbols to auto-subscribe in worker mode
+
     # ── MT5 terminal ──────────────────────────────────────────────────────────
     mt5_terminal_path: str = ""
     mt5_login: int = 0
@@ -796,6 +802,15 @@ class Settings:
 
         config_path = _config_path_from_env()
         base_cfg = _load_yaml(config_path) if config_path else {}
+
+        # MT5_USE env var (injected by ProcessSupervisor) overrides mt5.use so
+        # each spawned engine uses its own broker profile without editing config.yaml.
+        mt5_use_env = os.getenv("MT5_USE", "").strip()
+        if mt5_use_env:
+            mt5_section = dict(base_cfg.get("mt5") or {})
+            mt5_section["use"] = mt5_use_env
+            base_cfg = {**base_cfg, "mt5": mt5_section}
+
         cfg = _resolve_broker_cfg(base_cfg, config_path)
 
         return cls(
@@ -809,7 +824,25 @@ class Settings:
             **_resolve_mt5_credentials(base_cfg, config_path),
             mt5_timeout_ms=int(_get(cfg, "mt5.timeout_ms", 60_000)),
             mt5_portable=_as_bool(_get(cfg, "mt5.portable", False)),
-            mt5_profile=str(_get(base_cfg, "mt5.use", "")),
+            mt5_profile=mt5_use_env or str(_get(base_cfg, "mt5.use", "")),
+            manager_mode=(
+                os.getenv("MANAGER_MODE") or str(_get(cfg, "manager.mode", "standalone"))
+            ).strip().lower(),
+            manager_url=(
+                os.getenv("MANAGER_URL") or str(_get(cfg, "manager.url", "ws://localhost:8766"))
+            ),
+            manager_token=(
+                os.getenv("MANAGER_TOKEN") or str(_get(cfg, "manager.token", "") or "")
+            ),
+            manager_symbols=tuple(
+                s.strip().upper()
+                for s in (
+                    os.getenv("MANAGER_SYMBOLS", "").split(",")
+                    if os.getenv("MANAGER_SYMBOLS")
+                    else [s for s in (_get(cfg, "manager.symbols") or []) if isinstance(s, str)]
+                )
+                if s.strip()
+            ),
             weekend_sleep_enabled=_as_bool(_get(cfg, "market.weekend_sleep.enabled", True)),
             weekend_close_weekday=_parse_weekday(
                 _get(cfg, "market.weekend_sleep.close_weekday", "saturday"), 5

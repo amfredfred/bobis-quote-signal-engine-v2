@@ -1,0 +1,36 @@
+# Which MT5 credential profiles to run signal engines for.
+# Each name must match a profile key in signal-engine/mt5-credentials.yaml.
+sources:
+  - fundednext
+  - exness
+  - fbs
+
+# Path to the signal-engine root (parent of this manager/ directory).
+# Relative paths are resolved from manager/config.yaml's location.
+signal_engine:
+  path: ..
+  config: config.yaml
+
+engine_server:
+  host: 127.0.0.1
+  port: 8766
+  token: "trade-relay-engine-token"   # fixed shared secret; set the same in each worker's MANAGER_TOKEN
+
+gateway_server:
+  host: 0.0.0.0
+  port: 8765
+  secret: ""
+
+# Symbols pushed to each engine worker on startup (auto-subscribe).
+symbols:
+  - XAUUSD
+  - US100
+  - EURUSD
+  - GBPUSD
+  - USDJPY
+
+consensus:
+  window_ms: 60000   # wait up to 60s for a second broker to confirm
+
+logging:
+  level: INFO
