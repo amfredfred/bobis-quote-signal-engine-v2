@@ -12,8 +12,14 @@ signal_engine:
   config: config.yaml
 
 gateway_server:
-  host: 0.0.0.0
+  # Bind to 127.0.0.1 (localhost only) so only processes on this machine can
+  # connect.  Change to 0.0.0.0 only if the execution engine runs on a
+  # different host — and always set a strong secret in that case.
+  host: 127.0.0.1
   port: 8765
+  # Shared secret — must match signal_manager.token (or SIGNAL_MANAGER_TOKEN
+  # env var) in every execution-engine-multi installation that connects here.
+  # Leave blank only for fully isolated single-machine development setups.
   secret: ""
 
 # Symbols pushed to each engine worker on startup (auto-subscribe).
