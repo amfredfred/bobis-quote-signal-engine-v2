@@ -1,11 +1,10 @@
 """
-interfaces/ws/scheduler.py — candle scheduler (LTF cadence only).
+interfaces/scheduler.py — candle scheduler (LTF cadence only).
 
 WatchMode / HTF_WATCH removed: the engine now runs every symbol at LTF
 cadence unconditionally. Direct MT5 access makes the old API-cost optimisation
 unnecessary.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -102,7 +101,7 @@ class SignalScheduler:
         now_s  = now_ms // 1000
         iv_s   = interval_minutes * 60
         next_s = (now_s // iv_s + 1) * iv_s
-        return (next_s * 1000 - now_ms) + self._cfg.ws_candle_buffer_ms
+        return (next_s * 1000 - now_ms) + self._cfg.candle_buffer_ms
 
     def _broker_seconds_of_week(self, now_ms: int | None = None) -> int:
         now_ms = self._cfg.now_ms() if now_ms is None else now_ms
@@ -148,7 +147,7 @@ class SignalScheduler:
 
         if not is_closed:
             return None
-        return seconds_until_reopen * 1000 + self._cfg.ws_candle_buffer_ms
+        return seconds_until_reopen * 1000 + self._cfg.candle_buffer_ms
 
     def _schedule_next(self, symbol: str) -> None:
         from config.settings import interval_to_minutes

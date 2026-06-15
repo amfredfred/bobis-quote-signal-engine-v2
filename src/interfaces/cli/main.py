@@ -1,7 +1,9 @@
 """
-interfaces/cli/main.py — application entry point.
+interfaces/cli/main.py — SignalEngine composition root.
 
-Wires all dependencies in one place (composition root) and starts the engine.
+Wires all dependencies and exposes start() / stop() for the manager to call.
+The engine no longer has a WebSocket server — it runs in-process inside the
+manager, emitting events through EventGateway callbacks.
 
 Dependency graph (all injected, no module-level singletons):
   Settings
@@ -13,20 +15,13 @@ Dependency graph (all injected, no module-level singletons):
   SessionCoordinator ← SignalStore + SessionStore + Settings
   SignalService     ←  all of the above
   SignalScheduler   ←  loop + callback
-  WebSocketServer   ←  SignalScheduler + SignalService + MarketDataClient + Settings
-
-WatchMode / dual-cadence removed: the engine now runs every symbol at LTF
-cadence unconditionally. Direct MT5 access makes the old API-cost optimisation
-unnecessary. _htf_tick, has_armed_zones, has_active_htf_zones, and
-the mode-switching guards in _ltf_tick are all gone.
+  EventGateway      ←  injected by PipelineManager (callbacks, no network)
 """
 
 from __future__ import annotations
 
 import asyncio
-import argparse
 import logging
-import logging.handlers
 import signal as os_signal
 import sys
 import time
@@ -42,51 +37,15 @@ from domain.entities.trade import TradeSignal
 from app.engine.parity_trace import ParityTraceWriter, trace_from_signal
 from app.session.coordinator import SessionCoordinator
 from app.services.signal_service import SignalService
-from interfaces.ws.scheduler import SignalScheduler
-from interfaces.ws.server import WebSocketServer
-from interfaces.ws.manager_client import ManagerClient
+from interfaces.scheduler import SignalScheduler
+from interfaces.events.gateway import EventGateway
 from domain.entities.enums import SignalEvent
-
-# ── Logging ───────────────────────────────────────────────────────────────────
-
-
-def _setup_logging(log_level: str, log_dir: str) -> None:
-    fmt = logging.Formatter(
-        "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    level = getattr(logging, log_level.upper(), logging.INFO)
-    root = logging.getLogger()
-    root.setLevel(level)
-
-    if sys.stdout is not None:
-        if hasattr(sys.stdout, "reconfigure"):
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sh = logging.StreamHandler(sys.stdout)
-        sh.setFormatter(fmt)
-        root.addHandler(sh)
-
-    if log_dir:
-        log_path = Path(log_dir)
-        log_path.mkdir(parents=True, exist_ok=True)
-        fh = logging.handlers.RotatingFileHandler(
-            log_path / "signal_engine.log",
-            maxBytes=10 * 1024 * 1024,
-            backupCount=5,
-            encoding="utf-8",
-        )
-        fh.setFormatter(fmt)
-        root.addHandler(fh)
-
 
 logger = logging.getLogger("signal_engine.main")
 
 
-# ── Engine ────────────────────────────────────────────────────────────────────
-
-
 class SignalEngine:
-    """Top-level orchestrator. Owns all components and their lifecycle."""
+    """Top-level orchestrator. Owned and started by PipelineManager."""
 
     def __init__(self, settings: Settings, live_trace_out: str | None = None) -> None:
         self._cfg = settings
@@ -117,10 +76,12 @@ class SignalEngine:
         )
         self._service.add_listener(self._on_signal_event)
 
-        # Scheduler and broadcaster are created in start() once the loop is running
-        self._scheduler: SignalScheduler
-        self._ws: WebSocketServer | ManagerClient
-        self._manager_log_handler: logging.Handler | None = None
+        self._scheduler: SignalScheduler | None = None
+        self._gateway: EventGateway | None = None
+
+    def get_metrics(self) -> dict:
+        """Return the current metrics snapshot (polled by PipelineManager)."""
+        return self._metrics.build_snapshot()
 
     # ── Tick ──────────────────────────────────────────────────────────────────
 
@@ -139,11 +100,6 @@ class SignalEngine:
                 self._cfg.dt_ms(analysis_close),
                 ltf_ms,
             )
-            # update_watchlist MUST run before analyze so that any positions
-            # closed on the previous bar release their direction lock before
-            # the new-signal scan runs.  If analyze runs first, a Z2 re-entry
-            # on the same zone is blocked by the still-open lock even though
-            # the preceding trade already hit SL.
             await self._service.update_watchlist(symbol)
             await self._service.analyze(symbol, fired_at=analysis_close)
         except Exception as exc:
@@ -172,11 +128,14 @@ class SignalEngine:
                 )
             except Exception as exc:
                 logger.warning("Failed to write live parity trace: %s", exc)
-        self._ws.broadcast(event, payload)
+        if self._gateway is not None:
+            self._gateway.broadcast(event, payload)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    async def start(self) -> None:
+    async def start(self, event_gateway: EventGateway) -> None:
+        self._gateway = event_gateway
+
         await self._service.initialize()
 
         loop = asyncio.get_running_loop()
@@ -185,109 +144,43 @@ class SignalEngine:
             callback=self._on_candle_close,
             settings=self._cfg,
         )
-        pairs_str = "  |  ".join(f"{h}/{l}" for h, l in self._cfg.tf_pairs)
 
-        if self._cfg.manager_mode == "worker":
-            self._ws = ManagerClient(
-                url=self._cfg.manager_url,
-                token=self._cfg.manager_token,
-                broker=self._cfg.mt5_profile,
-            )
-            await self._ws.start()
-            self._ws.start_metrics(self._metrics.build_snapshot)
-            self._manager_log_handler = self._ws.create_log_handler(
-                getattr(logging, self._cfg.log_level.upper(), logging.INFO)
-            )
-            logging.getLogger().addHandler(self._manager_log_handler)
-            # Auto-subscribe configured symbols so the engine starts analysing
-            # without waiting for a downstream client to subscribe.
-            symbols = list(self._cfg.manager_symbols)
-            if symbols:
-                self._scheduler.subscribe("manager", symbols)
-                logger.info("Signal Engine (worker) auto-subscribed: %s", symbols)
-            logger.info(
-                "Signal Engine running  mode=worker  manager=%s  broker=%s  TF pairs: [%s]",
-                self._cfg.manager_url,
-                self._cfg.mt5_profile,
-                pairs_str,
-            )
-        else:
-            self._ws = WebSocketServer(
-                scheduler=self._scheduler,
-                service=self._service,
-                market_data=self._md,
-                settings=self._cfg,
-                metrics=self._metrics,
-            )
-            await self._ws.start(self._cfg.ws_host, self._cfg.ws_port)
-            logger.info(
-                "Signal Engine running  mode=standalone  ws://%s:%d  TF pairs: [%s]",
-                self._cfg.ws_host,
-                self._cfg.ws_port,
-                pairs_str,
-            )
+        symbols = list(self._cfg.manager_symbols)
+        if symbols:
+            self._scheduler.subscribe("pipeline", symbols)
+            # Pre-populate scheduler state so metrics show rows before first tick.
+            for sym in symbols:
+                self._metrics.update_scheduler_state(sym.upper(), "ltf")
+            logger.info("Signal Engine auto-subscribed: %s", symbols)
+
+        pairs_str = "  |  ".join(f"{h}/{l}" for h, l in self._cfg.tf_pairs)
+        logger.info(
+            "Signal Engine running  broker=%s  TF pairs: [%s]",
+            self._cfg.mt5_profile,
+            pairs_str,
+        )
 
     async def stop(self) -> None:
-        logger.info("Shutting down Signal Engine…")
-        if self._manager_log_handler:
-            logging.getLogger().removeHandler(self._manager_log_handler)
-            self._manager_log_handler.close()
-            self._manager_log_handler = None
-        self._scheduler.shutdown()
-        await self._ws.stop()
+        logger.info("[%s] Shutting down…", self._cfg.mt5_profile)
+        if self._scheduler is not None:
+            self._scheduler.shutdown()
         self._md.close()
         self._metrics.close()
         self._trace_ctx.__exit__(None, None, None)
-        logger.info("Signal Engine stopped")
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the live signal engine")
-    parser.add_argument(
-        "--live-trace-out",
-        help="Write deterministic live parity trace JSONL to this path",
-    )
-    return parser.parse_args()
-
-
-async def _main() -> None:
-    args = _parse_args()
-    settings = Settings.from_env()
-    _setup_logging(settings.log_level, settings.log_dir)
-
-    engine = SignalEngine(settings, live_trace_out=args.live_trace_out)
-    await engine.start()
-
-    loop = asyncio.get_running_loop()
-    stop_event = asyncio.Event()
-
-    def _handle_signal() -> None:
-        logger.info("Shutdown signal received")
-        stop_event.set()
-
-    for sig in (os_signal.SIGINT, os_signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, _handle_signal)
-        except NotImplementedError:
-            os_signal.signal(
-                sig, lambda _s, _f: loop.call_soon_threadsafe(_handle_signal)
-            )
-
-    await stop_event.wait()
-    await engine.stop()
-
-
-if __name__ == "__main__":
-    asyncio.run(_main())
+        logger.info("[%s] Stopped", self._cfg.mt5_profile)
 
 
 def main() -> None:
+    """Entry point declared in pyproject.toml [project.scripts].
+
+    The signal engine runs in-process via the manager — start the manager
+    instead:  python -m src  (from signal-engine/manager/)
     """
-    Synchronous entry point — required by [project.scripts] in pyproject.toml.
-    setuptools entry points must be plain callables; asyncio.run() bridges to
-    the async implementation.
-    """
-    asyncio.run(_main())
+    print(
+        "signal-engine runs in-process inside the Signal Manager.\n"
+        "Start the manager instead:\n"
+        "  cd signal-engine/manager\n"
+        "  python -m src",
+        file=sys.stderr,
+    )
+    sys.exit(1)

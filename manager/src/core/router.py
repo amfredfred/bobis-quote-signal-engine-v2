@@ -30,19 +30,19 @@ class SignalRouter:
             self._drain_task.cancel()
 
     def on_signal(self, event: str, payload: dict, broker: str) -> None:
-        """
-        Called by EngineServer (from an async context) when a signal arrives.
-        Only SIGNAL_TRIGGERED events are routed; everything else is dropped.
-        """
-        if event != "signal.triggered":
-            return
+        """Route engine events to the gateway.
 
-        # Tag the originating broker (belt-and-suspenders — engine already sets it)
+        signal.triggered → consensus → gateway (symbol-filtered, for execution engines).
+        Everything else  → gateway broadcast_event (no symbol filter, for dashboard logs).
+        """
         payload = {**payload, "broker": broker}
 
-        ready = self._consensus.push(payload, broker)
-        if ready is not None:
-            self._emit("signal.triggered", ready)
+        if event == "signal.triggered":
+            ready = self._consensus.push(payload, broker)
+            if ready is not None:
+                self._emit("signal.triggered", ready)
+        else:
+            self._gateway.broadcast_event(event, payload)
 
     # ── Internal ─────────────────────────────────────────────────────────────
 

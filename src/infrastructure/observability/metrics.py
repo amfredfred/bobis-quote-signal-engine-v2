@@ -732,9 +732,7 @@ class MetricsCollector:
             "use_session_filter": self._cfg.use_session_filter,
             "max_consecutive_losses": self._cfg.max_consecutive_losses,
             "pause_after_streak_h": self._cfg.pause_after_streak_h,
-            "ws_port": self._cfg.ws_port,
-            "max_ws_clients": self._cfg.max_ws_clients,
-            "ws_candle_buffer_ms": self._cfg.ws_candle_buffer_ms,
+            "candle_buffer_ms": self._cfg.candle_buffer_ms,
         }
 
         return {

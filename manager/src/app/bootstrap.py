@@ -12,10 +12,9 @@ from pathlib import Path
 
 from src.config.settings import Settings
 from src.core.consensus import ConsensusEngine
+from src.core.pipeline import PipelineManager
 from src.core.router import SignalRouter
-from src.server.engine_server import EngineServer
 from src.server.gateway_server import GatewayServer
-from src.supervisor import ProcessSupervisor
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,17 @@ def setup_logging(level: str) -> None:
 
 
 async def run(settings: Settings) -> None:
-    manager_url = f"ws://{settings.engine_host}:{settings.engine_port}"
+    if not settings.signal_engine_path:
+        logger.error(
+            "signal_engine.path is not set — cannot run pipeline engines. "
+            "Add signal_engine.path to config.yaml."
+        )
+        return
+    if not settings.sources:
+        logger.warning("No sources configured — no signal engines will start.")
+
+    engine_path = Path(settings.signal_engine_path)
+    config_path = engine_path / settings.signal_engine_config
 
     # ── Build components ──────────────────────────────────────────────────────
     gateway   = GatewayServer(
@@ -47,54 +56,25 @@ async def run(settings: Settings) -> None:
     )
     consensus = ConsensusEngine(window_ms=settings.consensus_window_ms)
     router    = SignalRouter(consensus=consensus, gateway=gateway)
-    engine_sv = EngineServer(
-        host=settings.engine_host,
-        port=settings.engine_port,
-        token=settings.engine_token,
+    pipeline  = PipelineManager(
+        signal_engine_path=engine_path,
+        config_path=config_path,
+        sources=list(settings.sources),
         on_signal=router.on_signal,
-        on_event=gateway.broadcast,
+        symbols=settings.symbols,
     )
 
-    # Wire per-broker stats from engine_sv into the gateway metrics snapshot.
-    gateway.set_stats_provider(engine_sv.broker_stats)
-
-    supervisor: ProcessSupervisor | None = None
-    if settings.sources and settings.signal_engine_path:
-        supervisor = ProcessSupervisor(
-            sources=list(settings.sources),
-            engine_path=Path(settings.signal_engine_path),
-            engine_config_name=settings.signal_engine_config,
-            manager_url=manager_url,
-            manager_token=settings.engine_token,
-            manager_symbols=list(settings.symbols),
-        )
-    else:
-        if not settings.sources:
-            logger.warning(
-                "No sources configured — no signal engines will be spawned. "
-                "Add `sources:` to config.yaml."
-            )
-        if not settings.signal_engine_path:
-            logger.warning(
-                "signal_engine.path is not set — cannot spawn engines. "
-                "Add `signal_engine.path:` to config.yaml."
-            )
+    gateway.set_stats_provider(pipeline.get_stats)
 
     # ── Start ─────────────────────────────────────────────────────────────────
     await gateway.start()
-    await engine_sv.start()
     router.start()
-
-    # Supervisor starts after the engine server is listening so workers can
-    # immediately connect on their first launch.
-    if supervisor:
-        await supervisor.start()
+    await pipeline.start()
 
     logger.info(
-        "Signal Manager running  sources=%s  engines=ws://%s:%d  gateway=ws://%s:%d  "
+        "Signal Manager running  sources=%s  gateway=ws://%s:%d  "
         "consensus_window=%dms",
         list(settings.sources),
-        settings.engine_host, settings.engine_port,
         settings.gateway_host, settings.gateway_port,
         settings.consensus_window_ms,
     )
@@ -117,9 +97,7 @@ async def run(settings: Settings) -> None:
 
     # ── Stop ──────────────────────────────────────────────────────────────────
     logger.info("Signal Manager stopping")
-    if supervisor:
-        await supervisor.stop()
+    await pipeline.stop()
     router.stop()
-    await engine_sv.stop()
     await gateway.stop()
     logger.info("Signal Manager stopped")

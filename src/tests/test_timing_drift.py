@@ -14,7 +14,7 @@ from domain.entities.enums import BosDirection, CandlePattern, SignalDirection, 
 from domain.entities.ranges import HtfRange, RejectionCandle
 from domain.signals.builder import build_signal
 from interfaces.cli.main import SignalEngine
-from interfaces.ws.scheduler import SignalScheduler
+from interfaces.scheduler import SignalScheduler
 
 
 BASE = 1_700_000_000_000
@@ -51,7 +51,7 @@ def test_scheduler_weekend_sleep_delays_until_broker_monday_open() -> None:
 
     delay_ms = SignalScheduler._weekend_sleep_delay_ms(scheduler)
 
-    assert delay_ms == (34 * 60 * 60 * 1000) + cfg.ws_candle_buffer_ms
+    assert delay_ms == (34 * 60 * 60 * 1000) + cfg.candle_buffer_ms
 
 
 def test_scheduler_weekend_sleep_allows_weekday_market_time() -> None:
@@ -102,7 +102,7 @@ def test_backtest_print_separates_setup_actionable_entry_and_never_closed_open(c
 
 class _SchedulerCfg:
     tf_pairs = (("5min", "5min"),)
-    ws_candle_buffer_ms = 1_500
+    candle_buffer_ms = 1_500
     weekend_sleep_enabled = True
     weekend_close_weekday = 5
     weekend_close_time = datetime.time(0, 0)

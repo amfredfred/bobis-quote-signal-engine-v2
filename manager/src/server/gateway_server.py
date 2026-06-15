@@ -109,7 +109,24 @@ class GatewayServer:
             self._broadcast_async(event, payload)
         )
 
+    def broadcast_event(self, event: str, payload: dict) -> None:
+        """Broadcast to all clients with no symbol filter (for log/rejection events)."""
+        asyncio.get_running_loop().create_task(
+            self._broadcast_event_async(event, payload)
+        )
+
     # ── Internal ─────────────────────────────────────────────────────────────
+
+    async def _broadcast_event_async(self, event: str, payload: dict) -> None:
+        message = json.dumps({"event": event, "payload": payload})
+        dead: list[str] = []
+        for cid, client in list(self._clients.items()):
+            try:
+                await client.ws.send(message)
+            except Exception:
+                dead.append(cid)
+        for cid in dead:
+            self._clients.pop(cid, None)
 
     async def _broadcast_async(self, event: str, payload: dict) -> None:
         symbol  = (payload.get("symbol") or "").upper()
@@ -150,8 +167,31 @@ class GatewayServer:
     def _build_metrics(self) -> dict:
         uptime_ms  = int((time.time() - self._started_at) * 1000)
         by_source  = self._stats_provider() if self._stats_provider else {}
-        # Aggregate signal counts across all brokers for the top-level metrics.
+
         total_received = sum(v.get("signals_received", 0) for v in by_source.values())
+
+        # Aggregate scheduler rows and scanner counters/gauges across all broker engines.
+        agg_scheduler: list[dict] = []
+        for broker, broker_stats in by_source.items():
+            for row in (broker_stats.get("scheduler") or []):
+                agg_scheduler.append({**row, "broker": broker})
+
+        agg_counters: dict[str, int] = {}
+        agg_gauges:   dict[str, float] = {}
+        for broker_stats in by_source.values():
+            bm = broker_stats.get("latest_metrics") or {}
+            for k, v in (bm.get("raw_counters") or {}).items():
+                agg_counters[k] = agg_counters.get(k, 0) + int(v)
+            for k, v in (bm.get("raw_gauges") or {}).items():
+                # Gauges: take the worst/max so lag and errors surface.
+                cur = agg_gauges.get(k, 0.0)
+                agg_gauges[k] = max(cur, float(v))
+
+        def _c(key: str) -> int:
+            return agg_counters.get(key, 0)
+        def _g(key: str) -> float:
+            return agg_gauges.get(key, 0.0)
+
         return {
             "ts": int(time.time() * 1000),
             "system": {
@@ -160,14 +200,33 @@ class GatewayServer:
                 "memory_mb": None,
             },
             "metrics": {
-                "signals_delivered": self._signals_delivered,
-                "signals_received":  total_received,
-                "gateway_clients":   len(self._clients),
-                "engine_count":      len(by_source),
-                "engine_online":     sum(1 for v in by_source.values() if v.get("connected")),
+                # Gateway-level
+                "signals_delivered":      self._signals_delivered,
+                "signals_received":       total_received,
+                "gateway_clients":        len(self._clients),
+                "engine_count":           len(by_source),
+                "engine_online":          sum(1 for v in by_source.values() if v.get("connected")),
+                # Aggregated scanner metrics (sum across all broker engines)
+                "raw_counters":           agg_counters,
+                "raw_gauges":             agg_gauges,
+                "scanner_ticks":          _c("scanner.ticks"),
+                "scanner_tick_errors":    _c("scanner.tick_errors"),
+                "analysis_started":       _c("scanner.analysis_started"),
+                "signals_pending":        _c("signals.pending"),
+                "signals_emitted":        _c("signals.emitted"),
+                "signals_triggered":      _c("signals.triggered"),
+                "signals_stale_skipped":  _c("signals.stale_skipped"),
+                "signals_dedup_blocked":  _c("signals.dedup_blocked"),
+                "signals_decision_blocked": _c("signals.decision_blocked"),
+                "signals_no_rejection":   _c("signals.no_rejection"),
+                "mt5_calls":              _c("mt5.calls"),
+                "mt5_errors":             _c("mt5.errors"),
+                "last_emit_lag_ms":       _g("latency.last_signal_emit_lag_ms"),
+                "last_scan_lag_ms":       _g("scanner.scan_lag_ms"),
+                "last_analysis_ms":       _g("scanner.analysis_ms"),
             },
             "latency":        {},
-            "scheduler":      [],
+            "scheduler":      agg_scheduler,
             "active_signals":  [],
             "active_zones":    [],
             "api": {

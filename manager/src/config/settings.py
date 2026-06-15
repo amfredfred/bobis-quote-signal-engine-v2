@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,17 +25,12 @@ def _get(d: dict, dotpath: str, default=None):
 
 @dataclass(frozen=True)
 class Settings:
-    # Broker sources — one signal-engine worker is spawned per entry.
+    # Broker sources — one in-process pipeline engine per entry.
     sources:              tuple = ()
 
     # signal-engine project location (resolved to absolute path at load time).
     signal_engine_path:   str  = ""
     signal_engine_config: str  = "config.yaml"
-
-    # Internal WS server that engine workers connect to.
-    engine_host:          str  = "127.0.0.1"
-    engine_port:          int  = 8766
-    engine_token:         str  = ""   # auto-generated in from_yaml()
 
     # External WS server that the NestJS gateway connects to.
     gateway_host:         str  = "0.0.0.0"
@@ -78,18 +72,10 @@ class Settings:
 
         engine_config = str(_get(cfg, "signal_engine.config", "config.yaml") or "config.yaml")
 
-        # Auto-generate a shared secret when not provided in config.
-        token = str(_get(cfg, "engine_server.token", "") or "").strip()
-        if not token:
-            token = secrets.token_hex(32)
-
         return cls(
             sources=tuple(str(s) for s in raw_sources),
             signal_engine_path=engine_path,
             signal_engine_config=engine_config,
-            engine_host=str(_get(cfg, "engine_server.host", "127.0.0.1")),
-            engine_port=int(_get(cfg, "engine_server.port", 8766)),
-            engine_token=token,
             gateway_host=str(_get(cfg, "gateway_server.host", "0.0.0.0")),
             gateway_port=int(_get(cfg, "gateway_server.port", 8765)),
             gateway_secret=str(_get(cfg, "gateway_server.secret", "") or ""),

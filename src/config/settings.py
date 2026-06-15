@@ -13,7 +13,7 @@ Derived properties (never exposed as env vars):
   stale_rejection_hours — min_ltf_minutes / 30 × 6 (adaptive to TF pair)
   pivot_bars            — always 1
   stop_buffer_pct       — always was 0.00001, now 0.00002 (2 pips) to reduce rejections and improve backtest realism
-  ws_candle_buffer_ms   — always 1 500 ms
+  candle_buffer_ms      — always 1 100 ms (MT5 settle delay)
 """
 
 from __future__ import annotations
@@ -516,8 +516,8 @@ def _sessions_from_config(raw: Any) -> dict[str, dict]:
 
 _STOP_BUFFER_PCT: float = 0.00001
 # 1 pip buffer — never needs tuning
-_WS_CANDLE_BUFFER_MS: int = 1_100
-# ms after candle close for MT5 to settle
+_CANDLE_BUFFER_MS: int = 1_100
+# ms after candle close to wait for MT5 to settle before running analysis
 _PIVOT_BARS: int = 1
 # structural pivot strength
 
@@ -547,17 +547,8 @@ class Settings:
     def metric_dir(self) -> Path:
         return self.base_dir / "metrics"
 
-    # ── WebSocket ─────────────────────────────────────────────────────────────
-    ws_host: str = "0.0.0.0"
-    ws_port: int = 8765
-    ws_secret: str = ""
-    max_ws_clients: int = 10
-
-    # ── Signal Manager (worker mode) ──────────────────────────────────────────
-    manager_mode:    str   = "standalone"   # "standalone" | "worker"
-    manager_url:     str   = "ws://localhost:8766"
-    manager_token:   str   = ""
-    manager_symbols: tuple = ()             # symbols to auto-subscribe in worker mode
+    # ── Pipeline (auto-subscribe symbols when running under the manager) ────────
+    manager_symbols: tuple = ()
 
     # ── MT5 terminal ──────────────────────────────────────────────────────────
     mt5_terminal_path: str = ""
@@ -617,8 +608,8 @@ class Settings:
         return _STOP_BUFFER_PCT
 
     @property
-    def ws_candle_buffer_ms(self) -> int:
-        return _WS_CANDLE_BUFFER_MS
+    def candle_buffer_ms(self) -> int:
+        return _CANDLE_BUFFER_MS
 
     def resolve_htf_lookback(self, htf_interval: str, ltf_interval: str) -> int:
         """Return the effective htf_lookback for a TF pair.
@@ -767,13 +758,6 @@ class Settings:
                     raise ValueError(f"{loc}.min_rr must be > 0.")
                 if max_v is not None and max_v < 0:
                     raise ValueError(f"{loc}.max_rr must be >= 0 (0 = disabled).")
-        if not self.ws_secret:
-            import logging as _logging
-
-            _logging.getLogger(__name__).warning(
-                "SIGNAL_ENGINE_WS_SECRET is not set — WebSocket server is unauthenticated. "
-                "Set SIGNAL_ENGINE_WS_SECRET before deploying to production."
-            )
 
     # ── Factory ───────────────────────────────────────────────────────────────
 
@@ -817,23 +801,10 @@ class Settings:
             base_dir=Path.cwd(),
             log_level=str(_get(cfg, "logging.level", "INFO")).upper(),
             log_dir=str(_get(cfg, "logging.dir", "logs")),
-            ws_host=str(_get(cfg, "websocket.host", "0.0.0.0")),
-            ws_port=int(_get(cfg, "websocket.port", 8765)),
-            ws_secret=os.getenv("SIGNAL_ENGINE_WS_SECRET", ""),
-            max_ws_clients=int(_get(cfg, "websocket.max_clients", 10)),
             **_resolve_mt5_credentials(base_cfg, config_path),
             mt5_timeout_ms=int(_get(cfg, "mt5.timeout_ms", 60_000)),
             mt5_portable=_as_bool(_get(cfg, "mt5.portable", False)),
             mt5_profile=mt5_use_env or str(_get(base_cfg, "mt5.use", "")),
-            manager_mode=(
-                os.getenv("MANAGER_MODE") or str(_get(cfg, "manager.mode", "standalone"))
-            ).strip().lower(),
-            manager_url=(
-                os.getenv("MANAGER_URL") or str(_get(cfg, "manager.url", "ws://localhost:8766"))
-            ),
-            manager_token=(
-                os.getenv("MANAGER_TOKEN") or str(_get(cfg, "manager.token", "") or "")
-            ),
             manager_symbols=tuple(
                 s.strip().upper()
                 for s in (
@@ -861,6 +832,106 @@ class Settings:
             apex_env=os.getenv("APEX_ENV", "paper").strip().lower(),
             apex_live_confirm=os.getenv("APEX_LIVE_CONFIRM", ""),
             apex_disable_trading=_bool_env("APEX_DISABLE_TRADING", False),
+            tf_pairs=_parse_tf_pairs(_get(cfg, "timeframes.pairs")),
+            tf_entry_models=_parse_tf_entry_models(_get(cfg, "timeframes.pairs")),
+            htf_lookback=_parse_htf_lookback(_get(cfg, "timeframes.htf_lookback", 120)),
+            htf_outputsize=int(_get(cfg, "timeframes.htf_outputsize", 1000)),
+            stop_placement_method=str(
+                _get(cfg, "signal_quality.stop_model", "wick")
+            ).strip().lower(),
+            max_sl_zone_mult=float(_get(cfg, "signal_quality.max_sl_zone_mult", 2.0)),
+            max_spread_to_sl_ratio=float(
+                _get(cfg, "signal_quality.max_spread_to_sl_ratio", 0.35)
+            ),
+            min_rr=float(_get(cfg, "signal_quality.min_rr", 1.5)),
+            max_rr=float(_get(cfg, "signal_quality.max_rr", 9.0)),
+            max_emit_lag_ms=int(_get(cfg, "signals.max_emit_lag_ms", 90_000)),
+            tf_max_rr=_parse_pair_map(_get(cfg, "signal_quality.tf_max_rr")),
+            symbol_rr_filter=_parse_symbol_rr_filter(_get(cfg, "signal_quality.rrr")),
+            signal_expiry_hours=float(_get(cfg, "signal_lifetime.expiry_hours", 120)),
+            max_htf_zones_per_dir=int(_get(cfg, "zones.max_htf_zones_per_dir", 3)),
+            max_signal_count_per_zone=int(_get(cfg, "zones.max_signal_count", 1)),
+            use_trend_filter=_as_bool(_get(cfg, "features.use_trend_filter", True)),
+            tp1_trigger_pct=float(_get(cfg, "trade_management.tp1_trigger_pct", 50.0)),
+            tp1_close_pct=float(_get(cfg, "trade_management.tp1_close_pct", 0.0)),
+            move_sl_to_be_on_tp1=_as_bool(
+                _get(
+                    cfg,
+                    "trade_management.move_sl_to_be_on_tp1",
+                    _get(cfg, "features.use_breakeven", True),
+                )
+            ),
+            trade_management_tf_overrides=_parse_trade_management_tf_overrides(
+                _get(cfg, "trade_management.tf_overrides")
+            ),
+            use_invalidation=_as_bool(_get(cfg, "features.use_invalidation", False)),
+            multi_tf_independent_positions=_as_bool(
+                _get(cfg, "features.multi_tf_independent_positions", True)
+            ),
+            entry_model=str(_get(cfg, "features.entry_model", "crt")).lower(),
+            crt_mode=str(_get(cfg, "crt.mode", "previous_candle")).lower(),
+            use_displacement_filter=_as_bool(
+                _get(cfg, "displacement_filter.enabled", True)
+            ),
+            displacement_atr_period=int(_get(cfg, "displacement_filter.atr_period", 10)),
+            displacement_atr_mult=float(_get(cfg, "displacement_filter.atr_mult", 1.2)),
+            tf_displacement_mult=_parse_pair_map(
+                _get(cfg, "displacement_filter.tf_mult")
+            ),
+            max_consecutive_losses=int(_get(cfg, "circuit_breaker.max_consecutive_losses", 3)),
+            pause_after_streak_h=float(_get(cfg, "circuit_breaker.pause_after_streak_h", 12)),
+            use_session_filter=_as_bool(_get(cfg, "session_filter.enabled", True)),
+            sessions=_sessions_from_config(_get(cfg, "session_filter.sessions")),
+        )
+
+    @classmethod
+    def for_broker(
+        cls,
+        config_path: "Path",
+        broker: str,
+        *,
+        base_dir: "Path",
+        symbols: "tuple[str, ...]" = (),
+    ) -> "Settings":
+        """Build settings for a named MT5 broker profile without reading env vars.
+
+        Used by the manager in pipeline mode to run signal engines in-process.
+        Each broker gets its own base_dir so sessions/logs/metrics don't collide.
+        """
+        base_cfg: dict = _load_yaml(config_path) if config_path.exists() else {}
+        mt5_section = dict(base_cfg.get("mt5") or {})
+        mt5_section["use"] = broker
+        base_cfg = {**base_cfg, "mt5": mt5_section}
+
+        cfg = _resolve_broker_cfg(base_cfg, config_path)
+
+        return cls(
+            base_dir=base_dir,
+            log_level=str(_get(cfg, "logging.level", "INFO")).upper(),
+            log_dir=str(_get(cfg, "logging.dir", "logs")),
+            **_resolve_mt5_credentials(base_cfg, config_path),
+            mt5_timeout_ms=int(_get(cfg, "mt5.timeout_ms", 60_000)),
+            mt5_portable=_as_bool(_get(cfg, "mt5.portable", False)),
+            mt5_profile=broker,
+            manager_symbols=symbols,
+            weekend_sleep_enabled=_as_bool(_get(cfg, "market.weekend_sleep.enabled", True)),
+            weekend_close_weekday=_parse_weekday(
+                _get(cfg, "market.weekend_sleep.close_weekday", "saturday"), 5
+            ),
+            weekend_close_time=_parse_time(
+                _get(cfg, "market.weekend_sleep.close_time", "00:00"),
+                datetime.time(0, 0),
+            ),
+            weekend_reopen_weekday=_parse_weekday(
+                _get(cfg, "market.weekend_sleep.reopen_weekday", "monday"), 0
+            ),
+            weekend_reopen_time=_parse_time(
+                _get(cfg, "market.weekend_sleep.reopen_time", "00:00"),
+                datetime.time(0, 0),
+            ),
+            apex_env="paper",
+            apex_live_confirm="",
+            apex_disable_trading=False,
             tf_pairs=_parse_tf_pairs(_get(cfg, "timeframes.pairs")),
             tf_entry_models=_parse_tf_entry_models(_get(cfg, "timeframes.pairs")),
             htf_lookback=_parse_htf_lookback(_get(cfg, "timeframes.htf_lookback", 120)),
