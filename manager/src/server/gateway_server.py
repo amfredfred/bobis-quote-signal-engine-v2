@@ -14,6 +14,7 @@ the gateway's SignalEngineSubscriberService requires zero changes:
   Manager → Gateway  {event: "subscribed",       payload: {symbols, newSymbols}}
   Manager → Gateway  {event: "unsubscribed",     payload: {symbols}}
   Manager → Gateway  {event: "signal.triggered", payload: {..., broker, consensus}}
+  Manager → Gateway  {event: "log.record",       payload: {..., broker}}
   Manager → Gateway  {event: "metrics.snapshot", payload: {...}}
 
 Authentication:

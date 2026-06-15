@@ -52,6 +52,7 @@ async def run(settings: Settings) -> None:
         port=settings.engine_port,
         token=settings.engine_token,
         on_signal=router.on_signal,
+        on_event=gateway.broadcast,
     )
 
     # Wire per-broker stats from engine_sv into the gateway metrics snapshot.

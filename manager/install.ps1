@@ -38,9 +38,22 @@ if ($Uninstall) {
     if (-not $task) {
         Write-Host "Task '$TaskName' is not installed."
     } else {
-        Stop-ScheduledTask  -TaskName $TaskName -ErrorAction SilentlyContinue
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
         Write-Host "Uninstalled: $TaskName"
+    }
+
+    # Kill any Python process running the signal manager from this directory.
+    $ManagerDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $killed = 0
+    Get-WmiObject Win32_Process -Filter "Name='python.exe'" | ForEach-Object {
+        if ($_.CommandLine -like "*$ManagerDir*" -or $_.CommandLine -like "*-m src*") {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            $killed++
+        }
+    }
+    if ($killed -gt 0) {
+        Write-Host "Stopped $killed Python process(es)."
     }
     exit
 }

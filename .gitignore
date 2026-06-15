@@ -18,3 +18,4 @@ build/
 venv/
 .zip
 *.zip
+manager-worker.pid

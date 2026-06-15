@@ -5,6 +5,7 @@ Protocol (JSON over WS):
   Engine → Manager  {"type": "hello",  "broker": "fundednext", "token": "..."}
   Manager → Engine  {"type": "ack",    "broker": "fundednext"}
   Engine → Manager  {"type": "signal", "event": "signal.triggered", "payload": {...}}
+  Engine → Manager  {"type": "log",    "event": "log.record",       "payload": {...}}
   Engine → Manager  {"type": "ping"}
   Manager → Engine  {"type": "pong"}
 
@@ -24,15 +25,24 @@ import websockets.server
 logger = logging.getLogger(__name__)
 
 OnSignal = Callable[[str, dict, str], None]   # (event, payload, broker)
+OnEvent = Callable[[str, dict], None]          # (event, payload)
 
 
 class EngineServer:
 
-    def __init__(self, host: str, port: int, token: str, on_signal: OnSignal) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        token: str,
+        on_signal: OnSignal,
+        on_event: OnEvent | None = None,
+    ) -> None:
         self._host      = host
         self._port      = port
         self._token     = token
         self._on_signal = on_signal
+        self._on_event  = on_event
         self._connected: dict[str, websockets.server.ServerConnection] = {}
         self._server: websockets.server.WebSocketServer | None = None
         # Per-broker tracking
@@ -136,6 +146,12 @@ class EngineServer:
             if isinstance(payload, dict):
                 self._latest_metrics[broker] = payload
                 logger.debug("EngineServer: metrics update from '%s'", broker)
+
+        elif msg_type == "log":
+            event = msg.get("event", "log.record")
+            payload = msg.get("payload", {})
+            if self._on_event and isinstance(event, str) and isinstance(payload, dict):
+                self._on_event(event, {**payload, "broker": broker})
 
         elif msg_type == "ping":
             try:

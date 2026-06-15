@@ -120,6 +120,7 @@ class SignalEngine:
         # Scheduler and broadcaster are created in start() once the loop is running
         self._scheduler: SignalScheduler
         self._ws: WebSocketServer | ManagerClient
+        self._manager_log_handler: logging.Handler | None = None
 
     # ── Tick ──────────────────────────────────────────────────────────────────
 
@@ -193,6 +194,11 @@ class SignalEngine:
                 broker=self._cfg.mt5_profile,
             )
             await self._ws.start()
+            self._ws.start_metrics(self._metrics.build_snapshot)
+            self._manager_log_handler = self._ws.create_log_handler(
+                getattr(logging, self._cfg.log_level.upper(), logging.INFO)
+            )
+            logging.getLogger().addHandler(self._manager_log_handler)
             # Auto-subscribe configured symbols so the engine starts analysing
             # without waiting for a downstream client to subscribe.
             symbols = list(self._cfg.manager_symbols)
@@ -223,6 +229,10 @@ class SignalEngine:
 
     async def stop(self) -> None:
         logger.info("Shutting down Signal Engine…")
+        if self._manager_log_handler:
+            logging.getLogger().removeHandler(self._manager_log_handler)
+            self._manager_log_handler.close()
+            self._manager_log_handler = None
         self._scheduler.shutdown()
         await self._ws.stop()
         self._md.close()
