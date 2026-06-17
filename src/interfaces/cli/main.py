@@ -22,10 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import signal as os_signal
 import sys
 import time
-from pathlib import Path
 
 from config.settings import Settings, interval_to_minutes
 from infrastructure.data_providers.market_data import MarketDataClient
@@ -51,12 +49,16 @@ class SignalEngine:
         self._cfg = settings
         self._trace_ctx = ParityTraceWriter(live_trace_out)
         self._trace_writer = self._trace_ctx.__enter__()
-
+        
         # ── Infrastructure ────────────────────────────────────────────────────
         self._metrics = MetricsCollector(settings)
+        # MarketDataClient is constructed here but does NOT connect to MT5 yet.
+        # mt5.initialize() is deferred to start() → self._md.connect() so that
+        # multiple brokers running in-process don't race on the MT5 COM layer.
         self._md = MarketDataClient.from_settings(
             settings, metrics_fn=self._metrics.on_api_call
         )
+        
 
         db_path = settings.session_dir / "signals.db"
         live_dir = settings.base_dir / "results" / "live"
@@ -66,15 +68,8 @@ class SignalEngine:
         # ── Domain / app ──────────────────────────────────────────────────────
         self._registry = AssetRegistry(settings)
         self._session = SessionCoordinator(self._store, self._sstore, settings)
-        self._service = SignalService(
-            market_data=self._md,
-            settings=settings,
-            asset_registry=self._registry,
-            session=self._session,
-            signal_store=self._store,
-            metrics=self._metrics,
-        )
-        self._service.add_listener(self._on_signal_event)
+        # SignalService and its listener are wired in start() after MT5 connects.
+        self._service: SignalService | None = None
 
         self._scheduler: SignalScheduler | None = None
         self._gateway: EventGateway | None = None
@@ -135,6 +130,20 @@ class SignalEngine:
 
     async def start(self, event_gateway: EventGateway) -> None:
         self._gateway = event_gateway
+
+        # Connect to MT5 here, not in __init__, so each broker's connection is
+        # established sequentially within its own supervised task rather than
+        # all brokers racing on mt5.initialize() at construction time.
+
+        self._service = SignalService(
+            market_data=self._md,
+            settings=self._cfg,
+            asset_registry=self._registry,
+            session=self._session,
+            signal_store=self._store,
+            metrics=self._metrics,
+        )
+        self._service.add_listener(self._on_signal_event)
 
         await self._service.initialize()
 

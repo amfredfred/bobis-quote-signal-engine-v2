@@ -166,9 +166,6 @@ class MarketDataClient:
         account = mt5.account_info()
         terminal = mt5.terminal_info() 
         symbols = mt5.symbols_get()
-        print(
-            f"symbols={', '.join(str(symbol.name) for symbol in symbols)}"
-        )
         logger.info(
             "MarketDataClient initialised via MT5  login=%s  terminal=%s",
             getattr(account, "login", None),
@@ -199,6 +196,7 @@ class MarketDataClient:
         if clean in self._symbol_aliases:
             clean = self._symbol_aliases[clean]
         cached = self._resolved_symbols.get(clean)
+
         if cached:
             return cached
 
