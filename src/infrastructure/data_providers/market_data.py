@@ -151,7 +151,7 @@ class MarketDataClient:
 
         kwargs = {"timeout": timeout_ms, "portable": portable}
         if terminal_path:
-            kwargs["path"] = terminal_path
+            kwargs["path"] = terminal_path  
         if login is not None:
             kwargs["login"] = login
         if password:
@@ -164,7 +164,11 @@ class MarketDataClient:
 
         self._shutdown_on_close = True
         account = mt5.account_info()
-        terminal = mt5.terminal_info()
+        terminal = mt5.terminal_info() 
+        symbols = mt5.symbols_get()
+        print(
+            f"symbols={', '.join(str(symbol.name) for symbol in symbols)}"
+        )
         logger.info(
             "MarketDataClient initialised via MT5  login=%s  terminal=%s",
             getattr(account, "login", None),
