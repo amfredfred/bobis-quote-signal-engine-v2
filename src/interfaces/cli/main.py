@@ -185,11 +185,12 @@ def main() -> None:
     The signal engine runs in-process via the manager — start the manager
     instead:  python -m src  (from signal-engine/manager/)
     """
-    print(
-        "signal-engine runs in-process inside the Signal Manager.\n"
-        "Start the manager instead:\n"
-        "  cd signal-engine/manager\n"
-        "  python -m src",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    
+    # print(
+    #     "signal-engine runs in-process inside the Signal Manager.\n"
+    #     "Start the manager instead:\n"
+    #     "  cd signal-engine/manager\n"
+    #     "  python -m src",
+    #     file=sys.stderr,
+    # )
+    # sys.exit(1)

@@ -18,7 +18,6 @@ from src.server.gateway_server import GatewayServer
 
 logger = logging.getLogger(__name__)
 
-
 def setup_logging(level: str) -> None:
     fmt = logging.Formatter(
         "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",

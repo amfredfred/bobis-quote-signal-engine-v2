@@ -1,8 +1,8 @@
 # Which MT5 credential profiles to run signal engines for.
 # Each name must match a profile key in signal-engine/mt5-credentials.yaml.
 sources:
-  - fundednext
-  - exness
+  # - fundednext
+  # - exness
   - fbs
 
 # Path to the signal-engine root (parent of this manager/ directory).
@@ -26,9 +26,6 @@ gateway_server:
 symbols:
   - XAUUSD
   - US100
-  - EURUSD
-  - GBPUSD
-  - USDJPY
 
 consensus:
   window_ms: 60000   # wait up to 60s for a second broker to confirm
