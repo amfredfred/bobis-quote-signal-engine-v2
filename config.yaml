@@ -8,7 +8,7 @@ websocket:
 # MANAGER_SYMBOLS).  No manager section belongs here.
 
 mt5:
-  use: exness
+  use: fbs
   timeout_ms: 60000
   portable: false
 
@@ -28,7 +28,7 @@ timeframes:
       ltf: 5min
       entry_model: crt
   htf_lookback:
-    "5/5": 60
+    "5/5": 120
   htf_outputsize: 1000
 
 signal_quality:
