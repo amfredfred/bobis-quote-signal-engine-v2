@@ -193,4 +193,4 @@ def main() -> None:
     #     "  python -m src",
     #     file=sys.stderr,
     # )
-    # sys.exit(1)
+    sys.exit(1)

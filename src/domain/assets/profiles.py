@@ -98,6 +98,7 @@ class AssetProfile:
 
 ASSET_CLASS_MAP: dict[str, str] = {
     "XAUUSD": "COMMODITY",
+    "XAGUSD": "COMMODITY",
     "US100": "INDICES",
 }
 SUPPORTED_SYMBOLS = frozenset(ASSET_CLASS_MAP)

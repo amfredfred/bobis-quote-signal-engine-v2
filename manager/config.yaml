@@ -26,6 +26,7 @@ gateway_server:
 symbols:
   - XAUUSD
   - US100
+  - XAGUSD
 
 consensus:
   window_ms: 60000   # wait up to 60s for a second broker to confirm
