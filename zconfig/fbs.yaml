@@ -12,15 +12,7 @@ signal_quality:
       "5/5":
         min_rr: 8
         max_rr: 3
-    EURUSD:
-      "5/5":
-        min_rr: 8
-        max_rr: 3
-    GBPUSD:
-      "5/5":
-        min_rr: 8
-        max_rr: 3
-    USDJPY:
+    XAGUSD:
       "5/5":
         min_rr: 8
         max_rr: 3
