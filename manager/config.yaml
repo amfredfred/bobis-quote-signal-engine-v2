@@ -32,4 +32,4 @@ consensus:
   window_ms: 60000   # wait up to 60s for a second broker to confirm
 
 logging:
-  level: INFO
+  level: ERROR

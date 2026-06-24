@@ -27,8 +27,12 @@ timeframes:
     - htf: 5min
       ltf: 5min
       entry_model: crt
+    - htf: 1min
+      ltf: 1min
+      entry_model: crt
   htf_lookback:
-    "5/5": 120
+    "5/5": 60
+    "1/1": 30
   htf_outputsize: 1000
 
 signal_quality:
@@ -47,13 +51,22 @@ signal_quality:
       "5/5":
         min_rr: 8
         max_rr: 3
+      "1/1":
+        min_rr: 15
+        max_rr: 3
     US100:
       "5/5":
         min_rr: 8
         max_rr: 3
+    "1/1":
+        min_rr: 15
+        max_rr: 3
     XAGUSD:
       "5/5":
         min_rr: 8
+        max_rr: 3
+      "1/1":
+        min_rr: 15
         max_rr: 3
 
 signal_lifetime:
@@ -83,11 +96,17 @@ trade_management:
     XAUUSD:
       "5/5":
         tp1_trigger_pct: 45.0
+      "1/1":
+        tp1_trigger_pct: 45.0
     US100:
       "5/5":
         tp1_trigger_pct: 25.0
+      "1/1":
+        tp1_trigger_pct: 25.0
     XAGUSD:
       "5/5":
+        tp1_trigger_pct: 45.0
+      "1/1":
         tp1_trigger_pct: 45.0
 
 displacement_filter:
@@ -123,5 +142,5 @@ session_filter:
       blocked_hours: []
 
 logging:
-  level: INFO
+  level: ERROR
   dir: logs
