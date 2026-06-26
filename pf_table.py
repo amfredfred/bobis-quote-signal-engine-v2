@@ -16,7 +16,7 @@ PERIODS = {
     "2022 H1": Path("results/grid-2022/fundecnext"),
 }
 
-SYMBOLS = ["XAUUSD", "US100", "EURUSD", "GBPUSD", "USDJPY"]
+SYMBOLS = ["XAUUSD", "XAGUSD"]
 MIN_RR_VALUES = [5.0, 7.0, 8.0, 10.0, 12.0, 14.0]
 MAX_RR = 3.0
 

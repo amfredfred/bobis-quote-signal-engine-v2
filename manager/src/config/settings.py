@@ -38,7 +38,7 @@ class Settings:
     gateway_secret:       str  = ""
 
     consensus_window_ms:  int  = 60_000
-    symbols:              tuple = ("XAUUSD", "US100", "EURUSD", "GBPUSD", "USDJPY")
+    symbols:              tuple = ("XAUUSD", "XAGUSD")
     log_level:            str  = "INFO"
 
     @classmethod
@@ -60,7 +60,7 @@ class Settings:
                 break
 
         raw_sources = _get(cfg, "sources") or []
-        raw_symbols = _get(cfg, "symbols") or ["XAUUSD", "US100", "EURUSD", "GBPUSD", "USDJPY"]
+        raw_symbols = _get(cfg, "symbols") or ["XAUUSD","XAGUSD"]
 
         # Resolve signal_engine path relative to the config file's directory.
         engine_path_raw = str(_get(cfg, "signal_engine.path", "") or "")

@@ -108,7 +108,7 @@ def test_asset_profile_applies_per_symbol_tf_trade_management_overrides():
     # Symbol present but no matching TF → global default
     assert registry.get("XAUUSD", "5min", "5min").tp1_trigger_pct == 10.0
     # Different symbol → global default
-    assert registry.get("US100", "1min", "1min").tp1_trigger_pct == 10.0
+    assert registry.get("XAUUSD", "1min", "1min").tp1_trigger_pct == 10.0
 
 
 def test_asset_profile_tf_overrides_wildcard_tf_fallback():
@@ -129,7 +129,7 @@ def test_asset_profile_tf_overrides_wildcard_tf_fallback():
     # Other TF falls back to "*"
     assert registry.get("XAUUSD", "5min", "5min").tp1_trigger_pct == 8.0
     # Different symbol → global default
-    assert registry.get("US100", "5min", "5min").tp1_trigger_pct == 10.0
+    assert registry.get("XAUUSD", "5min", "5min").tp1_trigger_pct == 10.0
 
 
 def test_asset_profile_tf_overrides_wildcard_symbol_fallback():
@@ -146,9 +146,9 @@ def test_asset_profile_tf_overrides_wildcard_symbol_fallback():
     # Exact symbol+TF
     assert registry.get("XAUUSD", "1min", "1min").tp1_trigger_pct == 5.0
     # Unknown symbol falls back to "*"
-    assert registry.get("US100", "1min", "1min").tp1_trigger_pct == 7.0
+    assert registry.get("XAUUSD", "1min", "1min").tp1_trigger_pct == 7.0
     # Unknown symbol, unmatched TF → global default
-    assert registry.get("US100", "5min", "5min").tp1_trigger_pct == 10.0
+    assert registry.get("XAUUSD", "5min", "5min").tp1_trigger_pct == 10.0
 
 
 def test_symbol_rr_filter_symbol_plus_tf_wins():
@@ -194,9 +194,9 @@ def test_symbol_rr_filter_global_wildcard_applies_to_other_symbols():
     )
     registry = AssetRegistry(settings)
 
-    # US100 has no specific entry → *+* applies for min_rr
+    # XAUUSD has no specific entry → *+* applies for min_rr
     # max_rr unchanged: INDICES class override gives 8.0, *+* didn't set max_rr
-    profile = registry.get("US100", "1h", "5min")
+    profile = registry.get("XAUUSD", "1h", "5min")
     assert profile.min_rr == 2.0
     assert profile.max_rr == 8.0
 

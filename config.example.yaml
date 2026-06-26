@@ -43,19 +43,7 @@ signal_quality:
       "5/5":
         min_rr: 8
         max_rr: 3
-    US100:
-      "5/5":
-        min_rr: 8
-        max_rr: 3
-    EURUSD:
-      "5/5":
-        min_rr: 8
-        max_rr: 3
-    GBPUSD:
-      "5/5":
-        min_rr: 8
-        max_rr: 3
-    USDJPY:
+    XAGUSD:
       "5/5":
         min_rr: 8
         max_rr: 3
@@ -87,18 +75,9 @@ trade_management:
     XAUUSD:
       "5/5":
         tp1_trigger_pct: 45.0
-    US100:
+    XAGUSD:
       "5/5":
         tp1_trigger_pct: 25.0
-    EURUSD:
-      "5/5":
-        tp1_trigger_pct: 45.0
-    GBPUSD:
-      "5/5":
-        tp1_trigger_pct: 45.0
-    USDJPY:
-      "5/5":
-        tp1_trigger_pct: 45.0
 
 displacement_filter:
   enabled: false

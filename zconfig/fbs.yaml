@@ -11,17 +11,22 @@ signal_quality:
       "1/1":
         min_rr: 11
         max_rr: 3
-    US100:
-      "5/5":
-        min_rr: 8
+      "2/2":
+        min_rr: 11
         max_rr: 3
-      "1/1":
-        min_rr: 15
+      "3/3":
+        min_rr: 11
         max_rr: 3
     XAGUSD:
       "5/5":
         min_rr: 7
         max_rr: 3
       "1/1":
+        min_rr: 11
+        max_rr: 3
+      "2/2":
+        min_rr: 11
+        max_rr: 3
+      "3/3":
         min_rr: 11
         max_rr: 3

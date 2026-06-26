@@ -25,7 +25,6 @@ gateway_server:
 # Symbols pushed to each engine worker on startup (auto-subscribe).
 symbols:
   - XAUUSD
-  - US100
   - XAGUSD
 
 consensus:

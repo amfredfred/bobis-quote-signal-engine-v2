@@ -25,10 +25,7 @@ GRID_DIR = Path(_args.results_dir)
 # Optimal combo per pair (from grid search analysis)
 PAIR_COMBO = {
     "XAUUSD": "min12.0_max3.0",
-    "US100":  "min12.0_max3.0",
-    "EURUSD": "min12.0_max3.0",
-    "GBPUSD": "min12.0_max3.0",
-    "USDJPY": "min8.0_max3.0",
+    "XAGUSD":  "min12.0_max3.0",
 }
 
 WIN_OUTCOMES  = {"WIN_FULL", "WIN_PARTIAL", "WIN", "TP1_HIT", "TP2_HIT"}
