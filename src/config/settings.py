@@ -516,7 +516,7 @@ def _sessions_from_config(raw: Any) -> dict[str, dict]:
 
 _STOP_BUFFER_PCT: float = 0.00001
 # 1 pip buffer — never needs tuning
-_CANDLE_BUFFER_MS: int = 1_100
+_CANDLE_BUFFER_MS: int = 400
 # ms after candle close to wait for MT5 to settle before running analysis
 _PIVOT_BARS: int = 1
 # structural pivot strength
