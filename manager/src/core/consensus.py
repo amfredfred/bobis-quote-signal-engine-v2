@@ -26,7 +26,7 @@ class _Pending:
 
 class ConsensusEngine:
 
-    def __init__(self, window_ms: int = 60_000) -> None:
+    def __init__(self, window_ms: int = 0) -> None:
         self._window    = window_ms / 1000
         self._pending:  dict[str, _Pending] = {}
 

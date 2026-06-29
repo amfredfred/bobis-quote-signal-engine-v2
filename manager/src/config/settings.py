@@ -37,7 +37,7 @@ class Settings:
     gateway_port:         int  = 8765
     gateway_secret:       str  = ""
 
-    consensus_window_ms:  int  = 60_000
+    consensus_window_ms:  int  = 0 #60_000
     symbols:              tuple = ("XAUUSD", "XAGUSD")
     log_level:            str  = "INFO"
 
@@ -79,7 +79,7 @@ class Settings:
             gateway_host=str(_get(cfg, "gateway_server.host", "0.0.0.0")),
             gateway_port=int(_get(cfg, "gateway_server.port", 8765)),
             gateway_secret=str(_get(cfg, "gateway_server.secret", "") or ""),
-            consensus_window_ms=int(_get(cfg, "consensus.window_ms", 60_000)),
+            consensus_window_ms=int(_get(cfg, "consensus.window_ms", 0)),
             symbols=tuple(str(s).upper() for s in raw_symbols),
             log_level=str(_get(cfg, "logging.level", "INFO")).upper(),
         )
