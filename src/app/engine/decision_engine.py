@@ -32,6 +32,8 @@ class DecisionEngine:
         profile: AssetProfile,
         broker: str = "",
         blocked_reason: str | None = None,
+        live_bid: float | None = None,
+        live_ask: float | None = None,
     ) -> Decision:
         if blocked_reason:
             return Decision(None, "blocked", blocked_reason)
@@ -44,6 +46,8 @@ class DecisionEngine:
             signal_id=signal_id,
             profile=profile,
             broker=broker,
+            live_bid=live_bid,
+            live_ask=live_ask,
         )
         if signal is None:
             return Decision(None, "blocked", "signal_quality_gate")

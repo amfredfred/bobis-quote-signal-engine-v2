@@ -352,6 +352,28 @@ class MarketDataClient:
             self._record_metrics(symbol, interval, called_at, started, False, str(exc))
             raise
 
+    def get_tick(self, symbol: str) -> tuple[float, float, int]:
+        """
+        Current (bid, ask, tick_time_ms) for symbol, UTC-normalized.
+
+        Used for live-price signal pricing (signal_price_source="live_bidask").
+        Raises MarketDataError if no tick is available.
+        """
+        mt5_symbol = self._ensure_symbol(symbol)
+        tick = mt5.symbol_info_tick(mt5_symbol)
+        if tick is None:
+            raise MarketDataError(f"No live tick available for {symbol!r} ({_last_error()})")
+
+        if getattr(tick, "time_msc", 0):
+            tick_ms = int(tick.time_msc)
+        elif getattr(tick, "time", 0):
+            tick_ms = int(tick.time) * 1000
+        else:
+            tick_ms = _now_ms()
+
+        tick_ms -= self._broker_time_offset_ms(symbol)
+        return float(tick.bid), float(tick.ask), tick_ms
+
     def close(self) -> None:
         if self._shutdown_on_close and mt5 is not None:
             mt5.shutdown()

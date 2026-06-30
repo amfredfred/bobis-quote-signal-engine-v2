@@ -594,6 +594,18 @@ class SignalService:
                     self._metrics.increment("signals.watchlist_duplicate")
                 continue
 
+            # Live bid/ask for pricing diagnostics and (when configured) actual
+            # entry pricing. Fetched unconditionally so drift is logged passively
+            # even while running in candle_close mode — see builder.build_signal.
+            live_bid: float | None = None
+            live_ask: float | None = None
+            try:
+                live_bid, live_ask, _tick_ms = self._md.get_tick(symbol)
+            except Exception as exc:
+                logger.debug("[%s] get_tick failed, falling back to candle_close: %s", pair_label, exc)
+                if profile.signal_price_source == "live_bidask" and self._metrics:
+                    self._metrics.increment("signals.live_tick_unavailable")
+
             decision = self._decision_engine.evaluate_setup(
                 symbol=symbol,
                 htf_interval=htf_interval,
@@ -603,6 +615,8 @@ class SignalService:
                 signal_id=signal_id,
                 profile=profile,
                 broker=self._cfg.mt5_profile,
+                live_bid=live_bid,
+                live_ask=live_ask,
             )
             signal = decision.signal
             if signal is None:
@@ -614,6 +628,21 @@ class SignalService:
                         )
                 logger.debug("[%s] Blocked: %s", pair_label, decision.blocked_reason)
                 continue
+
+            if signal.price_drift is not None and self._metrics:
+                self._metrics.set_gauge("signals.last_price_drift", signal.price_drift)
+                self._metrics.set_gauge(
+                    f"signals.{symbol}.last_price_drift", signal.price_drift
+                )
+            logger.info(
+                "[%s] price_source=%s candle_close=%.5f live_bid=%s live_ask=%s drift=%s",
+                pair_label,
+                signal.price_source_used,
+                signal.candle_close_price,
+                live_bid,
+                live_ask,
+                signal.price_drift,
+            )
 
             detected_at = self._cfg.now_ms()
             signal.setup_candle_open_at = rejection.timestamp

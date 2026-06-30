@@ -44,6 +44,8 @@ def build_signal(
     signal_id:    str,
     profile:      AssetProfile,
     broker:       str = "",
+    live_bid:     Optional[float] = None,
+    live_ask:     Optional[float] = None,
 ) -> Optional[TradeSignal]:
     """
     Validate and construct a TradeSignal.
@@ -59,14 +61,33 @@ def build_signal(
     4. RR floor — must meet min_rr.
     5. RR cap — TP2 capped when rr > max_rr (not skipped; tp2 is adjusted).
     6. Session filter — rejection candle must be inside an allowed session.
+
+    Pricing
+    ───────
+    entry defaults to the LTF rejection candle close (`profile.signal_price_source
+    == "candle_close"`). When `profile.signal_price_source == "live_bidask"` and a
+    matching live_bid/live_ask is supplied, entry uses the side of the spread that
+    matches the trade direction (bid for SHORT, ask for LONG) instead — this is
+    the price execution will actually see, closing the gap between signal-time RR
+    and fill-time RR. If live_bidask is requested but no tick was supplied (e.g.
+    feed unavailable), this silently falls back to candle_close rather than
+    blocking signal generation.
     """
     direction = htf_range.signal_direction
-    entry     = rejection.close
+
+    from domain.entities.enums import SignalDirection
+
+    use_live = profile.signal_price_source == "live_bidask"
+    if use_live and direction == SignalDirection.SHORT and live_bid is not None:
+        entry = live_bid
+    elif use_live and direction == SignalDirection.LONG and live_ask is not None:
+        entry = live_ask
+    else:
+        entry = rejection.close
 
     # ── 1. Stop loss (always wick-based) ──────────────────────────────────────
     sl_level = rejection.wick_tip
     buffer = sl_level * profile.stop_buffer_pct
-    from domain.entities.enums import SignalDirection
     sl = sl_level + buffer if direction == SignalDirection.SHORT else sl_level - buffer
 
     if direction == SignalDirection.SHORT and sl <= entry:
@@ -133,6 +154,9 @@ def build_signal(
     setup_candle_open_at = rejection.timestamp
     setup_candle_close_at = rejection.timestamp + _interval_to_ms(ltf_interval)
 
+    price_source_used = "live_bidask" if entry != rejection.close else "candle_close"
+    price_drift = (entry - rejection.close) if price_source_used == "live_bidask" else None
+
     return TradeSignal(
         id               = signal_id,
         symbol           = symbol,
@@ -152,5 +176,10 @@ def build_signal(
         created_at       = setup_candle_open_at,
         triggered_at     = setup_candle_close_at,
         setup_candle_open_at  = setup_candle_open_at,
+        price_source_used   = price_source_used,
+        candle_close_price  = rejection.close,
+        live_bid_at_signal  = live_bid,
+        live_ask_at_signal  = live_ask,
+        price_drift         = price_drift,
         setup_candle_close_at = setup_candle_close_at,
     )

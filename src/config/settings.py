@@ -664,6 +664,7 @@ class Settings:
     multi_tf_independent_positions: bool = True
     entry_model: str = "crt"
     crt_mode: str = "previous_candle"
+    signal_price_source: str = "candle_close"  # "candle_close" | "live_bidask"
 
     def entry_model_for(self, htf_interval: str, ltf_interval: str) -> str:
         """Return the entry model override for a TF pair, or the global default."""
@@ -870,6 +871,9 @@ class Settings:
             ),
             entry_model=str(_get(cfg, "features.entry_model", "crt")).lower(),
             crt_mode=str(_get(cfg, "crt.mode", "previous_candle")).lower(),
+            signal_price_source=str(
+                _get(cfg, "signal_quality.price_source", "candle_close")
+            ).strip().lower(),
             use_displacement_filter=_as_bool(
                 _get(cfg, "displacement_filter.enabled", True)
             ),
@@ -970,6 +974,9 @@ class Settings:
             ),
             entry_model=str(_get(cfg, "features.entry_model", "crt")).lower(),
             crt_mode=str(_get(cfg, "crt.mode", "previous_candle")).lower(),
+            signal_price_source=str(
+                _get(cfg, "signal_quality.price_source", "candle_close")
+            ).strip().lower(),
             use_displacement_filter=_as_bool(
                 _get(cfg, "displacement_filter.enabled", True)
             ),

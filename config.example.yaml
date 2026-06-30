@@ -32,6 +32,8 @@ signal_quality:
   max_sl_zone_mult: 1.0
   # Reject when spread exceeds this fraction of SL distance. 0 = disabled.
   max_spread_to_sl_ratio: 0.35
+  # "candle_close" | "live_bidask"
+  price_source: candle_close
   # Global fallbacks -- overridden per symbol below.
   min_rr: 2.5
   max_rr: 0  # disabled globally; controlled per symbol via rrr

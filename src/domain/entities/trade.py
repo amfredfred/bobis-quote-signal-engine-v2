@@ -73,6 +73,15 @@ class TradeSignal:
     zone_attempt: int = 1
     broker: str = ""
 
+    # ── Pricing diagnostics ──────────────────────────────────────────────────
+    # Captured regardless of signal_price_source so candle_close vs live_bidask
+    # can be compared after the fact without needing a parallel deployment.
+    price_source_used: str = "candle_close"   # which price actually became `entry`
+    candle_close_price: Optional[float] = None
+    live_bid_at_signal: Optional[float] = None
+    live_ask_at_signal: Optional[float] = None
+    price_drift: Optional[float] = None       # live_price - candle_close_price
+
     # ── Lifecycle timestamps (ms UTC) ─────────────────────────────────────────
     created_at:   int           = 0
     pending_at:   Optional[int] = None

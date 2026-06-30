@@ -93,6 +93,9 @@ class AssetProfile:
     # Multi-TF
     multi_tf_independent_positions: bool
 
+    # Pricing source for entry/SL/TP calc at signal-emission time
+    signal_price_source: str = "candle_close"  # "candle_close" | "live_bidask"
+
 
 # ── Symbol → asset class ──────────────────────────────────────────────────────
 
@@ -304,6 +307,7 @@ class AssetRegistry:
                 htf_interval or "*", ltf_interval or "*"
             ),
             "multi_tf_independent_positions": cfg.multi_tf_independent_positions,
+            "signal_price_source": cfg.signal_price_source,
         }
 
         # 2 + 3. Class / symbol overrides
