@@ -3,8 +3,12 @@
   port: 8765
   max_clients: 10
 
+# Worker mode is driven entirely by env vars injected by signal-manager's
+# ProcessSupervisor (MT5_USE, MANAGER_MODE, MANAGER_URL, MANAGER_TOKEN,
+# MANAGER_SYMBOLS).  No manager section belongs here.
+
 mt5:
-  use: exness       # matches a profile key in mt5-credentials.yaml
+  use: fbs
   timeout_ms: 60000
   portable: false
 
@@ -23,9 +27,17 @@ timeframes:
     - htf: 5min
       ltf: 5min
       entry_model: crt
+    - htf: 30min
+      ltf: 30min
+      entry_model: crt
+    - htf: 1h
+      ltf: 1h
+      entry_model: crt
   htf_lookback:
-    "5/5": 60
-  htf_outputsize: 1000
+    "5/5": 15
+    "30/30": 30
+    "60/60": 15
+  htf_outputsize: 100
 
 signal_quality:
   stop_model: wick
@@ -34,19 +46,31 @@ signal_quality:
   max_spread_to_sl_ratio: 0.35
   # "candle_close" | "live_bidask"
   price_source: candle_close
-  # Global fallbacks -- overridden per symbol below.
+  # Global fallbacks — overridden per symbol below.
   min_rr: 2.5
-  max_rr: 0  # disabled globally; controlled per symbol via rrr
+  max_rr: 0 # disabled globally; controlled per symbol via rrr
   # Per-symbol, per-TF RR. min_rr and max_rr resolve independently.
   # Priority: symbol+TF > symbol+* > *+TF > *+* > global.
   # COMMODITY class hardcodes max_rr: 8.0 in profiles.py before this runs.
   rrr:
+    XAGUSD:
+      "5/5":
+        min_rr: 8
+        max_rr: 3
+      "30/30":
+        min_rr: 8
+        max_rr: 3
+      "60/60":
+        min_rr: 8
+        max_rr: 3
     XAUUSD:
       "5/5":
         min_rr: 8
         max_rr: 3
-    XAGUSD:
-      "5/5":
+      "30/30":
+        min_rr: 8
+        max_rr: 3
+      "60/60":
         min_rr: 8
         max_rr: 3
 
@@ -58,7 +82,7 @@ signals:
 
 zones:
   max_htf_zones_per_dir: 2
-  max_signal_count: 3
+  max_signal_count: 2
 
 features:
   use_trend_filter: true
@@ -74,12 +98,20 @@ trade_management:
   tp1_close_pct: 0.0
   move_sl_to_be_on_tp1: true
   tf_overrides:
+    XAGUSD:
+      "5/5":
+        tp1_trigger_pct: 45.0
+      "30/30":
+        tp1_trigger_pct: 45.0
+      "60/60":
+        tp1_trigger_pct: 45.0
     XAUUSD:
       "5/5":
         tp1_trigger_pct: 45.0
-    XAGUSD:
-      "5/5":
-        tp1_trigger_pct: 25.0
+      "30/30":
+        tp1_trigger_pct: 45.0
+      "60/60":
+        tp1_trigger_pct: 45.0
 
 displacement_filter:
   enabled: false
@@ -87,6 +119,8 @@ displacement_filter:
   atr_mult: 1.0
   tf_mult:
     "5/5": 1.0
+    "30/30": 1.0
+    "60/60": 1.0
 
 circuit_breaker:
   max_consecutive_losses: 10
@@ -114,5 +148,5 @@ session_filter:
       blocked_hours: []
 
 logging:
-  level: INFO
+  level: ERROR
   dir: logs
