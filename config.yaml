@@ -34,10 +34,10 @@ timeframes:
       ltf: 1h
       entry_model: crt
   htf_lookback:
-    "5/5": 30
-    "30/30": 60
-    "60/60": 30
-  htf_outputsize: 1000
+    "5/5": 15
+    "30/30": 30
+    "60/60": 15
+  htf_outputsize: 100
 
 signal_quality:
   stop_model: wick

@@ -9,7 +9,7 @@ signal_quality:
         min_rr: 8
         max_rr: 3
       "30/30":
-        min_rr: 6
+        min_rr: 8
         max_rr: 3
       "60/60":
         min_rr: 3
@@ -19,7 +19,7 @@ signal_quality:
         min_rr: 8
         max_rr: 3
       "30/30":
-        min_rr: 6
+        min_rr: 8
         max_rr: 3
       "60/60":
         min_rr: 3
