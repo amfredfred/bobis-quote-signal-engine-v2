@@ -24,23 +24,23 @@ market:
 
 timeframes:
   pairs:
+    # - htf: 1min
+    #   ltf: 1min
+    #   entry_model: crt
+    # - htf: 2min
+    #   ltf: 2min
+    #   entry_model: crt
     - htf: 3min
       ltf: 3min
-      entry_model: crt
-    - htf: 2min
-      ltf: 2min
-      entry_model: crt
-    - htf: 1min
-      ltf: 1min
       entry_model: crt
     - htf: 5min
       ltf: 5min
       entry_model: crt
   htf_lookback:
-    "5/5": 60
-    "1/1": 30
-    "2/2": 30
-    "3/3": 30
+    "5/5": 240
+    "1/1": 120
+    "2/2": 120
+    "3/3": 120
   htf_outputsize: 1000
 
 signal_quality:
